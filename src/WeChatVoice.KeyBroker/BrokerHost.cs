@@ -2,6 +2,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Materialization;
+using WeChatVoice.Infrastructure.Sqlite;
+using WeChatVoice.KeyAcquisition;
+using WeChatVoice.KeyAcquisition.Models;
+using WeChatVoice.Windows;
 
 namespace WeChatVoice.KeyBroker;
 
@@ -21,6 +25,15 @@ internal static class BrokerHost
         TextWriter output,
         string snapshotManifestPath,
         CancellationToken cancellationToken)
+        => await RunAsync(input, output, snapshotManifestPath, null, null, cancellationToken).ConfigureAwait(false);
+
+    internal static async Task<int> RunAsync(
+        TextReader input,
+        TextWriter output,
+        string snapshotManifestPath,
+        string? outputRoot,
+        string? workspaceOutput,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -33,18 +46,52 @@ internal static class BrokerHost
         }
 
         BrokerRequest? request = null;
+        var snapshotVerified = false;
         try
         {
             request = BrokerProtocol.Parse(line);
-            _ = await VerifySnapshotAsync(request, snapshotManifestPath, cancellationToken).ConfigureAwait(false);
+            var verifiedSnapshot = await VerifySnapshotAsync(request, snapshotManifestPath, cancellationToken).ConfigureAwait(false);
+            snapshotVerified = true;
+            if (string.IsNullOrWhiteSpace(outputRoot) || string.IsNullOrWhiteSpace(workspaceOutput))
+            {
+                BrokerProtocol.Write(output, new BrokerResponse(
+                    "failed",
+                    request.RequestId,
+                    null,
+                    null,
+                    new BrokerError("profile_unavailable", "No materialization output was supplied to the one-shot Broker.")));
+                return 3;
+            }
+
+            var profile = GuardedKeyExtractionProfiles.Create().Single();
+            var materializer = new SqlCipherEphemeralDatabaseMaterializer();
+            var service = new EphemeralAcquireAndMaterializeService(
+                new ProfileDrivenKeyAcquisitionService(
+                    new WeixinProcessLocator(),
+                    new WindowsWeixinProcessIdentityReader(),
+                    [profile]),
+                materializer);
+            var materialization = await service.ExecuteAsync(
+                verifiedSnapshot,
+                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(30)),
+                new MaterializationOptions(Path.GetFullPath(outputRoot)),
+                cancellationToken).ConfigureAwait(false);
+            var workspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);
+            var workspacePath = Path.GetFullPath(workspaceOutput);
+            Directory.CreateDirectory(Path.GetDirectoryName(workspacePath)!);
+            await using (var workspaceStream = new FileStream(workspacePath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await JsonSerializer.SerializeAsync(workspaceStream, workspace, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await workspaceStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             BrokerProtocol.Write(output, new BrokerResponse(
-                "failed",
+                "completed",
                 request.RequestId,
-                null,
-                null,
-                new BrokerError("profile_unavailable", "No verified Weixin key-extraction and database-encryption profile is installed.")));
-            return 3;
+                profile.Id,
+                materialization.Result.WorkspaceId,
+                null));
+            return 0;
         }
         catch (BrokerProtocolException exception)
         {
@@ -63,8 +110,18 @@ internal static class BrokerHost
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
         {
-            BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_invalid", "The snapshot could not be verified."));
-            return 4;
+            var noProfile = exception is InvalidDataException;
+            if (!snapshotVerified)
+            {
+                BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_invalid", "The snapshot could not be verified."));
+                return 4;
+            }
+
+            BrokerProtocol.Write(output, Failed(
+                request?.RequestId,
+                noProfile ? "profile_unavailable" : "materialization_failed",
+                noProfile ? "No running Weixin process matched a verified key-extraction Profile." : "The Broker could not complete the verified materialization."));
+            return noProfile ? 3 : 1;
         }
     }
 

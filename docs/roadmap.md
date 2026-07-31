@@ -17,8 +17,9 @@
    crash.
 5. Route two now has a separate one-shot UAC Key Broker, fixed request protocol,
    raw Snapshot verification before Profile selection, registered
-   materialization backends, bounded backend execution, and a real fake-process
-   integration suite for output mapping and failure handling.
+   materialization backends, bounded backend execution, a guarded
+   Profile-driven key acquisition service, and a fixed SQLCipher Worker that
+   completes synthetic encrypted-fixture materialization into a Local Workspace.
 6. Stable business/login snapshots for the observed build pass group-level
    verification. A candidate-only first-page HMAC validator has fixed synthetic
    vectors, zeroes temporary key material, and remains outside the Profile
@@ -36,14 +37,14 @@ login `key_info.db` is ordinary SQLite, but its BLOB semantics remain unverified
 Do not guess tables, BLOB formats, or keys. Message and media filename shards
 are also not one-to-one; only an Adapter with verified schema evidence may
 resolve their relationship.
-The next implementation step is a reviewed registry entry backed by a bounded
-candidate-location fixture for
-the exact signed build, then validation against the required `message_N.db`,
-`media_N.db`, and contact groups. The privileged boundary is the
-one-shot `WeChatVoice.KeyBroker.exe`; no plaintext key-file interface is
-supported. Until that profile exists, the broker and formal materialization
-backend fail closed. Then implement one isolated adapter for exact contact
-selection, incoming voice association, and raw SILK output.
+The next implementation step is validating the guarded Profile and Worker
+against the user's exact signed build and real `message_N.db`, `media_N.db`,
+and contact groups. The Worker is currently proven only with synthetic
+SQLCipher fixtures; it must not be treated as a Weixin decryptor until page
+format, KDF/HMAC, and WAL behavior match. After that evidence, implement one
+isolated adapter for exact contact selection, incoming voice association, and
+raw SILK output. No plaintext key-file interface is supported on the formal
+path.
 
 The currently observed signed Weixin build is 4.1.11.55. Stable raw business and
 login snapshots exist only in the ignored local workspace; they must never be

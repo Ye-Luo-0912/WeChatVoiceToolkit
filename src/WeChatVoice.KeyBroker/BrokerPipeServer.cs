@@ -38,7 +38,7 @@ internal static class BrokerPipeServer
         await pipe.WaitForConnectionAsync(timeout.Token).ConfigureAwait(false);
         using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false, 4096, leaveOpen: true);
         await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
-        return await BrokerHost.RunAsync(reader, writer, snapshotManifestPath, timeout.Token).ConfigureAwait(false);
+        return await BrokerHost.RunAsync(reader, writer, snapshotManifestPath, outputRoot, workspaceOutput, timeout.Token).ConfigureAwait(false);
     }
 
     private static void ValidateOutputPath(string path, string parameterName)

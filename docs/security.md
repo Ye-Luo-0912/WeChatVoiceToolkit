@@ -13,7 +13,9 @@ materializers are registries. The permanent safety floor is:
 - no caller-selected PID, process name, address, module base, or read length;
 - no `PROCESS_ALL_ACCESS`, VM write, injection, remote thread, or DLL loading;
 - no arbitrary privileged command or caller-selected executable in formal mode;
-- no raw key in IPC, stdout, logs, exceptions, manifests, or persistent files;
+- no raw key in the Broker named-pipe protocol, stdout, logs, exceptions,
+  manifests, or persistent files; the only exception is the bounded private
+  stdin envelope from Broker to the fixed SQLCipher Worker;
 - no unknown-version heuristic Profile fallback;
 - every key is database-group bound, validated, and deterministically cleared;
 - all database probing remains read-only and local artifacts remain ignored by Git.
@@ -22,3 +24,12 @@ The pipe uses `CurrentUserOnly`; an elevated process retains the same user SID,
 which is stricter than allowing every local administrator. Its random token is
 part of the pipe name and never appears in the JSON request. The Broker accepts
 one connection and one request, then exits.
+
+The current materialization path uses the fixed SQLCipher Worker as an
+isolated compatibility runtime. The Worker receives the validated key only
+through its private stdin envelope, accepts a fixed input/output pair, copies
+the DB/WAL/SHM group to private staging, and removes failed staging/output
+artifacts. It never emits a key or accepts arbitrary commands. This runtime is
+not a generic decryptor and is not considered a production Weixin backend
+until the exact version-bound Profile validates real database pages and WAL
+behavior.

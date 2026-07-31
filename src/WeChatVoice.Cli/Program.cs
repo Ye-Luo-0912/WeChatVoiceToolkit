@@ -45,8 +45,9 @@ static Command CreateDoctorCommand()
                 HasUsableSchemaAdapter: false,
                 RegisteredKeyAcquisitionProfileCount: keyProfiles.Count,
                 MatchingKeyAcquisitionProfileCount: 0,
-                HasDatabaseEncryptionProfile: false,
-                HasMaterializationBackend: materializationBackends.Any(static backend => !string.Equals(backend.Version, "profile-unavailable", StringComparison.OrdinalIgnoreCase)),
+                HasDatabaseEncryptionProfile: keyProfiles.Any(static profile => !string.IsNullOrWhiteSpace(profile.Descriptor.DatabaseEncryptionProfileId)),
+                HasMaterializationBackend: materializationBackends.Any(static backend => !string.Equals(backend.Version, "profile-unavailable", StringComparison.OrdinalIgnoreCase))
+                    || File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.dll")),
                 AllowsKeyScanning: false,
                 AllowsDatabaseDecryption: false,
                 AllowsArbitraryProcessMemoryRead: false,

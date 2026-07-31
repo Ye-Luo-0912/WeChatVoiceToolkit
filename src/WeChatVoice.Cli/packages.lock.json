@@ -43,7 +43,16 @@
           "WeChatVoice.Core": "[1.0.0, )",
           "WeChatVoice.Infrastructure": "[1.0.0, )",
           "WeChatVoice.KeyAcquisition": "[1.0.0, )",
+          "WeChatVoice.SqlCipherWorker": "[1.0.0, )",
           "WeChatVoice.Windows": "[1.0.0, )"
+        }
+      },
+      "wechatvoice.sqlcipherworker": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Data.Sqlite.Core": "[10.0.10, )",
+          "SQLitePCLRaw.lib.e_sqlcipher": "[2.1.11, )",
+          "SQLitePCLRaw.provider.e_sqlcipher": "[2.1.11, )"
         }
       },
       "wechatvoice.windows": {
@@ -57,6 +66,21 @@
         "requested": "[10.0.10, )",
         "resolved": "10.0.10",
         "contentHash": "TPCs0ldm7AWqcKmp6f/Xr+14sat7hx4rHfRlS4RgCURBH2thEWbAKEyX7cCWr63zVJVOJIJZTg2cBiUXa8ys6g==",
+        "dependencies": {
+          "SQLitePCLRaw.core": "2.1.11"
+        }
+      },
+      "SQLitePCLRaw.lib.e_sqlcipher": {
+        "type": "CentralTransitive",
+        "requested": "[2.1.11, )",
+        "resolved": "2.1.11",
+        "contentHash": "Cg6UPeDbH8jyaOs1vqXYIgeewH0wYrBnmbC5Ml3GYBo+GKzNmyxrWSO52JV68bfB7Addt/PZLMekJV1RH2ftWQ=="
+      },
+      "SQLitePCLRaw.provider.e_sqlcipher": {
+        "type": "CentralTransitive",
+        "requested": "[2.1.11, )",
+        "resolved": "2.1.11",
+        "contentHash": "5L7YXWtPzKYHeXBHmj63QsHbLQmy0SYvhQp3xWA2yzSq1SvlnGFViveLfUDr/GEmePrqzXQ9tOJG9iQnFspfBA==",
         "dependencies": {
           "SQLitePCLRaw.core": "2.1.11"
         }

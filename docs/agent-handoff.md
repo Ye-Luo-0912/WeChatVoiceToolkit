@@ -23,10 +23,13 @@ plaintext key-file placeholder is removed; development backends require an
 explicit untrusted flag and an explicit source-to-output manifest.
 
 Route-two groundwork is recorded in `adr-0002-key-broker-boundary.md`.
-ADR 0003 records the ephemeral flow. The CLI now creates the random one-time
-pipe and launches the installed Broker; the Broker verifies the reserved
-Snapshot Manifest and content-addressed Snapshot ID before returning
-`profile_unavailable` while the Profile registry is empty.
+ADR 0003 records the ephemeral flow and ADR 0004 records the fixed SQLCipher
+Worker boundary. The CLI creates the random one-time pipe and launches the
+installed Broker; the Broker verifies the reserved Snapshot Manifest and
+content-addressed Snapshot ID, then composes the guarded Profile,
+group-bound acquisition service, SQLCipher Worker, and Local Workspace
+creation. It still returns `profile_unavailable` when no exact live process or
+database evidence matches.
 The separate login `key_info.db` is ordinary SQLite, but only its schema and
 field-length distribution have been inspected; no field values were read and
 its 180-byte BLOB must not be treated as a key without validation. Stable
@@ -38,10 +41,10 @@ validated and bound per database group rather than assumed global.
 HMAC candidate validation and clears its derived buffers. The non-registered
 `WeixinWindows41155Profile` now combines that validator with the bounded
 candidate scanner and requires every verified database group to authenticate;
-its Fake tests cover success and partial-group failure. It is deliberately not
-in the formal registry until a real plaintext materializer exists. Do not adopt
-the reviewed upstream scanner's whole-region reads or its key/PID/address
-logging.
+its Fake tests cover success and partial-group failure. The Profile is wired
+only to the guarded Broker path and remains uncertified until the real Weixin
+database format matches. Do not adopt the reviewed upstream scanner's
+whole-region reads or its key/PID/address logging.
 
 `IEphemeralDatabaseMaterializer` now declares `BackendId` and
 `EncryptionProfileId`. `VerifiedKeyAcquisition` rejects duplicate or
@@ -52,6 +55,8 @@ do not wire it to the encrypted business databases.
 
 `DatabaseMaterializerTests` use a real fake child process and cover success,
 missing/extra/invalid/duplicate/unknown mappings, sensitive output redaction,
-binary hash mismatch, timeout, and cancellation. The next blocker is a bounded
-candidate-location fixture for signed Weixin 4.1.11.55, followed by multi-group
-validation, full DB/WAL materialization, and `PRAGMA quick_check`.
+binary hash mismatch, timeout, and cancellation. The next blocker is real-data
+validation for signed Weixin 4.1.11.55, followed by the first schema adapter
+and multi-group incoming SILK association. The SQLCipher Worker already has
+synthetic multi-step coverage for DB/WAL staging, quick-check, wrong-key
+rejection, protocol rejection, and destination safety.

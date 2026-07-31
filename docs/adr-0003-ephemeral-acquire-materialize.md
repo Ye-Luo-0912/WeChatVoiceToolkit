@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted. The transport, lifecycle, and Fake integration are implemented. No
-real key-extraction Profile is registered yet.
+Accepted. The transport, lifecycle, guarded 4.1.11.55 acquisition chain, and
+synthetic SQLCipher materialization integration are implemented. The chain is
+not yet certified against the user's live Weixin business databases.
 
 ## Decision
 
@@ -35,12 +36,12 @@ architecture, start time, and image path are verified before and after handle
 acquisition. Memory reads are committed/readable-page only, bounded, chunked,
 overlapped, and backed by deterministically cleared pooled buffers.
 
-The current formal Profile registry is still empty. A non-registered
-`WeixinWindows41155Profile` now exists as the next-stage candidate chain: it
-binds exactly to version 4.1.11.55, image hash, and x64, loads every `.db`
-first page from the verified Snapshot, scans only bounded readable process
-regions, and requires one authenticated candidate for every database group.
-It returns group-bound zeroing buffers to its caller but is not enabled by the
-Broker until a real plaintext materializer and full output validation are
-installed. The formal Broker therefore continues to return `profile_unavailable`
-and never scans a live process in the current build.
+The Broker now composes the guarded `WeixinWindows41155Profile` with a
+database-group-bound `ProfileDrivenKeyAcquisitionService` and the one-shot
+`SqlCipherEphemeralDatabaseMaterializer`. The latter invokes a fixed
+`WeChatVoice.SqlCipherWorker` child with a bounded binary stdin envelope,
+copies DB/WAL/SHM into a private staging area, exports plaintext SQLite, runs
+header/schema/`quick_check` validation, writes a materialization manifest, and
+creates the executable Local Workspace. The Worker is a compatibility runtime
+validated by synthetic fixtures; it is not evidence that the observed Weixin
+business format is SQLCipher until the exact Profile passes on real data.

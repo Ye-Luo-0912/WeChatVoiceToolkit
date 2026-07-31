@@ -127,7 +127,12 @@ internal sealed class WindowsWeixinProcessMemorySource(WeixinProcessMemorySessio
     public void Dispose() => session.Dispose();
 }
 
-internal sealed record DatabaseGroupTarget(string DatabaseGroupFingerprint, byte[] FirstPage)
+internal sealed record DatabaseGroupTarget(
+    string DatabaseGroupFingerprint,
+    byte[] FirstPage,
+    string SourceRelativePath,
+    string LogicalRole,
+    int? ShardNumber)
 {
     internal static async Task<IReadOnlyList<DatabaseGroupTarget>> LoadAsync(
         VerifiedRawSnapshot snapshot,
@@ -169,7 +174,7 @@ internal sealed record DatabaseGroupTarget(string DatabaseGroupFingerprint, byte
 
             var (logicalRole, shardNumber) = Classify(Path.GetFileName(file.RelativePath));
             var groupFingerprint = ComputeGroupFingerprint(snapshot.Snapshot.Manifest.Files, file, logicalRole, shardNumber);
-            targets.Add(new DatabaseGroupTarget(groupFingerprint, firstPage));
+            targets.Add(new DatabaseGroupTarget(groupFingerprint, firstPage, file.RelativePath, logicalRole, shardNumber));
         }
 
         return targets;

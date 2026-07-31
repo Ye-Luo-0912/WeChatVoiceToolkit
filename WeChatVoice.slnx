@@ -7,10 +7,12 @@
     <Project Path="src/WeChatVoice.Infrastructure/WeChatVoice.Infrastructure.csproj" />
     <Project Path="src/WeChatVoice.KeyAcquisition/WeChatVoice.KeyAcquisition.csproj" />
     <Project Path="src/WeChatVoice.KeyBroker/WeChatVoice.KeyBroker.csproj" />
+    <Project Path="src/WeChatVoice.SqlCipherWorker/WeChatVoice.SqlCipherWorker.csproj" />
     <Project Path="src/WeChatVoice.Windows/WeChatVoice.Windows.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/WeChatVoice.FakeMaterializer/WeChatVoice.FakeMaterializer.csproj" />
+    <Project Path="tests/WeChatVoice.SqlCipherFixture/WeChatVoice.SqlCipherFixture.csproj" />
     <Project Path="tests/WeChatVoice.Tests/WeChatVoice.Tests.csproj" />
   </Folder>
 </Solution>

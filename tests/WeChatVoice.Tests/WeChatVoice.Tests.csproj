@@ -23,6 +23,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WeChatVoice.FakeMaterializer\WeChatVoice.FakeMaterializer.csproj" />
+    <ProjectReference Include="..\WeChatVoice.SqlCipherFixture\WeChatVoice.SqlCipherFixture.csproj" />
+    <ProjectReference Include="..\..\src\WeChatVoice.SqlCipherWorker\WeChatVoice.SqlCipherWorker.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.Application\WeChatVoice.Application.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.Core\WeChatVoice.Core.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />
