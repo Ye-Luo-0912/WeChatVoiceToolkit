@@ -36,6 +36,21 @@ public sealed class SqliteSchemaInspectorTests
         Assert.Equal(SchemaObjectKind.View, view.Kind);
         Assert.Contains("CREATE VIEW incoming_voice", view.DefinitionSql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(view.Columns, column => column.Name == "payload");
+
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.DatabaseSha256));
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.SchemaFingerprint));
+        Assert.Equal("winsqlite3", snapshot.SQLiteProvider);
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.SQLiteVersion));
+        Assert.True(snapshot.Pragmas.PageSize > 0);
+        Assert.Contains(snapshot.Indexes, index => index.Name == "idx_voice_direction");
+        Assert.Contains(snapshot.Triggers, trigger => trigger.Name == "voice_records_audit");
+
+        var shareable = await new SqliteSchemaInspector().InspectAsync(
+            databasePath,
+            new SchemaInspectionOptions(IncludeLocalPaths: false),
+            CancellationToken.None);
+        Assert.False(Path.IsPathRooted(shareable.DatabasePath));
+        Assert.Null(shareable.LocalPath);
     }
 
     internal static async Task CreateSampleDatabaseAsync(string databasePath)
@@ -72,6 +87,11 @@ public sealed class SqliteSchemaInspectorTests
             );
             CREATE VIEW incoming_voice AS
             SELECT id, payload FROM voice_records WHERE direction = 'incoming';
+            CREATE INDEX idx_voice_direction ON voice_records(direction);
+            CREATE TRIGGER voice_records_audit AFTER INSERT ON voice_records
+            BEGIN
+                SELECT NEW.id;
+            END;
             """;
         await command.ExecuteNonQueryAsync();
     }

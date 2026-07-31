@@ -12,6 +12,8 @@ public interface IExportItemLease : IAsyncDisposable
 
     bool IsSkipped { get; }
 
+    ExportArtifact? ExistingOriginalArtifact { get; }
+
     string OriginalManifestPath { get; }
 
     string DecodedManifestPath { get; }

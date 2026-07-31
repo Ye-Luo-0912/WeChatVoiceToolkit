@@ -8,4 +8,10 @@ namespace WeChatVoice.Core.Ports;
 public interface ISchemaInspector
 {
     Task<SchemaSnapshot> InspectAsync(string databasePath, CancellationToken cancellationToken);
+
+    Task<SchemaSnapshot> InspectAsync(
+        string databasePath,
+        SchemaInspectionOptions options,
+        CancellationToken cancellationToken)
+        => InspectAsync(databasePath, cancellationToken);
 }

@@ -10,7 +10,8 @@ public sealed record VoiceQuery
         VoiceDirection? Direction = null,
         DateTimeOffset? FromUtc = null,
         DateTimeOffset? ToUtc = null,
-        int? MaximumResults = null)
+        int? MaximumResults = null,
+        string? ContactUsername = null)
     {
         if (MaximumResults is <= 0)
         {
@@ -29,6 +30,7 @@ public sealed record VoiceQuery
         this.FromUtc = normalizedFrom;
         this.ToUtc = normalizedTo;
         this.MaximumResults = MaximumResults;
+        this.ContactUsername = string.IsNullOrWhiteSpace(ContactUsername) ? null : ContactUsername;
     }
 
     public string? ConversationId { get; }
@@ -40,4 +42,6 @@ public sealed record VoiceQuery
     public DateTimeOffset? ToUtc { get; }
 
     public int? MaximumResults { get; }
+
+    public string? ContactUsername { get; }
 }

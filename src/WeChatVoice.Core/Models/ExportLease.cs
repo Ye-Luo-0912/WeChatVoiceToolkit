@@ -1,9 +1,20 @@
 namespace WeChatVoice.Core.Models;
 
+public enum ExistingArtifactPolicy
+{
+    SkipIfHashMatches,
+    VerifyOnly,
+    Fail,
+    Replace,
+}
+
+[Obsolete("Use ExistingArtifactPolicy.")]
 public enum ExportExistingPolicy
 {
+    SkipIfHashMatches,
+    VerifyOnly,
     Fail,
-    Skip,
+    Replace,
 }
 
 public sealed record ExportArtifact
@@ -35,4 +46,20 @@ public sealed record ExportArtifact
     public long ByteLength { get; }
 
     public string Sha256 { get; }
+}
+
+public sealed class ExistingArtifactConflictException : IOException
+{
+    public ExistingArtifactConflictException(string message)
+        : base(message)
+    {
+    }
+}
+
+public sealed class ExistingArtifactNeedsHashException : IOException
+{
+    public ExistingArtifactNeedsHashException(string message)
+        : base(message)
+    {
+    }
 }

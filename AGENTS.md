@@ -23,3 +23,9 @@ user-supplied, lawfully accessible WeChat data source.
   from a single `SchemaSnapshot`.
 - Export application code must use `IExportItemLease`; do not add absolute-path
   writes back into `VoiceExportService`.
+- Contact selection for scan/export must use the exact stable internal username;
+  remarks and nicknames are display/search fields only.
+- The first usable export chain is decrypted DB bundle -> incoming voice -> raw
+  SILK -> run manifest. Do not make WAV decoding a prerequisite.
+- Dataset probing may discover filenames and emit adapter candidates, but it
+  must never choose an unverified schema mapping by convention.

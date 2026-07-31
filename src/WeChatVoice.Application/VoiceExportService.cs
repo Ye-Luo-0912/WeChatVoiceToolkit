@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 
+#pragma warning disable CS0618
+
 namespace WeChatVoice.Application;
 
 /// <summary>
@@ -58,6 +60,8 @@ public sealed class VoiceExportService
         var failures = new ConcurrentQueue<VoiceExportFailure>();
         var activeExports = new List<Task>(options.MaxDegreeOfParallelism);
         var cancellationObserved = false;
+        var runId = Guid.NewGuid().ToString("N");
+        VoiceRecord? firstRecordSeen = null;
 
         try
         {
@@ -67,6 +71,7 @@ public sealed class VoiceExportService
                 .ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                firstRecordSeen ??= record;
                 if (activeExports.Count >= options.MaxDegreeOfParallelism)
                 {
                     await DrainOneAsync(activeExports, cancellationToken).ConfigureAwait(false);
@@ -100,7 +105,11 @@ public sealed class VoiceExportService
             entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal),
             failures.OrderBy(static failure => failure.MessageId ?? string.Empty, StringComparer.Ordinal)
                 .ThenBy(static failure => failure.Stage, StringComparer.Ordinal)
-                .ThenBy(static failure => failure.Error, StringComparer.Ordinal));
+                .ThenBy(static failure => failure.Error, StringComparer.Ordinal),
+            runId,
+            firstRecordSeen?.SnapshotId,
+            firstRecordSeen?.AdapterId,
+            firstRecordSeen?.AccountId);
 
         await _exportStore.FinalizeRunAsync(manifest, CancellationToken.None).ConfigureAwait(false);
         if (cancellationObserved || cancellationToken.IsCancellationRequested)
@@ -134,9 +143,13 @@ public sealed class VoiceExportService
         IExportItemLease? lease = null;
         try
         {
-            lease = await _exportStore.BeginItemAsync(record, ExportExistingPolicy.Fail, cancellationToken).ConfigureAwait(false);
+            lease = await _exportStore.BeginItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, cancellationToken).ConfigureAwait(false);
             if (lease.IsSkipped)
             {
+                if (lease.ExistingOriginalArtifact is { } existing)
+                {
+                    entries.Enqueue(CreateEntry(record, existing, wasSkipped: true));
+                }
                 return;
             }
 
@@ -176,15 +189,7 @@ public sealed class VoiceExportService
                 }
             }
 
-            entries.Enqueue(new VoiceExportEntry(
-                record.MessageId,
-                record.ConversationId,
-                record.OccurredAtUtc,
-                record.Direction,
-                originalArtifact.RelativePath,
-                originalArtifact.ByteLength,
-                originalArtifact.Sha256,
-                decodedPath));
+            entries.Enqueue(CreateEntry(record, originalArtifact, decodedPath));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -253,6 +258,32 @@ public sealed class VoiceExportService
     private static VoiceExportFailure CreateFailure(string? messageId, string stage, Exception exception)
         => new(messageId, stage, string.IsNullOrWhiteSpace(exception.Message) ? exception.GetType().Name : exception.Message, exception.GetType().FullName);
 
+    private static VoiceExportEntry CreateEntry(
+        VoiceRecord record,
+        ExportArtifact originalArtifact,
+        string? decodedPath = null,
+        bool wasSkipped = false)
+        => new(
+            record.MessageId,
+            record.ConversationId,
+            record.OccurredAtUtc,
+            record.Direction,
+            originalArtifact.RelativePath,
+            originalArtifact.ByteLength,
+            originalArtifact.Sha256,
+            decodedPath,
+            record.StableExportKey,
+            wasSkipped,
+            record.SourceDatabase,
+            record.ShardId,
+            record.DurationMs,
+            originalArtifact.Sha256,
+            null,
+            record.SpeakerId,
+            false,
+            record.DurationMs is null ? ["duration-unknown"] : Array.Empty<string>(),
+            false);
+
     private sealed class LegacyVoiceCatalog : IVoiceCatalog
     {
         private readonly IVoiceSource _source;
@@ -295,3 +326,5 @@ public sealed class VoiceExportService
         }
     }
 }
+
+#pragma warning restore CS0618

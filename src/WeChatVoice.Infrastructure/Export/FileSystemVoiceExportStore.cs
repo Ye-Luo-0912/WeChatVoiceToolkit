@@ -28,7 +28,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
     public ValueTask<IExportItemLease> BeginItemAsync(
         VoiceRecord record,
-        ExportExistingPolicy policy,
+        ExistingArtifactPolicy policy,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -37,80 +37,119 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var occurredAtUtc = record.OccurredAtUtc.ToUniversalTime();
         var year = occurredAtUtc.ToString("yyyy", CultureInfo.InvariantCulture);
         var month = occurredAtUtc.ToString("MM", CultureInfo.InvariantCulture);
-        var sourceId = ExportPathSafety.SanitizeFileStem(record.MessageId, "voice");
-        var stableSuffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(record.MessageId)))
-            .ToLowerInvariant()[..12];
-        var baseName = $"{sourceId[..Math.Min(sourceId.Length, 80)]}-{stableSuffix}";
+        var sourceId = ExportPathSafety.SanitizeFileStem(record.SourceMessageKey, "voice");
+        var stableSuffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(record.StableExportKey)))
+            .ToLowerInvariant()[..16];
+        var fileName = $"{sourceId[..Math.Min(sourceId.Length, 64)]}-{stableSuffix}";
+        var originalManifestPath = $"original/{year}/{month}/{fileName}.silk";
+        var decodedManifestPath = $"decoded/{year}/{month}/{fileName}.wav";
+        var originalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "original", year, month, $"{fileName}.silk");
+        var decodedPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "decoded", year, month, $"{fileName}.wav");
 
-        for (var attempt = 0; attempt < int.MaxValue; attempt++)
+        var originalExists = File.Exists(originalPath);
+        var decodedExists = File.Exists(decodedPath);
+        if (originalExists)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var fileName = attempt == 0 ? baseName : $"{baseName}-{attempt:D4}";
-            var originalManifestPath = $"original/{year}/{month}/{fileName}.silk";
-            var decodedManifestPath = $"decoded/{year}/{month}/{fileName}.wav";
-            var originalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "original", year, month, $"{fileName}.silk");
-            var decodedPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "decoded", year, month, $"{fileName}.wav");
-
-            var alreadyExists = File.Exists(originalPath) || File.Exists(decodedPath);
-            if (alreadyExists && policy == ExportExistingPolicy.Skip)
+            var existing = new ExportArtifact(originalManifestPath, new FileInfo(originalPath).Length, ComputeSha256(originalPath));
+            if (policy is ExistingArtifactPolicy.SkipIfHashMatches or ExistingArtifactPolicy.VerifyOnly)
             {
+                if (string.IsNullOrWhiteSpace(record.PayloadSha256))
+                {
+                    throw new ExistingArtifactNeedsHashException($"Existing artifact '{originalManifestPath}' cannot be safely reused because the source payload hash is unknown.");
+                }
+
+                if (!string.Equals(existing.Sha256, record.PayloadSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ExistingArtifactConflictException($"Existing artifact '{originalManifestPath}' has a different SHA-256 than the source payload.");
+                }
+
                 return ValueTask.FromResult<IExportItemLease>(new FileSystemExportItemLease(
-                    record,
-                    originalManifestPath,
-                    decodedManifestPath,
-                    originalPath,
-                    decodedPath,
-                    isSkipped: true,
-                    release: null));
+                    record, originalManifestPath, decodedManifestPath, originalPath, decodedPath, true, existing, null));
             }
 
-            if (alreadyExists)
+            if (policy == ExistingArtifactPolicy.Fail)
             {
-                continue;
+                throw new ExistingArtifactConflictException($"An export artifact already exists for stable key '{record.StableExportKey}'.");
             }
 
-            if (!_reservedPaths.TryAdd(originalPath, 0))
+            if (policy == ExistingArtifactPolicy.Replace)
             {
-                continue;
-            }
-
-            if (!_reservedPaths.TryAdd(decodedPath, 0))
-            {
-                _reservedPaths.TryRemove(originalPath, out _);
-                continue;
-            }
-
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(originalPath)!);
-                Directory.CreateDirectory(Path.GetDirectoryName(decodedPath)!);
-                return ValueTask.FromResult<IExportItemLease>(new FileSystemExportItemLease(
-                    record,
-                    originalManifestPath,
-                    decodedManifestPath,
-                    originalPath,
-                    decodedPath,
-                    isSkipped: false,
-                    release: () => Release(originalPath, decodedPath)));
-            }
-            catch
-            {
-                Release(originalPath, decodedPath);
-                throw;
+                File.Delete(originalPath);
+                if (decodedExists)
+                {
+                    File.Delete(decodedPath);
+                }
             }
         }
+        else if (decodedExists)
+        {
+            if (policy != ExistingArtifactPolicy.Replace)
+            {
+                throw new ExistingArtifactConflictException($"A derived artifact already exists without its original artifact for stable key '{record.StableExportKey}'.");
+            }
 
-        throw new IOException("A unique export file name could not be allocated.");
+            File.Delete(decodedPath);
+        }
+
+        if (!_reservedPaths.TryAdd(originalPath, 0))
+        {
+            throw new ExistingArtifactConflictException($"An export for stable key '{record.StableExportKey}' is already in progress.");
+        }
+
+        if (!_reservedPaths.TryAdd(decodedPath, 0))
+        {
+            _reservedPaths.TryRemove(originalPath, out _);
+            throw new ExistingArtifactConflictException($"An export for stable key '{record.StableExportKey}' is already in progress.");
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(originalPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(decodedPath)!);
+            return ValueTask.FromResult<IExportItemLease>(new FileSystemExportItemLease(
+                record, originalManifestPath, decodedManifestPath, originalPath, decodedPath, false, null,
+                () => Release(originalPath, decodedPath)));
+        }
+        catch
+        {
+            Release(originalPath, decodedPath);
+            throw;
+        }
     }
+
+    [Obsolete("Use ExistingArtifactPolicy.")]
+    public ValueTask<IExportItemLease> BeginItemAsync(VoiceRecord record, ExportExistingPolicy policy, CancellationToken cancellationToken)
+        => BeginItemAsync(record, (ExistingArtifactPolicy)policy, cancellationToken);
 
     public Task FinalizeRunAsync(VoiceExportManifest manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        return AtomicFileWriter.WriteJsonAsync(
-            ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.json"),
-            manifest,
-            InfrastructureJson.Indented,
-            cancellationToken);
+        var runsDirectory = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs");
+        Directory.CreateDirectory(runsDirectory);
+        var manifestPath = Path.Combine(runsDirectory, manifest.RunId + ".manifest.json");
+        var journalPath = Path.Combine(runsDirectory, manifest.RunId + ".jsonl");
+        var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
+        return FinalizeFilesAsync(manifest, manifestPath, journalPath, latestPath, cancellationToken);
+    }
+
+    private static async Task FinalizeFilesAsync(
+        VoiceExportManifest manifest,
+        string manifestPath,
+        string journalPath,
+        string latestPath,
+        CancellationToken cancellationToken)
+    {
+        await AtomicFileWriter.WriteJsonAsync(manifestPath, manifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        var journal = string.Join(Environment.NewLine, manifest.Entries.Select(entry => System.Text.Json.JsonSerializer.Serialize(entry, InfrastructureJson.Compact))) + Environment.NewLine;
+        await AtomicFileWriter.WriteTextAsync(journalPath, journal, cancellationToken).ConfigureAwait(false);
+        await AtomicFileWriter.WriteJsonAsync(latestPath, manifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string ComputeSha256(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
+        using var hasher = SHA256.Create();
+        return Convert.ToHexString(hasher.ComputeHash(stream)).ToLowerInvariant();
     }
 
     // Compatibility shims for callers of the pre-lease foundation. The
@@ -178,7 +217,11 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
     [Obsolete("Use FinalizeRunAsync.")]
     public Task WriteManifestAsync(VoiceExportManifest manifest, CancellationToken cancellationToken)
-        => FinalizeRunAsync(manifest, cancellationToken);
+        => AtomicFileWriter.WriteJsonAsync(
+            ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.json"),
+            manifest,
+            InfrastructureJson.Indented,
+            cancellationToken);
 
     private void Release(string originalPath, string decodedPath)
     {
@@ -221,6 +264,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             string originalPath,
             string decodedPath,
             bool isSkipped,
+            ExportArtifact? existingOriginalArtifact,
             Action? release)
         {
             Record = record;
@@ -229,12 +273,15 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             _originalPath = originalPath;
             _decodedPath = decodedPath;
             IsSkipped = isSkipped;
+            ExistingOriginalArtifact = existingOriginalArtifact;
             _release = release;
         }
 
         public VoiceRecord Record { get; }
 
         public bool IsSkipped { get; }
+
+        public ExportArtifact? ExistingOriginalArtifact { get; }
 
         public string OriginalManifestPath { get; }
 

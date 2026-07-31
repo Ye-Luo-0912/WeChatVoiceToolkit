@@ -8,5 +8,7 @@ read-only `SchemaSnapshot`.
 `Probe` must return no match for an unverified schema. `OpenAsync` returns an
 `IVoiceCatalog`; `QueryVoicesAsync` produces `VoiceRecord` values whose
 `VoicePayloadLocator` identifies the media database and BLOB key. The catalog
-also owns contact queries and payload streams. Do not encode unverified table,
+also owns contact queries and payload streams. Contacts must expose a stable
+internal username and conversation ID; CLI export selection is by exact
+username, never by a potentially duplicated remark or nickname. Do not encode unverified table,
 column, encryption, or shard assumptions in shared code.

@@ -33,7 +33,7 @@ public sealed class VoiceExportServiceTests
         Assert.Equal(payload, await File.ReadAllBytesAsync(Path.Combine(exportRoot, entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar))));
         Assert.Single(manifest.Failures, failure => failure.MessageId == "voice-1" && failure.Stage == "decode");
         Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.wav", SearchOption.AllDirectories));
-        Assert.True(File.Exists(Path.Combine(exportRoot, "manifest.json")));
+        Assert.True(File.Exists(Path.Combine(exportRoot, "latest.manifest.json")));
     }
 
     [Fact]

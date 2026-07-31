@@ -1,11 +1,10 @@
 using System.CommandLine;
-using System.Runtime.InteropServices;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WeChatVoice.Application;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
-using WeChatVoice.Infrastructure.Audio;
 using WeChatVoice.Infrastructure.Export;
 using WeChatVoice.Infrastructure.Snapshots;
 using WeChatVoice.Infrastructure.Sqlite;
@@ -16,6 +15,8 @@ rootCommand.Subcommands.Add(CreateDoctorCommand());
 rootCommand.Subcommands.Add(CreateSnapshotCommand());
 rootCommand.Subcommands.Add(CreateSchemaCommand());
 rootCommand.Subcommands.Add(CreateVoiceCommand());
+rootCommand.Subcommands.Add(CreateDatasetCommand());
+rootCommand.Subcommands.Add(CreateContactCommand());
 
 return rootCommand.Parse(args).Invoke();
 
@@ -25,7 +26,7 @@ static Command CreateDoctorCommand()
     command.SetAction(_ =>
     {
         var report = new DoctorReport(
-            RuntimeInformation.FrameworkDescription,
+            System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
             Environment.OSVersion.VersionString,
             OperatingSystem.IsWindows(),
             WeChatProcessDiscovery.SupportedProcessNames,
@@ -111,6 +112,7 @@ static Command CreateVoiceCommand()
 {
     var voiceCommand = new Command("voice", "Work with verified WeChat voice data sets.");
     var exportCommand = new Command("export", "Export voice payloads from a verified data-set adapter.");
+    var scanCommand = new Command("scan", "Audit matching voice metadata without writing payload files.");
     var dataSetOption = new Option<string>("--dataset")
     {
         Description = "JSON data-set manifest containing message/media/contact database artifacts.",
@@ -125,6 +127,27 @@ static Command CreateVoiceCommand()
     {
         Description = "Optional conversation filter.",
     };
+    var contactUsernameOption = new Option<string?>("--contact-username")
+    {
+        Description = "Stable internal username used for exact contact selection.",
+    };
+    var directionOption = new Option<string?>("--direction")
+    {
+        Description = "Voice direction: incoming or outgoing.",
+    };
+    var fromOption = new Option<string?>("--from")
+    {
+        Description = "Inclusive UTC start date/time.",
+    };
+    var toOption = new Option<string?>("--to")
+    {
+        Description = "Inclusive UTC end date/time.",
+    };
+    var formatOption = new Option<string>("--format")
+    {
+        Description = "Export format. The first available chain supports silk only.",
+        DefaultValueFactory = _ => "silk",
+    };
     var decodeOption = new Option<bool>("--decode")
     {
         Description = "Also decode payloads to WAV using --decoder.",
@@ -137,6 +160,11 @@ static Command CreateVoiceCommand()
     exportCommand.Options.Add(dataSetOption);
     exportCommand.Options.Add(outputOption);
     exportCommand.Options.Add(conversationOption);
+    exportCommand.Options.Add(contactUsernameOption);
+    exportCommand.Options.Add(directionOption);
+    exportCommand.Options.Add(fromOption);
+    exportCommand.Options.Add(toOption);
+    exportCommand.Options.Add(formatOption);
     exportCommand.Options.Add(decodeOption);
     exportCommand.Options.Add(decoderOption);
     exportCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -144,6 +172,11 @@ static Command CreateVoiceCommand()
         var dataSetPath = parseResult.GetValue(dataSetOption);
         var output = parseResult.GetValue(outputOption);
         var conversationId = parseResult.GetValue(conversationOption);
+        var contactUsername = parseResult.GetValue(contactUsernameOption);
+        var directionText = parseResult.GetValue(directionOption);
+        var fromText = parseResult.GetValue(fromOption);
+        var toText = parseResult.GetValue(toOption);
+        var format = parseResult.GetValue(formatOption);
         var decode = parseResult.GetValue(decodeOption);
         var decoderPath = parseResult.GetValue(decoderOption);
 
@@ -153,24 +186,25 @@ static Command CreateVoiceCommand()
             return 2;
         }
 
-        if (decode && string.IsNullOrWhiteSpace(decoderPath))
+        if (decode)
         {
-            Console.Error.WriteLine("--decoder is required when --decode is specified.");
+            Console.Error.WriteLine("WAV decoding is deferred; the first usable export chain supports raw SILK only.");
+            return 2;
+        }
+
+        if (!string.Equals(format, "silk", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine("Only --format silk is supported in the first export chain.");
             return 2;
         }
 
         try
         {
-            var dataSet = await ReadDataSetAsync(dataSetPath, cancellationToken).ConfigureAwait(false);
-            // No adapter is registered in the foundation build. The resolver
-            // is still exercised here so an unverified schema fails clearly
-            // instead of falling back to guessed table names.
-            var resolver = new DataSetAdapterResolver(Array.Empty<IWeChatDataSetAdapter>());
-            var adapter = resolver.Resolve(dataSet);
-            var catalog = await adapter.OpenAsync(dataSet, cancellationToken).ConfigureAwait(false);
-            var decoder = decode ? new ExternalSilkDecoder(decoderPath!) : null;
-            var service = new VoiceExportService(catalog, new FileSystemVoiceExportStore(output), decoder);
-            var manifest = await service.ExportAsync(new VoiceQuery(ConversationId: conversationId), cancellationToken).ConfigureAwait(false);
+            var catalog = await OpenCatalogAsync(dataSetPath, cancellationToken).ConfigureAwait(false);
+            await EnsureExactContactAsync(catalog, contactUsername, cancellationToken).ConfigureAwait(false);
+            var service = new VoiceExportService(catalog, new FileSystemVoiceExportStore(output));
+            var query = BuildVoiceQuery(conversationId, contactUsername, directionText, fromText, toText);
+            var manifest = await service.ExportAsync(query, new VoiceExportOptions { DecodeToWav = false }, cancellationToken).ConfigureAwait(false);
             WriteJson(manifest);
             return 0;
         }
@@ -186,16 +220,254 @@ static Command CreateVoiceCommand()
         }
     });
 
+    var scanDatasetOption = new Option<string>("--dataset") { Description = "JSON data-set probe.", Required = true };
+    var scanContactOption = new Option<string?>("--contact-username") { Description = "Stable internal username used for exact contact selection." };
+    var scanDirectionOption = new Option<string?>("--direction") { Description = "Voice direction: incoming or outgoing." };
+    var scanFromOption = new Option<string?>("--from") { Description = "Inclusive UTC start date/time." };
+    var scanToOption = new Option<string?>("--to") { Description = "Inclusive UTC end date/time." };
+    var scanConversationOption = new Option<string?>("--conversation-id") { Description = "Optional conversation filter." };
+    scanCommand.Options.Add(scanDatasetOption);
+    scanCommand.Options.Add(scanContactOption);
+    scanCommand.Options.Add(scanDirectionOption);
+    scanCommand.Options.Add(scanFromOption);
+    scanCommand.Options.Add(scanToOption);
+    scanCommand.Options.Add(scanConversationOption);
+    scanCommand.SetAction(async (parseResult, cancellationToken) =>
+    {
+        var dataset = parseResult.GetValue(scanDatasetOption);
+        if (dataset is null)
+        {
+            Console.Error.WriteLine("--dataset is required.");
+            return 2;
+        }
+
+        try
+        {
+            var catalog = await OpenCatalogAsync(dataset, cancellationToken).ConfigureAwait(false);
+            var contact = parseResult.GetValue(scanContactOption);
+            await EnsureExactContactAsync(catalog, contact, cancellationToken).ConfigureAwait(false);
+            var query = BuildVoiceQuery(
+                parseResult.GetValue(scanConversationOption),
+                contact,
+                parseResult.GetValue(scanDirectionOption),
+                parseResult.GetValue(scanFromOption),
+                parseResult.GetValue(scanToOption));
+            var report = await new VoiceScanService(catalog).ScanAsync(query, cancellationToken).ConfigureAwait(false);
+            WriteJson(report);
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Voice scan was cancelled.");
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
+    });
+
     voiceCommand.Subcommands.Add(exportCommand);
+    voiceCommand.Subcommands.Add(scanCommand);
     return voiceCommand;
 }
 
-static async Task<WeChatDataSet> ReadDataSetAsync(string path, CancellationToken cancellationToken)
+static Command CreateDatasetCommand()
+{
+    var datasetCommand = new Command("dataset", "Discover and audit a decrypted WeChat database bundle.");
+    var probeCommand = new Command("probe", "Discover message/media/contact databases and probe their schemas.");
+    var rootOption = new Option<string>("--root")
+    {
+        Description = "Root directory containing decrypted database files.",
+        Required = true,
+    };
+    var outputOption = new Option<string>("--output")
+    {
+        Description = "Shareable JSON data-set probe output.",
+        Required = true,
+    };
+    var includeLocalPathsOption = new Option<bool>("--include-local-paths")
+    {
+        Description = "Include absolute local paths; omitted by default for shareable output.",
+    };
+
+    probeCommand.Options.Add(rootOption);
+    probeCommand.Options.Add(outputOption);
+    probeCommand.Options.Add(includeLocalPathsOption);
+    probeCommand.SetAction(async (parseResult, cancellationToken) =>
+    {
+        var root = parseResult.GetValue(rootOption);
+        var output = parseResult.GetValue(outputOption);
+        var includeLocalPaths = parseResult.GetValue(includeLocalPathsOption);
+        if (root is null || output is null)
+        {
+            Console.Error.WriteLine("Both --root and --output are required.");
+            return 2;
+        }
+
+        try
+        {
+            var probe = await new DataSetProbeService().ProbeAsync(
+                root,
+                new DataSetProbeOptions(includeLocalPaths),
+                cancellationToken).ConfigureAwait(false);
+            await WriteJsonFileAsync(output, probe, cancellationToken).ConfigureAwait(false);
+            WriteJson(new DatasetProbeResult(
+                Path.GetFullPath(output),
+                probe.DataSet.DataSetId,
+                probe.DataSet.Databases.Count,
+                probe.Issues.Count,
+                probe.AdapterCandidates.Count));
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Data-set probing was cancelled.");
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
+    });
+
+    datasetCommand.Subcommands.Add(probeCommand);
+    return datasetCommand;
+}
+
+static Command CreateContactCommand()
+{
+    var contactCommand = new Command("contact", "Discover contacts using stable internal identifiers.");
+    var listCommand = new Command("list", "List contacts from a verified data-set adapter.");
+    var searchCommand = new Command("search", "Search contacts by username, WeChat ID, remark, or nickname.");
+    var datasetOption = new Option<string>("--dataset") { Description = "JSON data-set probe.", Required = true };
+    var searchOption = new Option<string>("--query") { Description = "Search text.", Required = true };
+
+    var listDatasetOption = new Option<string>("--dataset") { Description = "JSON data-set probe.", Required = true };
+    listCommand.Options.Add(listDatasetOption);
+    listCommand.SetAction(async (parseResult, cancellationToken) =>
+    {
+        var dataset = parseResult.GetValue(listDatasetOption);
+        try
+        {
+            var catalog = await OpenCatalogAsync(dataset!, cancellationToken).ConfigureAwait(false);
+            var contacts = new List<ContactRecord>();
+            await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                contacts.Add(contact);
+            }
+
+            WriteJson(contacts);
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
+    });
+
+    searchCommand.Options.Add(datasetOption);
+    searchCommand.Options.Add(searchOption);
+    searchCommand.SetAction(async (parseResult, cancellationToken) =>
+    {
+        var dataset = parseResult.GetValue(datasetOption);
+        var queryText = parseResult.GetValue(searchOption);
+        try
+        {
+            var catalog = await OpenCatalogAsync(dataset!, cancellationToken).ConfigureAwait(false);
+            var contacts = new List<ContactRecord>();
+            await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(queryText), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                contacts.Add(contact);
+            }
+
+            WriteJson(contacts);
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
+    });
+
+    contactCommand.Subcommands.Add(listCommand);
+    contactCommand.Subcommands.Add(searchCommand);
+    return contactCommand;
+}
+
+static async Task<IVoiceCatalog> OpenCatalogAsync(string path, CancellationToken cancellationToken)
+{
+    var probe = await ReadDataSetProbeAsync(path, cancellationToken).ConfigureAwait(false);
+    var resolver = new DataSetAdapterResolver(Array.Empty<IWeChatDataSetAdapter>());
+    var adapter = resolver.Resolve(probe.DataSet);
+    return await adapter.OpenAsync(probe.DataSet, cancellationToken).ConfigureAwait(false);
+}
+
+static async Task<DataSetProbe> ReadDataSetProbeAsync(string path, CancellationToken cancellationToken)
 {
     var fullPath = Path.GetFullPath(path);
     await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-    var dataSet = await JsonSerializer.DeserializeAsync<WeChatDataSet>(stream, CliJson.Options, cancellationToken).ConfigureAwait(false);
-    return dataSet ?? throw new InvalidDataException("The data-set manifest was empty.");
+    var probe = await JsonSerializer.DeserializeAsync<DataSetProbe>(stream, CliJson.Options, cancellationToken).ConfigureAwait(false);
+    return probe ?? throw new InvalidDataException("The data-set probe was empty.");
+}
+
+static VoiceQuery BuildVoiceQuery(string? conversationId, string? contactUsername, string? directionText, string? fromText, string? toText)
+{
+    VoiceDirection? direction = null;
+    if (!string.IsNullOrWhiteSpace(directionText))
+    {
+        if (!Enum.TryParse<VoiceDirection>(directionText, true, out var parsedDirection))
+        {
+            throw new ArgumentException("--direction must be incoming or outgoing.");
+        }
+
+        direction = parsedDirection;
+    }
+
+    return new VoiceQuery(
+        conversationId,
+        direction,
+        ParseUtc(fromText, "--from"),
+        ParseUtc(toText, "--to"),
+        ContactUsername: contactUsername);
+}
+
+static DateTimeOffset? ParseUtc(string? value, string optionName)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+
+    if (!DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
+    {
+        throw new ArgumentException($"{optionName} is not a valid UTC date/time.");
+    }
+
+    return parsed;
+}
+
+static async Task EnsureExactContactAsync(IVoiceCatalog catalog, string? username, CancellationToken cancellationToken)
+{
+    if (string.IsNullOrWhiteSpace(username))
+    {
+        throw new ArgumentException("--contact-username is required for the audited voice path.");
+    }
+
+    var contacts = new List<ContactRecord>();
+    await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(Username: username), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+    {
+        contacts.Add(contact);
+    }
+
+    if (contacts.Count != 1)
+    {
+        throw new InvalidOperationException($"Stable contact username '{username}' matched {contacts.Count} contacts; export requires exactly one match.");
+    }
 }
 
 static Command CreateSchemaCommand()
@@ -212,13 +484,19 @@ static Command CreateSchemaCommand()
         Description = "JSON output file. Existing files are replaced atomically.",
         Required = true,
     };
+    var includeLocalPathsOption = new Option<bool>("--include-local-paths")
+    {
+        Description = "Include absolute local paths; omitted by default for shareable schema JSON.",
+    };
 
     probeCommand.Options.Add(databaseOption);
     probeCommand.Options.Add(outputOption);
+    probeCommand.Options.Add(includeLocalPathsOption);
     probeCommand.SetAction(async (parseResult, cancellationToken) =>
     {
         var database = parseResult.GetValue(databaseOption);
         var output = parseResult.GetValue(outputOption);
+        var includeLocalPaths = parseResult.GetValue(includeLocalPathsOption);
 
         if (database is null || output is null)
         {
@@ -228,7 +506,10 @@ static Command CreateSchemaCommand()
 
         try
         {
-            var snapshot = await new SqliteSchemaInspector().InspectAsync(database, cancellationToken).ConfigureAwait(false);
+            var snapshot = await new SqliteSchemaInspector().InspectAsync(
+                database,
+                new SchemaInspectionOptions(includeLocalPaths),
+                cancellationToken).ConfigureAwait(false);
             await WriteJsonFileAsync(output, snapshot, cancellationToken).ConfigureAwait(false);
             WriteJson(new SchemaProbeResult(Path.GetFullPath(output), snapshot.Objects.Count));
             return 0;
@@ -306,6 +587,8 @@ internal sealed record SecurityBoundary(
     bool HasUserInterface);
 
 internal sealed record SchemaProbeResult(string OutputPath, int ObjectCount);
+
+internal sealed record DatasetProbeResult(string OutputPath, string DataSetId, int DatabaseCount, int IssueCount, int AdapterCandidateCount);
 
 internal static class CliJson
 {

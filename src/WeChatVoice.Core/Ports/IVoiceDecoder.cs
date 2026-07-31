@@ -25,7 +25,9 @@ public interface IVoiceDecoder
                 await inputFile.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
+#pragma warning disable CS0618
             await DecodeAsync(inputPath, outputPath, cancellationToken).ConfigureAwait(false);
+#pragma warning restore CS0618
             await using var outputFile = new FileStream(outputPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             await outputFile.CopyToAsync(output, 128 * 1024, cancellationToken).ConfigureAwait(false);
         }

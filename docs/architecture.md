@@ -19,4 +19,15 @@ from message metadata to a media database BLOB.
 
 `IVoiceExportStore.BeginItemAsync` returns an export lease. The lease owns path
 reservation, temporary files, commit, rollback, and final manifest persistence;
-the application only copies streams and coordinates the workflow.
+the application only copies streams and coordinates the workflow. Export keys
+include snapshot, adapter, account, shard, conversation, and source message
+identity. Existing artifacts are reused only when their SHA-256 matches; run
+history is kept under `runs/` and `latest.manifest.json` is the only rolling
+pointer.
+
+`dataset probe` discovers database files, pairs message/media shards, records
+WAL/SHM completeness, hashes files, and emits a deterministic Schema Fingerprint.
+The default JSON is shareable and redacts local paths. Adapter candidates are
+reported only from registered probes; filename discovery never chooses a schema
+mapping by itself. `voice scan` is metadata-only and must precede the raw SILK
+export path.

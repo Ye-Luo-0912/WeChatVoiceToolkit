@@ -43,6 +43,53 @@ public sealed class FileSystemVoiceExportStoreTests
     }
 
     [Fact]
+    public async Task BeginItemAsync_reuses_same_stable_key_when_existing_hash_matches()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var store = new FileSystemVoiceExportStore(temporary.GetPath("export"));
+        var bytes = new byte[] { 7, 8, 9 };
+        var record = new VoiceRecord(
+            "message-id",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "blob"),
+            PayloadSha256: Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+            SnapshotId: "snapshot",
+            AdapterId: "adapter",
+            AccountId: "account",
+            ShardId: "0");
+
+        await using (var lease = await store.BeginItemAsync(record, ExistingArtifactPolicy.Fail, CancellationToken.None))
+        {
+            await using var output = await lease.OpenOriginalWriteAsync(CancellationToken.None);
+            await output.WriteAsync(bytes);
+            await output.FlushAsync();
+            // The using scope closes the stream before the commit below.
+        }
+
+        // The first lease was intentionally rolled back without committing; the
+        // stable reservation is released and no duplicate suffix is allocated.
+        await using var second = await store.BeginItemAsync(record, ExistingArtifactPolicy.Fail, CancellationToken.None);
+        await using (var output = await second.OpenOriginalWriteAsync(CancellationToken.None))
+        {
+            await output.WriteAsync(bytes);
+        }
+        await second.CommitOriginalAsync(CancellationToken.None);
+        await second.DisposeAsync();
+
+        await using var skipped = await store.BeginItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, CancellationToken.None);
+        Assert.True(skipped.IsSkipped);
+        Assert.NotNull(skipped.ExistingOriginalArtifact);
+
+        await store.FinalizeRunAsync(new VoiceExportManifest(DateTimeOffset.UtcNow), CancellationToken.None);
+        Assert.True(File.Exists(Path.Combine(store.ExportRoot, "latest.manifest.json")));
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(store.ExportRoot, "runs"), "*.manifest.json"));
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(store.ExportRoot, "runs"), "*.jsonl"));
+        Assert.False(File.Exists(Path.Combine(store.ExportRoot, "manifest.json")));
+    }
+
+    [Fact]
     public async Task CreatePathsAsync_keeps_media_destinations_under_the_configured_root_and_reserves_unique_names()
     {
         using var temporary = new TestTemporaryDirectory();
