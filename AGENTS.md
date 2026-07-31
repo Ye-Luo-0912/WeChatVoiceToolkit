@@ -10,16 +10,15 @@ user-supplied, lawfully accessible WeChat data source.
 - Keep database inspection read-only.
 - Preserve original SILK media; decoded WAV files are derived artifacts and
   must never overwrite them.
-- The elevated helper may expose only `ping`, `capabilities`, and
-  `list-wechat-processes`. Never add arbitrary command execution, process
-  memory access, key export, or database decryption to its protocol. Route two
-  uses the separate one-shot `WeChatVoice.KeyBroker.exe` boundary; it must be
-  launched explicitly with `runas`, accept only its fixed request schema, and
-  never return raw keys. Until a verified Weixin build profile and database
-  validation suite exist, the broker must fail closed with
-  `profile_unavailable` rather than scan memory. Development external
-  materializers require an explicit `--allow-untrusted-backend` flag and may
-  not accept a `--key-file`.
+- Keep the elevated diagnostic helper free of memory-reading and decryption
+  duties. The separate one-shot Key Broker may grow through reviewed Profile
+  and materializer registries; do not freeze product versions, database formats,
+  or output mappings into the transport. The non-negotiable floor is: no
+  caller-selected process/PID/address/read length, no VM write/injection/remote
+  thread, no arbitrary command execution, no raw-key response or persistence,
+  and no heuristic fallback for an unmatched Profile. Development external
+  materializers require explicit `--allow-untrusted-backend` and may not accept
+  a `--key-file`.
 - Treat snapshots, exports, logs, and manifests as potentially sensitive.
   Keep them out of source control.
 - A snapshot is valid only after group-level before/after inventory checks over

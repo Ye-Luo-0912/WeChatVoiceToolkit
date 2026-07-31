@@ -15,10 +15,14 @@ Route two uses the separate `WeChatVoice.KeyBroker.exe` with a UAC
 service. Its request admits only:
 
 - protocol version;
-- request ID and nonce;
+- request ID;
 - content-addressed Snapshot ID;
-- `.wechatvoice/snapshot-manifest.json` path;
 - `acquire-and-materialize` operation.
+
+The 256-bit nonce is a transport bootstrap token embedded in the one-time pipe
+name, not a request field. The installed CLI supplies the reserved Snapshot
+Manifest and output paths as bootstrap arguments to the fixed Broker executable;
+they are not protocol extensions.
 
 PID, process name, address, read length, module base, database path, backend
 executable, arbitrary arguments, and output commands are rejected. Before any
@@ -35,6 +39,11 @@ binary identity. The external backend is development-only and requires an
 explicit opt-in. It has a bounded execution time, kills its process tree on
 timeout/cancellation, redacts diagnostic output, and accepts only an explicit
 source-to-output manifest.
+
+Profiles and database formats are intentionally extensible through reviewed
+registries. Only dangerous capabilities are fixed: a Profile cannot introduce
+caller-selected process-memory coordinates, writable process access, arbitrary
+privileged commands, raw-key output, or an unknown-version fallback.
 
 ## Current identity evidence
 

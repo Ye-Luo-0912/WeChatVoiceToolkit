@@ -16,7 +16,11 @@ internal static class BrokerHost
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
-    internal static async Task<int> RunAsync(TextReader input, TextWriter output, CancellationToken cancellationToken)
+    internal static async Task<int> RunAsync(
+        TextReader input,
+        TextWriter output,
+        string snapshotManifestPath,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -24,7 +28,7 @@ internal static class BrokerHost
         var line = input.ReadLine();
         if (line is null || line.Length > BrokerProtocol.MaximumRequestLength)
         {
-            BrokerProtocol.Write(output, new BrokerResponse(false, null, null, new BrokerError("request_too_large", "The one-shot broker request is missing or too large.")));
+            BrokerProtocol.Write(output, Failed(null, "request_too_large", "The one-shot broker request is missing or too large."));
             return 2;
         }
 
@@ -32,39 +36,44 @@ internal static class BrokerHost
         try
         {
             request = BrokerProtocol.Parse(line);
-            await VerifySnapshotAsync(request, cancellationToken).ConfigureAwait(false);
+            _ = await VerifySnapshotAsync(request, snapshotManifestPath, cancellationToken).ConfigureAwait(false);
+
             BrokerProtocol.Write(output, new BrokerResponse(
-                false,
+                "failed",
                 request.RequestId,
+                null,
                 null,
                 new BrokerError("profile_unavailable", "No verified Weixin key-extraction and database-encryption profile is installed.")));
             return 3;
         }
         catch (BrokerProtocolException exception)
         {
-            BrokerProtocol.Write(output, new BrokerResponse(false, exception.RequestId, null, new BrokerError(exception.Code, exception.Message)));
+            BrokerProtocol.Write(output, Failed(exception.RequestId, exception.Code, exception.Message));
             return 2;
         }
         catch (JsonException)
         {
-            BrokerProtocol.Write(output, new BrokerResponse(false, request?.RequestId, null, new BrokerError("malformed_request", "The request is not valid JSON.")));
+            BrokerProtocol.Write(output, Failed(request?.RequestId, "malformed_request", "The request is not valid JSON."));
             return 2;
         }
         catch (FileNotFoundException)
         {
-            BrokerProtocol.Write(output, new BrokerResponse(false, request?.RequestId, null, new BrokerError("snapshot_not_found", "The requested snapshot manifest was not found.")));
+            BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_not_found", "The requested snapshot manifest was not found."));
             return 4;
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
         {
-            BrokerProtocol.Write(output, new BrokerResponse(false, request?.RequestId, null, new BrokerError("snapshot_invalid", "The snapshot could not be verified.")));
+            BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_invalid", "The snapshot could not be verified."));
             return 4;
         }
     }
 
-    private static async Task VerifySnapshotAsync(BrokerRequest request, CancellationToken cancellationToken)
+    private static async Task<VerifiedRawSnapshot> VerifySnapshotAsync(
+        BrokerRequest request,
+        string snapshotManifestPath,
+        CancellationToken cancellationToken)
     {
-        var manifestPath = Path.GetFullPath(request.SnapshotManifestPath);
+        var manifestPath = Path.GetFullPath(snapshotManifestPath);
         if (!string.Equals(Path.GetFileName(manifestPath), "snapshot-manifest.json", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(Path.GetFileName(Path.GetDirectoryName(manifestPath)), ".wechatvoice", StringComparison.OrdinalIgnoreCase))
         {
@@ -82,6 +91,9 @@ internal static class BrokerHost
         var metadataDirectory = Path.GetDirectoryName(manifestPath)!;
         var snapshotRoot = Directory.GetParent(metadataDirectory)?.FullName
             ?? throw new InvalidDataException("The snapshot manifest has no snapshot root.");
-        await new RawSnapshotVerifier().VerifyAsync(new RawSnapshot(manifest, snapshotRoot), cancellationToken).ConfigureAwait(false);
+        return await new RawSnapshotVerifier().VerifyAsync(new RawSnapshot(manifest, snapshotRoot), cancellationToken).ConfigureAwait(false);
     }
+
+    private static BrokerResponse Failed(string? requestId, string code, string message) =>
+        new("failed", requestId, null, null, new BrokerError(code, message));
 }

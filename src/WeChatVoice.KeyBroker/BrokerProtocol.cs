@@ -4,9 +4,10 @@ using System.Text.Json.Serialization;
 namespace WeChatVoice.KeyBroker;
 
 /// <summary>
-/// Fixed broker request protocol. PID, process name, address, length, module
-/// base, database path, decryptor executable, and arbitrary command fields are
-/// deliberately absent and rejected.
+/// Fixed pipe request protocol. Transport bootstrap owns the random pipe token
+/// and verified Snapshot Manifest path; neither is accepted as a JSON field.
+/// PID, process name, address, length, module base, database path, decryptor
+/// executable, and arbitrary command fields are deliberately absent.
 /// </summary>
 internal static class BrokerProtocol
 {
@@ -28,7 +29,7 @@ internal static class BrokerProtocol
 
         var allowed = new HashSet<string>(StringComparer.Ordinal)
         {
-            "protocolVersion", "requestId", "nonce", "snapshotId", "snapshotManifestPath", "operation",
+            "protocolVersion", "requestId", "snapshotId", "operation",
         };
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         foreach (var property in document.RootElement.EnumerateObject())
@@ -47,21 +48,19 @@ internal static class BrokerProtocol
         }
 
         var requestId = Required(values, "requestId");
-        var nonce = Required(values, "nonce");
         var snapshotId = Required(values, "snapshotId");
-        var manifestPath = Required(values, "snapshotManifestPath");
         var operation = values.GetValueOrDefault("operation") ?? "acquire-and-materialize";
         if (!string.Equals(operation, "acquire-and-materialize", StringComparison.Ordinal))
         {
             throw new BrokerProtocolException("unsupported_operation", "Only acquire-and-materialize is supported.", requestId);
         }
 
-        if (nonce.Length > 128 || requestId.Length > 128 || snapshotId.Length > 128 || !Path.IsPathFullyQualified(manifestPath))
+        if (requestId.Length > 128 || snapshotId.Length != 64 || !snapshotId.All(Uri.IsHexDigit))
         {
-            throw new BrokerProtocolException("malformed_request", "The broker request contains an invalid identifier or manifest path.", requestId);
+            throw new BrokerProtocolException("malformed_request", "The broker request contains an invalid identifier.", requestId);
         }
 
-        return new BrokerRequest(requestId, nonce, snapshotId, Path.GetFullPath(manifestPath), operation);
+        return new BrokerRequest(requestId, snapshotId.ToLowerInvariant(), operation);
     }
 
     internal static void Write(TextWriter output, BrokerResponse response)
@@ -76,14 +75,14 @@ internal static class BrokerProtocol
             : value;
 }
 
-internal sealed record BrokerRequest(
-    string RequestId,
-    string Nonce,
-    string SnapshotId,
-    string SnapshotManifestPath,
-    string Operation);
+internal sealed record BrokerRequest(string RequestId, string SnapshotId, string Operation);
 
-internal sealed record BrokerResponse(bool Ok, string? RequestId, object? Result, BrokerError? Error);
+internal sealed record BrokerResponse(
+    string Status,
+    string? RequestId,
+    string? ProfileId,
+    string? MaterializationId,
+    BrokerError? Error);
 
 internal sealed record BrokerError(string Code, string Message);
 

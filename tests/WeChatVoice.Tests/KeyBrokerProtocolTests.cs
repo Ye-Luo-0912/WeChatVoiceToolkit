@@ -1,6 +1,9 @@
+using System.IO.Pipes;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using WeChatVoice.Core.Models;
+using WeChatVoice.KeyBroker;
 
 namespace WeChatVoice.Tests;
 
@@ -15,30 +18,35 @@ public sealed class KeyBrokerProtocolTests
         {
             protocolVersion = 1,
             requestId = "request-1",
-            nonce = "nonce-1",
             snapshotId,
-            snapshotManifestPath = manifestPath,
             operation = "acquire-and-materialize",
         }) + Environment.NewLine;
-        var result = await ManagedProcessTestHarness.RunAssemblyAsync("WeChatVoice.KeyBroker.dll", input);
+        var output = new StringWriter();
+        var exitCode = await BrokerHost.RunAsync(new StringReader(input), output, manifestPath, CancellationToken.None);
 
-        Assert.Equal(3, result.ExitCode);
-        using var response = JsonDocument.Parse(result.StandardOutput);
-        Assert.False(response.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal(3, exitCode);
+        using var response = JsonDocument.Parse(output.ToString());
+        Assert.Equal("failed", response.RootElement.GetProperty("status").GetString());
         Assert.Equal("request-1", response.RootElement.GetProperty("requestId").GetString());
         Assert.Equal("profile_unavailable", response.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.False(response.RootElement.TryGetProperty("key", out _));
     }
 
     [Fact]
     public async Task Broker_rejects_memory_reader_fields()
     {
-        var input = "{\"protocolVersion\":1,\"requestId\":\"request-2\",\"nonce\":\"nonce-2\",\"snapshotId\":\"snapshot-2\",\"snapshotManifestPath\":\"C:\\\\snapshot\\\\manifest.json\",\"operation\":\"acquire-and-materialize\",\"pid\":1234}\n";
-        var result = await ManagedProcessTestHarness.RunAssemblyAsync("WeChatVoice.KeyBroker.dll", input);
+        var forbiddenFields = new[] { "pid", "address", "length", "processName", "command" };
+        foreach (var field in forbiddenFields)
+        {
+            var input = $"{{\"protocolVersion\":1,\"requestId\":\"request-2\",\"snapshotId\":\"{new string('a', 64)}\",\"operation\":\"acquire-and-materialize\",\"{field}\":1234}}\n";
+            var output = new StringWriter();
+            var exitCode = await BrokerHost.RunAsync(new StringReader(input), output, "C:\\snapshot\\.wechatvoice\\snapshot-manifest.json", CancellationToken.None);
 
-        Assert.Equal(2, result.ExitCode);
-        using var response = JsonDocument.Parse(result.StandardOutput);
-        Assert.False(response.RootElement.GetProperty("ok").GetBoolean());
-        Assert.Equal("malformed_request", response.RootElement.GetProperty("error").GetProperty("code").GetString());
+            Assert.Equal(2, exitCode);
+            using var response = JsonDocument.Parse(output.ToString());
+            Assert.Equal("failed", response.RootElement.GetProperty("status").GetString());
+            Assert.Equal("malformed_request", response.RootElement.GetProperty("error").GetProperty("code").GetString());
+        }
     }
 
     [Fact]
@@ -50,17 +58,54 @@ public sealed class KeyBrokerProtocolTests
         {
             protocolVersion = 1,
             requestId = "request-3",
-            nonce = "nonce-3",
             snapshotId = new string('0', 64),
-            snapshotManifestPath = manifestPath,
             operation = "acquire-and-materialize",
         }) + Environment.NewLine;
 
-        var result = await ManagedProcessTestHarness.RunAssemblyAsync("WeChatVoice.KeyBroker.dll", input);
+        var output = new StringWriter();
+        var exitCode = await BrokerHost.RunAsync(new StringReader(input), output, manifestPath, CancellationToken.None);
 
-        Assert.Equal(4, result.ExitCode);
-        using var response = JsonDocument.Parse(result.StandardOutput);
+        Assert.Equal(4, exitCode);
+        using var response = JsonDocument.Parse(output.ToString());
         Assert.Equal("snapshot_invalid", response.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task One_shot_pipe_uses_random_transport_token_and_returns_no_key_material()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var (snapshotId, manifestPath) = await CreateSnapshotAsync(temporary);
+        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var serverTask = BrokerPipeServer.RunAsync(
+            token,
+            manifestPath,
+            temporary.GetPath("materialized"),
+            temporary.GetPath("materialized", ".wechatvoice", "local-workspace.json"),
+            timeout.Token);
+
+        await using var client = new NamedPipeClientStream(
+            ".",
+            BrokerPipeServer.PipePrefix + token,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        await client.ConnectAsync(timeout.Token);
+        await using var writer = new StreamWriter(client, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
+        using var reader = new StreamReader(client, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false, 4096, leaveOpen: true);
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new
+        {
+            protocolVersion = 1,
+            requestId = "request-pipe",
+            snapshotId,
+            operation = "acquire-and-materialize",
+        }));
+        var responseLine = await reader.ReadLineAsync(timeout.Token);
+
+        Assert.Equal(3, await serverTask);
+        Assert.NotNull(responseLine);
+        using var response = JsonDocument.Parse(responseLine);
+        Assert.False(response.RootElement.TryGetProperty("key", out _));
+        Assert.Equal("profile_unavailable", response.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
     private static async Task<(string SnapshotId, string ManifestPath)> CreateSnapshotAsync(TestTemporaryDirectory temporary)

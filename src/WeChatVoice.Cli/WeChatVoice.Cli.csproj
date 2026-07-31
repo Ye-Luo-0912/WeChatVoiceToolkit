@@ -15,7 +15,16 @@
     <ProjectReference Include="..\WeChatVoice.Application\WeChatVoice.Application.csproj" />
     <ProjectReference Include="..\WeChatVoice.Core\WeChatVoice.Core.csproj" />
     <ProjectReference Include="..\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />
+    <ProjectReference Include="..\WeChatVoice.KeyAcquisition\WeChatVoice.KeyAcquisition.csproj" />
     <ProjectReference Include="..\WeChatVoice.Windows\WeChatVoice.Windows.csproj" />
+    <ProjectReference Include="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <Target Name="CopyKeyBroker" AfterTargets="Build">
+    <ItemGroup>
+      <KeyBrokerFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\WeChatVoice.KeyBroker*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(KeyBrokerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

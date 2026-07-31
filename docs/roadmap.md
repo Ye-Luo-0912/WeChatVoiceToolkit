@@ -23,6 +23,10 @@
    verification. A candidate-only first-page HMAC validator has fixed synthetic
    vectors, zeroes temporary key material, and remains outside the Profile
    registry.
+7. The formal CLI owns the one-command UAC Broker flow. The Broker uses a
+   one-time current-user pipe, fixed four-field request, read-only process
+   foundations, exact identity policies, bounded overlapping scans, and
+   deterministic key disposal. CI uses Fakes and never reads a real process.
 
 ## Current blocker and next step
 
@@ -32,7 +36,8 @@ login `key_info.db` is ordinary SQLite, but its BLOB semantics remain unverified
 Do not guess tables, BLOB formats, or keys. Message and media filename shards
 are also not one-to-one; only an Adapter with verified schema evidence may
 resolve their relationship.
-The next implementation step requires a bounded candidate-location fixture for
+The next implementation step is a reviewed registry entry backed by a bounded
+candidate-location fixture for
 the exact signed build, then validation against the required `message_N.db`,
 `media_N.db`, and contact groups. The privileged boundary is the
 one-shot `WeChatVoice.KeyBroker.exe`; no plaintext key-file interface is

@@ -11,6 +11,7 @@ using WeChatVoice.Infrastructure.Export;
 using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Snapshots;
 using WeChatVoice.Infrastructure.Sqlite;
+using WeChatVoice.KeyAcquisition;
 using WeChatVoice.Windows;
 
 var rootCommand = new RootCommand("Safe, schema-agnostic WeChat voice toolkit foundation.");
@@ -31,6 +32,7 @@ static Command CreateDoctorCommand()
     {
         var adapters = BuiltInAdapters.Create();
         var materializationBackends = BuiltInMaterializationBackends.Create();
+        var keyProfiles = BuiltInKeyExtractionProfiles.Create();
         var report = new DoctorReport(
             System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
             Environment.OSVersion.VersionString,
@@ -41,7 +43,8 @@ static Command CreateDoctorCommand()
                 RegisteredAdapterCount: adapters.Count,
                 MatchingAdapterCount: 0,
                 HasUsableSchemaAdapter: false,
-                HasKeyAcquisitionProfile: false,
+                RegisteredKeyAcquisitionProfileCount: keyProfiles.Count,
+                MatchingKeyAcquisitionProfileCount: 0,
                 HasDatabaseEncryptionProfile: false,
                 HasMaterializationBackend: materializationBackends.Any(static backend => !string.Equals(backend.Version, "profile-unavailable", StringComparison.OrdinalIgnoreCase)),
                 AllowsKeyScanning: false,
@@ -545,15 +548,45 @@ static Command CreateWorkspaceCommand()
             var manifest = await ReadJsonFileAsync<SnapshotManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
             var rawSnapshot = new RawSnapshot(manifest, snapshotRoot);
             var verifiedSnapshot = await new RawSnapshotVerifier().VerifyAsync(rawSnapshot, cancellationToken).ConfigureAwait(false);
-            IDatabaseMaterializationBackend backend = decryptor is not null
-                ? new ExternalDatabaseMaterializer(decryptor)
-                : BuiltInMaterializationBackends.Create().FirstOrDefault(item => string.Equals(item.Id, backendId, StringComparison.OrdinalIgnoreCase))
-                    ?? throw new MaterializationBackendUnavailableException(backendId, $"Materialization backend '{backendId}' is not registered.");
+            var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(output, ".wechatvoice", "local-workspace.json"));
+            if (decryptor is null)
+            {
+                if (!string.Equals(backendId, "weixin-windows-4", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new MaterializationBackendUnavailableException(backendId, $"Materialization backend '{backendId}' is not registered.");
+                }
+
+                var brokerResult = await new KeyBrokerClient().AcquireAndMaterializeAsync(
+                    verifiedSnapshot,
+                    manifestPath,
+                    Path.GetFullPath(output),
+                    localWorkspacePath,
+                    cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(brokerResult.Status, "completed", StringComparison.Ordinal) ||
+                    string.IsNullOrWhiteSpace(brokerResult.ProfileId) ||
+                    string.IsNullOrWhiteSpace(brokerResult.MaterializationId))
+                {
+                    throw new KeyBrokerOperationException(
+                        brokerResult.Error?.Code ?? "broker_failed",
+                        brokerResult.Error?.Message ?? "The Key Broker did not complete materialization.");
+                }
+
+                var verifiedWorkspace = await new WorkspaceLoader().LoadVerifiedAsync(localWorkspacePath, cancellationToken).ConfigureAwait(false);
+                WriteJson(new BrokerWorkspaceMaterializationResult(
+                    brokerResult.ProfileId,
+                    brokerResult.MaterializationId,
+                    localWorkspacePath,
+                    verifiedWorkspace.Workspace.WorkspaceId,
+                    verifiedWorkspace.DataSet.DataSetId,
+                    verifiedWorkspace.DataSet.Databases.Count));
+                return 0;
+            }
+
+            IDatabaseMaterializationBackend backend = new ExternalDatabaseMaterializer(decryptor);
             var materialization = await backend.MaterializeAsync(
                 verifiedSnapshot,
                 new MaterializationOptions(Path.GetFullPath(output)),
                 cancellationToken).ConfigureAwait(false);
-            var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(output, ".wechatvoice", "local-workspace.json"));
             var localWorkspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);
             await WriteJsonFileAsync(localWorkspacePath, localWorkspace, cancellationToken).ConfigureAwait(false);
             WriteJson(new WorkspaceMaterializationResult(
@@ -831,7 +864,8 @@ internal sealed record SecurityBoundary(
     int RegisteredAdapterCount,
     int MatchingAdapterCount,
     bool HasUsableSchemaAdapter,
-    bool HasKeyAcquisitionProfile,
+    int RegisteredKeyAcquisitionProfileCount,
+    int MatchingKeyAcquisitionProfileCount,
     bool HasDatabaseEncryptionProfile,
     bool HasMaterializationBackend,
     bool AllowsKeyScanning,
@@ -854,6 +888,14 @@ internal sealed record WorkspaceMaterializationResult(
     string MaterializationManifestPath,
     string LocalWorkspacePath,
     string LocalWorkspaceId,
+    string DataSetId,
+    int DatabaseCount);
+
+internal sealed record BrokerWorkspaceMaterializationResult(
+    string ProfileId,
+    string MaterializationId,
+    string LocalWorkspacePath,
+    string WorkspaceId,
     string DataSetId,
     int DatabaseCount);
 

@@ -60,10 +60,11 @@ available only behind `--allow-untrusted-backend` and requires
 `.wechatvoice/materialization-output.json` with explicit source-to-output
 database mappings.
 
-The diagnostic `ElevatedHelper` remains a low-privilege, metadata-only JSONL
-service. Route two's privileged boundary is the separate one-shot
-`WeChatVoice.KeyBroker.exe` (`runas`/UAC manifest). It accepts only a fixed
-`acquire-and-materialize` request and currently fails closed with
-`profile_unavailable` until a verified Weixin build profile and database
-encryption validator are installed. No plaintext key-file or arbitrary memory
-reader is part of the protocol.
+The diagnostic `ElevatedHelper` remains a metadata-only JSONL service. Formal
+`workspace materialize` creates a one-time current-user pipe and launches the
+separate `WeChatVoice.KeyBroker.exe` (`runas`/UAC manifest). The request contains
+only protocol version, RequestId, SnapshotId, and `acquire-and-materialize`.
+Exact process/database behavior is supplied through reviewed registries, while
+arbitrary memory coordinates, writable access, key output, and unknown-version
+fallback remain impossible. The empty registry currently returns
+`profile_unavailable`.

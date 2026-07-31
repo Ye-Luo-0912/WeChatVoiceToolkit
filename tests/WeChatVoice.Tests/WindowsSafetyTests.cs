@@ -56,4 +56,14 @@ public sealed class WindowsSafetyTests
             Assert.Contains(supportedNames, name => string.Equals(name, process.ProcessName, StringComparison.OrdinalIgnoreCase));
         });
     }
+
+    [Fact]
+    public void Broker_only_memory_session_has_fixed_non_expandable_limits()
+    {
+        Assert.Equal(1024 * 1024, WeixinProcessMemorySession.ChunkSize);
+        Assert.Equal(128L * 1024 * 1024, WeixinProcessMemorySession.MaximumRegionBytes);
+        Assert.Equal(768L * 1024 * 1024, WeixinProcessMemorySession.MaximumTotalBytes);
+        Assert.Equal(8192, WeixinProcessMemorySession.MaximumRegions);
+        Assert.Equal(TimeSpan.FromSeconds(30), WeixinProcessMemorySession.MaximumDuration);
+    }
 }

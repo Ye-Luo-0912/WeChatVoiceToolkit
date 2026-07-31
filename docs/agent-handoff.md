@@ -12,8 +12,9 @@ for untyped existing decoded artifacts, and a Run Lease. Journal events are
 and `manifest-committed`; a truncated final JSONL line is ignored during
 recovery. Use `voice export recover --journal <runs/id.jsonl>` after a crash.
 
-Do not implement a schema adapter, UI, key scanning, key extraction, or
-decryption by inference. The real business databases observed so far have
+Do not implement a schema adapter, UI, key extraction, or decryption by
+inference. Extend exact Profiles through the registry while preserving the
+no-arbitrary-process/no-write/no-key-output floor. The real databases have
 non-SQLite first pages. Their message/media filename numbers are not one-to-one,
 so Probe reports topology differences as informational and leaves association
 to a verified Adapter. Continue only after stable evidence supports a
@@ -22,8 +23,10 @@ plaintext key-file placeholder is removed; development backends require an
 explicit untrusted flag and an explicit source-to-output manifest.
 
 Route-two groundwork is recorded in `adr-0002-key-broker-boundary.md`.
-`WeChatVoice.KeyBroker` now verifies the reserved Snapshot Manifest and
-content-addressed Snapshot ID before returning `profile_unavailable`.
+ADR 0003 records the ephemeral flow. The CLI now creates the random one-time
+pipe and launches the installed Broker; the Broker verifies the reserved
+Snapshot Manifest and content-addressed Snapshot ID before returning
+`profile_unavailable` while the Profile registry is empty.
 The separate login `key_info.db` is ordinary SQLite, but only its schema and
 field-length distribution have been inspected; no field values were read and
 its 180-byte BLOB must not be treated as a key without validation. Stable

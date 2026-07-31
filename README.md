@@ -4,9 +4,10 @@ A .NET 10, Windows-focused foundation for safely inspecting user-provided
 WeChat data snapshots and exporting voice media through version-specific schema
 adapters.
 
-The repository intentionally does **not** contain a WeChat key extractor,
-database decryption logic, guessed schema mappings, or a UI. Those capabilities
-require verified, user-provided version and schema information.
+The repository contains the restricted Broker and ephemeral acquisition
+infrastructure, but intentionally registers **no real Weixin key-extraction
+Profile yet**. It also contains no guessed schema mapping or UI. Exact Profiles
+and adapters require verified version, encryption, and schema evidence.
 
 ## Current commands
 
@@ -25,10 +26,10 @@ dotnet run --project src/WeChatVoice.Cli -- voice export recover --journal .\exp
 dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --backend weixin-windows-4 --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
-# Route two uses a separate one-shot, UAC-manifested broker. It currently
-# fails closed until a verified Weixin build profile is installed.
-echo '{"protocolVersion":1,"requestId":"1","nonce":"n","snapshotId":"snapshot-id","snapshotManifestPath":"C:\\snapshot\\.wechatvoice\\snapshot-manifest.json","operation":"acquire-and-materialize"}' | dotnet run --project src/WeChatVoice.KeyBroker
 ```
+
+The CLI owns the one-shot UAC Broker exchange; `WeChatVoice.KeyBroker` is not a
+stdin tool and never exposes key material.
 
 Snapshots require recognized WeChat processes to be closed by default. The
 explicit `--allow-live-source` opt-in marks the internal
@@ -48,9 +49,9 @@ length, hash, and database-group fingerprint before an adapter can open a
 workspace. The built-in `weixin-windows-4` adapter identity is registered
 centrally but is non-matching until a verified schema mapping is supplied.
 Commands therefore fail clearly instead of guessing table mappings.
-`workspace materialize` is a registered backend boundary. Formal mode uses the
-`weixin-windows-4` registry entry and currently fails closed until a verified
-profile is installed. A development-only external backend requires both
+`workspace materialize` is the single formal acquire-and-materialize entry.
+It launches the installed one-shot Broker and currently fails closed until a
+verified Profile is registered. A development-only external backend requires both
 `--external-decryptor` and `--allow-untrusted-backend`; it accepts only
 `--input-root`, `--output-root`, and an explicit source-to-output manifest. Key
 files are deliberately not accepted. The host verifies the raw snapshot file

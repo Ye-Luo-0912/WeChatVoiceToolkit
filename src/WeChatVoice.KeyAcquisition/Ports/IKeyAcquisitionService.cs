@@ -15,10 +15,45 @@ public interface IWeixinKeyExtractionProfile
 {
     string Id { get; }
 
+    WeixinKeyExtractionProfileDescriptor Descriptor { get; }
+
     Task<IReadOnlyList<ValidatedDatabaseKey>> AcquireAsync(
         VerifiedWeixinProcess process,
         VerifiedRawSnapshot snapshot,
         CancellationToken cancellationToken);
+}
+
+public sealed record WeixinKeyExtractionProfileDescriptor(
+    IReadOnlySet<string> ProductVersions,
+    IReadOnlySet<string> ImageSha256,
+    string DatabaseEncryptionProfileId,
+    string Architecture);
+
+/// <summary>
+/// Extensible registry with exact evidence matching. Adding a reviewed Profile
+/// does not widen the broker protocol or memory privileges.
+/// </summary>
+public sealed class WeixinKeyExtractionProfileRegistry(IEnumerable<IWeixinKeyExtractionProfile> profiles)
+{
+    private readonly IReadOnlyList<IWeixinKeyExtractionProfile> profiles =
+        (profiles ?? throw new ArgumentNullException(nameof(profiles))).ToArray();
+
+    public IReadOnlyList<IWeixinKeyExtractionProfile> Registered => profiles;
+
+    public IWeixinKeyExtractionProfile? Match(VerifiedWeixinProcess process)
+    {
+        ArgumentNullException.ThrowIfNull(process);
+        var matches = profiles.Where(profile =>
+            profile.Descriptor.ProductVersions.Contains(process.ProductVersion) &&
+            profile.Descriptor.ImageSha256.Contains(process.ImageSha256) &&
+            string.Equals(profile.Descriptor.Architecture, process.Architecture, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length switch
+        {
+            0 => null,
+            1 => matches[0],
+            _ => throw new InvalidOperationException("More than one key-extraction Profile matched the verified process identity."),
+        };
+    }
 }
 
 /// <summary>
