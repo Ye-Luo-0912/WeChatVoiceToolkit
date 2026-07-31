@@ -35,9 +35,13 @@ business databases have 21 distinct first-page salts, so key results must be
 validated and bound per database group rather than assumed global.
 
 `WeixinWindows4SqlCipherKeyValidator` implements only constant-time first-page
-HMAC candidate validation and clears its derived buffers. Its synthetic vectors
-do not enable a Profile. Do not adopt the reviewed upstream scanner's whole-
-region reads or its key/PID/address logging.
+HMAC candidate validation and clears its derived buffers. The non-registered
+`WeixinWindows41155Profile` now combines that validator with the bounded
+candidate scanner and requires every verified database group to authenticate;
+its Fake tests cover success and partial-group failure. It is deliberately not
+in the formal registry until a real plaintext materializer exists. Do not adopt
+the reviewed upstream scanner's whole-region reads or its key/PID/address
+logging.
 
 `DatabaseMaterializerTests` use a real fake child process and cover success,
 missing/extra/invalid/duplicate/unknown mappings, sensitive output redaction,
