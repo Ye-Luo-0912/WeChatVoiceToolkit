@@ -5,58 +5,6 @@ namespace WeChatVoice.Tests;
 public sealed class CoreModelTests
 {
     [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void VoiceMessage_requires_a_nonblank_message_identifier(string messageId)
-    {
-        var exception = Assert.Throws<ArgumentException>(() => new VoiceMessage(
-            messageId,
-            "conversation",
-            DateTimeOffset.UtcNow,
-            VoiceDirection.Incoming));
-
-        Assert.Equal("MessageId", exception.ParamName);
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void VoiceMessage_requires_a_nonblank_conversation_identifier(string conversationId)
-    {
-        var exception = Assert.Throws<ArgumentException>(() => new VoiceMessage(
-            "message",
-            conversationId,
-            DateTimeOffset.UtcNow,
-            VoiceDirection.Incoming));
-
-        Assert.Equal("ConversationId", exception.ParamName);
-    }
-
-    [Fact]
-    public void VoiceMessage_rejects_an_empty_payload_reference_and_normalizes_its_timestamp()
-    {
-        var emptyReference = Assert.Throws<ArgumentException>(() => new VoiceMessage(
-            "message",
-            "conversation",
-            DateTimeOffset.UtcNow,
-            VoiceDirection.Incoming,
-            string.Empty));
-        Assert.Equal("PayloadReference", emptyReference.ParamName);
-
-        var sourceTime = new DateTimeOffset(2026, 7, 31, 9, 30, 0, TimeSpan.FromHours(8));
-        var message = new VoiceMessage(
-            "message",
-            "conversation",
-            sourceTime,
-            VoiceDirection.Outgoing,
-            "source-token");
-
-        Assert.Equal(sourceTime.UtcDateTime, message.OccurredAtUtc.UtcDateTime);
-        Assert.Equal(TimeSpan.Zero, message.OccurredAtUtc.Offset);
-        Assert.Equal("source-token", message.PayloadReference);
-    }
-
-    [Theory]
     [InlineData(0)]
     [InlineData(-1)]
     public void VoiceQuery_rejects_nonpositive_maximum_results(int maximumResults)
@@ -86,30 +34,34 @@ public sealed class CoreModelTests
     }
 
     [Fact]
-    public void VoiceExportPaths_requires_absolute_media_paths_and_safe_relative_manifest_paths()
+    public void VoiceRecord_builds_a_stable_export_key_from_dataset_identity()
+    {
+        var record = new VoiceRecord(
+            "message",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 2, "blob"),
+            SnapshotId: "snapshot",
+            AdapterId: "adapter",
+            AccountId: "account",
+            ShardId: "2",
+            SourceMessageKey: "source-key");
+
+        Assert.Equal("snapshot|adapter|account|2|conversation|source-key", record.StableExportKey);
+    }
+
+    [Fact]
+    public void RawSnapshot_can_override_a_manifest_path_when_a_snapshot_is_moved()
     {
         using var temporary = new TestTemporaryDirectory();
-        var originalPath = temporary.GetPath("media", "input.silk");
-        var decodedPath = temporary.GetPath("media", "input.wav");
+        var recordedPath = temporary.CreateDirectory("recorded");
+        var movedPath = temporary.CreateDirectory("moved");
+        var manifest = new SnapshotManifest(recordedPath, recordedPath, DateTimeOffset.UtcNow);
 
-        var paths = new VoiceExportPaths(
-            originalPath,
-            decodedPath,
-            "original\\2026\\07\\input.silk",
-            "decoded//2026/07/input.wav");
+        var snapshot = new RawSnapshot("snapshot", manifest, movedPath);
 
-        Assert.Equal(Path.GetFullPath(originalPath), paths.OriginalFilePath);
-        Assert.Equal(Path.GetFullPath(decodedPath), paths.DecodedFilePath);
-        Assert.Equal("original/2026/07/input.silk", paths.OriginalManifestPath);
-        Assert.Equal("decoded/2026/07/input.wav", paths.DecodedManifestPath);
-
-        Assert.Equal("OriginalFilePath", Assert.Throws<ArgumentException>(() => new VoiceExportPaths(
-            "relative.silk", decodedPath, "original/file.silk", "decoded/file.wav")).ParamName);
-        Assert.Equal("DecodedFilePath", Assert.Throws<ArgumentException>(() => new VoiceExportPaths(
-            originalPath, temporary.GetPath("media", "input.silk"), "original/file.silk", "decoded/file.wav")).ParamName);
-        Assert.Equal("OriginalManifestPath", Assert.Throws<ArgumentException>(() => new VoiceExportPaths(
-            originalPath, decodedPath, "../outside.silk", "decoded/file.wav")).ParamName);
-        Assert.Equal("DecodedManifestPath", Assert.Throws<ArgumentException>(() => new VoiceExportPaths(
-            originalPath, decodedPath, "original/file.silk", Path.GetFullPath(temporary.GetPath("outside.wav")))).ParamName);
+        Assert.Equal(Path.GetFullPath(movedPath), snapshot.SnapshotDirectory);
+        Assert.Equal(Path.GetFullPath(movedPath), snapshot.SnapshotDirectoryOverride);
     }
 }

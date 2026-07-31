@@ -12,7 +12,6 @@ namespace WeChatVoice.Infrastructure.Snapshots;
 /// </summary>
 public sealed class SnapshotCreator : ISnapshotCreator
 {
-    private const string RootManifestName = "snapshot.json";
     private const string InternalMetadataDirectory = ".wechatvoice";
     private const string InternalManifestName = "snapshot-manifest.json";
 
@@ -86,11 +85,25 @@ public sealed class SnapshotCreator : ISnapshotCreator
                     cancellationToken.ThrowIfCancellationRequested();
                     var sourcePath = CombineUnderRoot(sourceDirectory, pair.Key);
                     var destinationPath = CombineUnderRoot(stagingDirectory, pair.Key);
-                    var copied = await _fileCopier.CopyStableFileAsync(
-                        sourcePath,
-                        destinationPath,
-                        requireStableSource: request.RequireStableSource,
-                        cancellationToken).ConfigureAwait(false);
+                    SnapshotCopiedFile copied;
+                    try
+                    {
+                        copied = await _fileCopier.CopyStableFileAsync(
+                            sourcePath,
+                            destinationPath,
+                            requireStableSource: request.RequireStableSource,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (FileNotFoundException exception)
+                    {
+                        throw new SnapshotSourceChangedException(
+                            $"The snapshot source file disappeared while attempt {attempt} was copying: '{exception.FileName ?? sourcePath}'.");
+                    }
+                    catch (DirectoryNotFoundException exception)
+                    {
+                        throw new SnapshotSourceChangedException(
+                            $"The snapshot source directory disappeared while attempt {attempt} was copying: '{exception.Message}'.");
+                    }
 
                     files.Add(new SnapshotFileRecord(
                         pair.Key,
@@ -177,15 +190,8 @@ public sealed class SnapshotCreator : ISnapshotCreator
     }
 
     private static bool IncludeSourceFile(string relativePath)
-    {
-        if (string.Equals(relativePath, RootManifestName, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return !string.Equals(relativePath, InternalMetadataDirectory, StringComparison.OrdinalIgnoreCase)
+        => !string.Equals(relativePath, InternalMetadataDirectory, StringComparison.OrdinalIgnoreCase)
             && !relativePath.StartsWith(InternalMetadataDirectory + "/", StringComparison.OrdinalIgnoreCase);
-    }
 
     private static void EnsureOutputIsAvailable(string outputDirectory)
     {

@@ -117,10 +117,6 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
     }
 
-    [Obsolete("Use ExistingArtifactPolicy.")]
-    public ValueTask<IExportItemLease> BeginItemAsync(VoiceRecord record, ExportExistingPolicy policy, CancellationToken cancellationToken)
-        => BeginItemAsync(record, (ExistingArtifactPolicy)policy, cancellationToken);
-
     public Task FinalizeRunAsync(VoiceExportManifest manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(manifest);
@@ -152,98 +148,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         return Convert.ToHexString(hasher.ComputeHash(stream)).ToLowerInvariant();
     }
 
-    // Compatibility shims for callers of the pre-lease foundation. The
-    // application no longer uses these methods.
-    [Obsolete("Use BeginItemAsync.")]
-    public ValueTask<VoiceExportPaths> CreatePathsAsync(VoiceMessage message, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(message);
-        var locator = new VoicePayloadLocator("legacy", null, message.PayloadReference ?? message.MessageId);
-        var record = new VoiceRecord(message.MessageId, message.ConversationId, message.OccurredAtUtc, message.Direction, locator);
-        var occurredAtUtc = record.OccurredAtUtc.ToUniversalTime();
-        var year = occurredAtUtc.ToString("yyyy", CultureInfo.InvariantCulture);
-        var month = occurredAtUtc.ToString("MM", CultureInfo.InvariantCulture);
-        var sourceId = ExportPathSafety.SanitizeFileStem(record.MessageId, "voice");
-        var stableSuffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(record.MessageId))).ToLowerInvariant()[..12];
-        var baseName = $"{sourceId[..Math.Min(sourceId.Length, 80)]}-{stableSuffix}";
-
-        for (var attempt = 0; attempt < int.MaxValue; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var fileName = attempt == 0 ? baseName : $"{baseName}-{attempt:D4}";
-            var originalManifestPath = $"original/{year}/{month}/{fileName}.silk";
-            var decodedManifestPath = $"decoded/{year}/{month}/{fileName}.wav";
-            var originalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "original", year, month, $"{fileName}.silk");
-            var decodedPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "decoded", year, month, $"{fileName}.wav");
-            if (File.Exists(originalPath) || File.Exists(decodedPath))
-            {
-                continue;
-            }
-
-            if (!_reservedPaths.TryAdd(originalPath, 0))
-            {
-                continue;
-            }
-
-            if (!_reservedPaths.TryAdd(decodedPath, 0))
-            {
-                _reservedPaths.TryRemove(originalPath, out _);
-                continue;
-            }
-
-            Directory.CreateDirectory(Path.GetDirectoryName(originalPath)!);
-            Directory.CreateDirectory(Path.GetDirectoryName(decodedPath)!);
-            return ValueTask.FromResult(new VoiceExportPaths(originalPath, decodedPath, originalManifestPath, decodedManifestPath));
-        }
-
-        throw new IOException("A unique export file name could not be allocated.");
-    }
-
-    [Obsolete("Use lease streams.")]
-    public Task WriteOriginalAsync(VoiceExportPaths paths, Stream source, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(paths);
-        EnsureOwnedPath(paths.OriginalFilePath, ".silk");
-        return AtomicFileWriter.CopyStreamAsync(source, paths.OriginalFilePath, overwrite: false, cancellationToken: cancellationToken);
-    }
-
-    [Obsolete("Use lease streams.")]
-    public Task WriteDecodedAsync(VoiceExportPaths paths, Stream source, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(paths);
-        EnsureOwnedPath(paths.DecodedFilePath, ".wav");
-        return AtomicFileWriter.CopyStreamAsync(source, paths.DecodedFilePath, overwrite: false, cancellationToken: cancellationToken);
-    }
-
-    [Obsolete("Use FinalizeRunAsync.")]
-    public Task WriteManifestAsync(VoiceExportManifest manifest, CancellationToken cancellationToken)
-        => AtomicFileWriter.WriteJsonAsync(
-            ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.json"),
-            manifest,
-            InfrastructureJson.Indented,
-            cancellationToken);
-
     private void Release(string originalPath, string decodedPath)
     {
         _reservedPaths.TryRemove(originalPath, out _);
         _reservedPaths.TryRemove(decodedPath, out _);
-    }
-
-    private void EnsureOwnedPath(string path, string expectedExtension)
-    {
-        if (!string.Equals(Path.GetExtension(path), expectedExtension, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException($"The path must use the {expectedExtension} extension.", nameof(path));
-        }
-
-        var fullPath = Path.GetFullPath(path);
-        var rootWithSeparator = _exportRoot.EndsWith(Path.DirectorySeparatorChar)
-            ? _exportRoot
-            : _exportRoot + Path.DirectorySeparatorChar;
-        if (!fullPath.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("The export path is outside this store's export root.");
-        }
     }
 
     private sealed class FileSystemExportItemLease : IExportItemLease

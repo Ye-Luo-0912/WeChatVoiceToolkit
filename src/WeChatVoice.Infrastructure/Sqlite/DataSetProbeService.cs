@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.Data.Sqlite;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Infrastructure.Serialization;
 
 namespace WeChatVoice.Infrastructure.Sqlite;
@@ -22,7 +23,7 @@ public sealed class DataSetProbeService
         IEnumerable<IWeChatDataSetAdapter>? adapters = null)
     {
         _schemaInspector = schemaInspector ?? new SqliteSchemaInspector();
-        _adapters = (adapters ?? Array.Empty<IWeChatDataSetAdapter>()).ToArray();
+        _adapters = (adapters ?? BuiltInAdapters.Create()).ToArray();
     }
 
     public async Task<DataSetProbe> ProbeAsync(
@@ -41,6 +42,7 @@ public sealed class DataSetProbeService
         }
 
         var issues = new List<DataSetIssue>();
+        var snapshotFiles = BuildSnapshotFileLookup(root, options.SnapshotManifest);
         var files = Directory.EnumerateFiles(root, "*.db", SearchOption.AllDirectories)
             .Where(static path => !IsInsideReparsePoint(path))
             .Select(path => new DiscoveredDatabase(path, NormalizeRelativePath(root, path), Classify(Path.GetFileName(path))))
@@ -62,13 +64,35 @@ public sealed class DataSetProbeService
                 issues.Add(new DataSetIssue("incomplete-wal-pair", "warning", completenessIssue, file.RelativePath));
             }
 
-            var hash = await FileHashing.ComputeSha256Async(localPath, cancellationToken).ConfigureAwait(false);
+            var mainRecord = snapshotFiles?.GetValueOrDefault(file.RelativePath);
+            var mainLength = mainRecord?.ByteLength ?? new FileInfo(localPath).Length;
+            var mainHash = mainRecord?.Sha256 ?? await FileHashing.ComputeSha256Async(localPath, cancellationToken).ConfigureAwait(false);
+            var walLength = walPresent ? (long?)new FileInfo(walPath).Length : null;
+            var shmLength = shmPresent ? (long?)new FileInfo(shmPath).Length : null;
+            var walRecord = snapshotFiles?.GetValueOrDefault(file.RelativePath + "-wal");
+            var shmRecord = snapshotFiles?.GetValueOrDefault(file.RelativePath + "-shm");
+            var walHash = walPresent
+                ? walRecord?.Sha256 ?? await FileHashing.ComputeSha256Async(walPath, cancellationToken).ConfigureAwait(false)
+                : null;
+            var shmHash = shmPresent
+                ? shmRecord?.Sha256 ?? await FileHashing.ComputeSha256Async(shmPath, cancellationToken).ConfigureAwait(false)
+                : null;
+            var groupFingerprint = ComputeDatabaseGroupFingerprint(
+                file.RelativePath,
+                file.LogicalRole,
+                file.ShardNumber,
+                mainLength,
+                mainHash,
+                walLength,
+                walHash,
+                shmLength,
+                shmHash);
             SchemaSnapshot schema;
             if (!await HasPlainSqliteHeaderAsync(localPath, cancellationToken).ConfigureAwait(false))
             {
                 const string message = "The database does not have a plain SQLite header; it may be encrypted or use a proprietary container. No decryption is attempted.";
                 issues.Add(new DataSetIssue("encrypted-or-non-sqlite", "error", message, file.RelativePath));
-                schema = CreateUnavailableSchema(localPath, hash, options, walPresent, shmPresent, completenessIssue);
+                schema = CreateUnavailableSchema(localPath, mainHash, options, walPresent, shmPresent, completenessIssue);
             }
             else
             {
@@ -82,7 +106,7 @@ public sealed class DataSetProbeService
                 catch (Exception exception) when (exception is SqliteException or InvalidDataException or IOException)
                 {
                     issues.Add(new DataSetIssue("schema-probe-failed", "error", exception.Message, file.RelativePath));
-                    schema = CreateUnavailableSchema(localPath, hash, options, walPresent, shmPresent, completenessIssue);
+                    schema = CreateUnavailableSchema(localPath, mainHash, options, walPresent, shmPresent, completenessIssue);
                 }
             }
 
@@ -90,12 +114,18 @@ public sealed class DataSetProbeService
                 file.LogicalRole,
                 file.ShardNumber,
                 file.RelativePath,
-                hash,
+                mainHash,
                 schema,
                 options.IncludeLocalPaths ? localPath : null,
                 walPresent,
                 shmPresent,
-                completenessIssue));
+                completenessIssue,
+                mainLength,
+                walHash,
+                walLength,
+                shmHash,
+                shmLength,
+                groupFingerprint));
         }
 
         AddPairingIssues(artifacts, issues);
@@ -147,8 +177,55 @@ public sealed class DataSetProbeService
     private static string ComputeDataSetId(IEnumerable<DatabaseArtifact> artifacts)
     {
         var canonical = string.Join("\n", artifacts.OrderBy(static item => item.DatabasePath, StringComparer.OrdinalIgnoreCase)
-            .Select(static item => $"{item.LogicalRole}|{item.ShardNumber}|{item.DatabasePath}|{item.Sha256}|{item.Schema.SchemaFingerprint}"));
+            .Select(static item => $"{item.LogicalRole}|{item.ShardNumber}|{item.DatabasePath}|{item.DatabaseGroupFingerprint}|{item.Schema.SchemaFingerprint}"));
         return "dataset-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant()[..16];
+    }
+
+    private static IReadOnlyDictionary<string, SnapshotFileRecord>? BuildSnapshotFileLookup(
+        string root,
+        SnapshotManifest? snapshotManifest)
+    {
+        if (snapshotManifest is null)
+        {
+            return null;
+        }
+
+        var manifestRoot = Path.GetFullPath(snapshotManifest.SnapshotDirectory);
+        var sourceRoot = Path.GetFullPath(snapshotManifest.SourceDirectory);
+        if (!string.Equals(root, manifestRoot, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(root, sourceRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return snapshotManifest.Files.ToDictionary(
+            static file => file.RelativePath.Replace('\\', '/'),
+            static file => file,
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string ComputeDatabaseGroupFingerprint(
+        string relativePath,
+        string logicalRole,
+        int? shardNumber,
+        long mainLength,
+        string mainHash,
+        long? walLength,
+        string? walHash,
+        long? shmLength,
+        string? shmHash)
+    {
+        var canonical = string.Join('|',
+            relativePath,
+            logicalRole,
+            shardNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            mainLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            mainHash,
+            walLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            walHash ?? string.Empty,
+            shmLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            shmHash ?? string.Empty);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
     private static async Task<bool> HasPlainSqliteHeaderAsync(string path, CancellationToken cancellationToken)

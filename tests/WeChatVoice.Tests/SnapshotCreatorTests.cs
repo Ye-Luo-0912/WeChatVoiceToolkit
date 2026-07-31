@@ -63,7 +63,7 @@ public sealed class SnapshotCreatorTests
     }
 
     [Fact]
-    public async Task CreateAsync_excludes_source_metadata_files_and_marks_live_opt_in()
+    public async Task CreateAsync_excludes_only_internal_metadata_and_marks_live_opt_in()
     {
         using var temporary = new TestTemporaryDirectory();
         var sourceDirectory = temporary.CreateDirectory("source");
@@ -79,7 +79,8 @@ public sealed class SnapshotCreatorTests
 
         Assert.True(manifest.PotentiallyInconsistent);
         Assert.Contains("WeChatAppEx", manifest.SourceProcessNames);
-        Assert.DoesNotContain(manifest.Files, file => file.RelativePath is "snapshot.json" or ".wechatvoice/snapshot-manifest.json");
+        Assert.Contains(manifest.Files, file => file.RelativePath == "snapshot.json");
+        Assert.DoesNotContain(manifest.Files, file => file.RelativePath == ".wechatvoice/snapshot-manifest.json");
         Assert.True(File.Exists(Path.Combine(snapshotDirectory, ".wechatvoice", "snapshot-manifest.json")));
     }
 

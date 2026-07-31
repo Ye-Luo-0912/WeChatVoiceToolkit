@@ -3,8 +3,6 @@ using System.Collections.Concurrent;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 
-#pragma warning disable CS0618
-
 namespace WeChatVoice.Application;
 
 /// <summary>
@@ -27,15 +25,6 @@ public sealed class VoiceExportService
         _voiceCatalog = voiceCatalog ?? throw new ArgumentNullException(nameof(voiceCatalog));
         _exportStore = exportStore ?? throw new ArgumentNullException(nameof(exportStore));
         _voiceDecoder = voiceDecoder;
-    }
-
-    [Obsolete("Use the IVoiceCatalog constructor.")]
-    public VoiceExportService(
-        IVoiceSource voiceSource,
-        IVoiceExportStore exportStore,
-        IVoiceDecoder? voiceDecoder = null)
-        : this(new LegacyVoiceCatalog(voiceSource ?? throw new ArgumentNullException(nameof(voiceSource))), exportStore, voiceDecoder)
-    {
     }
 
     public Task<VoiceExportManifest> ExportAsync(
@@ -284,47 +273,4 @@ public sealed class VoiceExportService
             record.DurationMs is null ? ["duration-unknown"] : Array.Empty<string>(),
             false);
 
-    private sealed class LegacyVoiceCatalog : IVoiceCatalog
-    {
-        private readonly IVoiceSource _source;
-        private readonly ConcurrentDictionary<string, VoiceMessage> _messagesByLocator = new(StringComparer.Ordinal);
-
-        public LegacyVoiceCatalog(IVoiceSource source) => _source = source;
-
-        public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(
-            ContactQuery query,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await Task.CompletedTask;
-            yield break;
-        }
-
-        public async IAsyncEnumerable<VoiceRecord> QueryVoicesAsync(
-            VoiceQuery query,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            await foreach (var message in _source.QueryAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
-            {
-                var locator = message.PayloadReference ?? message.MessageId;
-                _messagesByLocator[locator] = message;
-                yield return new VoiceRecord(
-                    message.MessageId,
-                    message.ConversationId,
-                    message.OccurredAtUtc,
-                    message.Direction,
-                    new VoicePayloadLocator("legacy", null, locator));
-            }
-        }
-
-        public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
-        {
-            if (!_messagesByLocator.TryGetValue(locator.BlobKey, out var message))
-            {
-                throw new KeyNotFoundException($"The legacy payload locator was not associated with a queried voice message: '{locator.BlobKey}'.");
-            }
-            return _source.OpenPayloadAsync(message, cancellationToken);
-        }
-    }
 }
-
-#pragma warning restore CS0618

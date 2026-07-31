@@ -8,15 +8,6 @@ public enum ExistingArtifactPolicy
     Replace,
 }
 
-[Obsolete("Use ExistingArtifactPolicy.")]
-public enum ExportExistingPolicy
-{
-    SkipIfHashMatches,
-    VerifyOnly,
-    Fail,
-    Replace,
-}
-
 public sealed record ExportArtifact
 {
     public ExportArtifact(string RelativePath, long ByteLength, string Sha256)

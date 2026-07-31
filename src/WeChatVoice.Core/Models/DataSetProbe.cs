@@ -36,4 +36,6 @@ public sealed record DataSetIssue(string Code, string Severity, string Message, 
 
 public sealed record AdapterCandidate(string AdapterId, bool IsMatch, int Score, string? Reason);
 
-public sealed record DataSetProbeOptions(bool IncludeLocalPaths = false);
+public sealed record DataSetProbeOptions(
+    bool IncludeLocalPaths = false,
+    SnapshotManifest? SnapshotManifest = null);

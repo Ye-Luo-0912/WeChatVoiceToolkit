@@ -46,12 +46,18 @@ public sealed record DatabaseArtifact
         string LogicalRole,
         int? ShardNumber,
         string DatabasePath,
-        string Sha256,
+        string MainSha256,
         SchemaSnapshot Schema,
         string? LocalPath = null,
         bool WalPresent = false,
         bool ShmPresent = false,
-        string? CompletenessIssue = null)
+        string? CompletenessIssue = null,
+        long MainLength = 0,
+        string? WalSha256 = null,
+        long? WalLength = null,
+        string? ShmSha256 = null,
+        long? ShmLength = null,
+        string? DatabaseGroupFingerprint = null)
     {
         if (string.IsNullOrWhiteSpace(LogicalRole))
         {
@@ -68,21 +74,27 @@ public sealed record DatabaseArtifact
             throw new ArgumentException("A database path is required.", nameof(DatabasePath));
         }
 
-        if (string.IsNullOrWhiteSpace(Sha256))
+        if (string.IsNullOrWhiteSpace(MainSha256))
         {
-            throw new ArgumentException("A database SHA-256 is required.", nameof(Sha256));
+            throw new ArgumentException("A database SHA-256 is required.", nameof(MainSha256));
         }
 
         ArgumentNullException.ThrowIfNull(Schema);
         this.LogicalRole = LogicalRole;
         this.ShardNumber = ShardNumber;
         this.DatabasePath = DatabasePath;
-        this.Sha256 = Sha256;
+        this.MainSha256 = MainSha256;
         this.Schema = Schema;
         this.LocalPath = LocalPath;
         this.WalPresent = WalPresent;
         this.ShmPresent = ShmPresent;
         this.CompletenessIssue = CompletenessIssue;
+        this.MainLength = MainLength;
+        this.WalSha256 = WalSha256;
+        this.WalLength = WalLength;
+        this.ShmSha256 = ShmSha256;
+        this.ShmLength = ShmLength;
+        this.DatabaseGroupFingerprint = DatabaseGroupFingerprint;
     }
 
     public string LogicalRole { get; }
@@ -93,7 +105,7 @@ public sealed record DatabaseArtifact
 
     public string? LocalPath { get; }
 
-    public string Sha256 { get; }
+    public string MainSha256 { get; }
 
     public SchemaSnapshot Schema { get; }
 
@@ -102,6 +114,18 @@ public sealed record DatabaseArtifact
     public bool ShmPresent { get; }
 
     public string? CompletenessIssue { get; }
+
+    public long MainLength { get; }
+
+    public string? WalSha256 { get; }
+
+    public long? WalLength { get; }
+
+    public string? ShmSha256 { get; }
+
+    public long? ShmLength { get; }
+
+    public string? DatabaseGroupFingerprint { get; }
 }
 
 public sealed record AdapterMatch(bool IsMatch, int Score = 0, string? Reason = null)

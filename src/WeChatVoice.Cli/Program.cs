@@ -5,7 +5,9 @@ using System.Text.Json.Serialization;
 using WeChatVoice.Application;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Infrastructure.Export;
+using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Snapshots;
 using WeChatVoice.Infrastructure.Sqlite;
 using WeChatVoice.Windows;
@@ -16,6 +18,7 @@ rootCommand.Subcommands.Add(CreateSnapshotCommand());
 rootCommand.Subcommands.Add(CreateSchemaCommand());
 rootCommand.Subcommands.Add(CreateVoiceCommand());
 rootCommand.Subcommands.Add(CreateDatasetCommand());
+rootCommand.Subcommands.Add(CreateWorkspaceCommand());
 rootCommand.Subcommands.Add(CreateContactCommand());
 
 return rootCommand.Parse(args).Invoke();
@@ -32,7 +35,7 @@ static Command CreateDoctorCommand()
             WeChatProcessDiscovery.SupportedProcessNames,
             WeChatProcessDiscovery.ListRunning(),
             new SecurityBoundary(
-                HasSchemaAdapter: false,
+                HasSchemaAdapter: BuiltInAdapters.Create().Count > 0,
                 AllowsKeyScanning: false,
                 AllowsDatabaseDecryption: false,
                 AllowsArbitraryProcessMemoryRead: false,
@@ -113,9 +116,9 @@ static Command CreateVoiceCommand()
     var voiceCommand = new Command("voice", "Work with verified WeChat voice data sets.");
     var exportCommand = new Command("export", "Export voice payloads from a verified data-set adapter.");
     var scanCommand = new Command("scan", "Audit matching voice metadata without writing payload files.");
-    var dataSetOption = new Option<string>("--dataset")
+    var workspaceOption = new Option<string>("--workspace")
     {
-        Description = "JSON data-set manifest containing message/media/contact database artifacts.",
+        Description = "Local executable workspace JSON containing absolute database paths.",
         Required = true,
     };
     var outputOption = new Option<string>("--output")
@@ -148,16 +151,7 @@ static Command CreateVoiceCommand()
         Description = "Export format. The first available chain supports silk only.",
         DefaultValueFactory = _ => "silk",
     };
-    var decodeOption = new Option<bool>("--decode")
-    {
-        Description = "Also decode payloads to WAV using --decoder.",
-    };
-    var decoderOption = new Option<string?>("--decoder")
-    {
-        Description = "Path to the explicitly configured SILK decoder executable.",
-    };
-
-    exportCommand.Options.Add(dataSetOption);
+    exportCommand.Options.Add(workspaceOption);
     exportCommand.Options.Add(outputOption);
     exportCommand.Options.Add(conversationOption);
     exportCommand.Options.Add(contactUsernameOption);
@@ -165,11 +159,9 @@ static Command CreateVoiceCommand()
     exportCommand.Options.Add(fromOption);
     exportCommand.Options.Add(toOption);
     exportCommand.Options.Add(formatOption);
-    exportCommand.Options.Add(decodeOption);
-    exportCommand.Options.Add(decoderOption);
     exportCommand.SetAction(async (parseResult, cancellationToken) =>
     {
-        var dataSetPath = parseResult.GetValue(dataSetOption);
+        var workspacePath = parseResult.GetValue(workspaceOption);
         var output = parseResult.GetValue(outputOption);
         var conversationId = parseResult.GetValue(conversationOption);
         var contactUsername = parseResult.GetValue(contactUsernameOption);
@@ -177,18 +169,10 @@ static Command CreateVoiceCommand()
         var fromText = parseResult.GetValue(fromOption);
         var toText = parseResult.GetValue(toOption);
         var format = parseResult.GetValue(formatOption);
-        var decode = parseResult.GetValue(decodeOption);
-        var decoderPath = parseResult.GetValue(decoderOption);
 
-        if (dataSetPath is null || output is null)
+        if (workspacePath is null || output is null)
         {
-            Console.Error.WriteLine("Both --dataset and --output are required.");
-            return 2;
-        }
-
-        if (decode)
-        {
-            Console.Error.WriteLine("WAV decoding is deferred; the first usable export chain supports raw SILK only.");
+            Console.Error.WriteLine("Both --workspace and --output are required.");
             return 2;
         }
 
@@ -200,7 +184,7 @@ static Command CreateVoiceCommand()
 
         try
         {
-            var catalog = await OpenCatalogAsync(dataSetPath, cancellationToken).ConfigureAwait(false);
+            var catalog = await OpenCatalogAsync(workspacePath, cancellationToken).ConfigureAwait(false);
             await EnsureExactContactAsync(catalog, contactUsername, cancellationToken).ConfigureAwait(false);
             var service = new VoiceExportService(catalog, new FileSystemVoiceExportStore(output));
             var query = BuildVoiceQuery(conversationId, contactUsername, directionText, fromText, toText);
@@ -220,13 +204,13 @@ static Command CreateVoiceCommand()
         }
     });
 
-    var scanDatasetOption = new Option<string>("--dataset") { Description = "JSON data-set probe.", Required = true };
+    var scanWorkspaceOption = new Option<string>("--workspace") { Description = "Local executable workspace JSON.", Required = true };
     var scanContactOption = new Option<string?>("--contact-username") { Description = "Stable internal username used for exact contact selection." };
     var scanDirectionOption = new Option<string?>("--direction") { Description = "Voice direction: incoming or outgoing." };
     var scanFromOption = new Option<string?>("--from") { Description = "Inclusive UTC start date/time." };
     var scanToOption = new Option<string?>("--to") { Description = "Inclusive UTC end date/time." };
     var scanConversationOption = new Option<string?>("--conversation-id") { Description = "Optional conversation filter." };
-    scanCommand.Options.Add(scanDatasetOption);
+    scanCommand.Options.Add(scanWorkspaceOption);
     scanCommand.Options.Add(scanContactOption);
     scanCommand.Options.Add(scanDirectionOption);
     scanCommand.Options.Add(scanFromOption);
@@ -234,16 +218,16 @@ static Command CreateVoiceCommand()
     scanCommand.Options.Add(scanConversationOption);
     scanCommand.SetAction(async (parseResult, cancellationToken) =>
     {
-        var dataset = parseResult.GetValue(scanDatasetOption);
-        if (dataset is null)
+        var workspace = parseResult.GetValue(scanWorkspaceOption);
+        if (workspace is null)
         {
-            Console.Error.WriteLine("--dataset is required.");
+            Console.Error.WriteLine("--workspace is required.");
             return 2;
         }
 
         try
         {
-            var catalog = await OpenCatalogAsync(dataset, cancellationToken).ConfigureAwait(false);
+            var catalog = await OpenCatalogAsync(workspace, cancellationToken).ConfigureAwait(false);
             var contact = parseResult.GetValue(scanContactOption);
             await EnsureExactContactAsync(catalog, contact, cancellationToken).ConfigureAwait(false);
             var query = BuildVoiceQuery(
@@ -282,27 +266,27 @@ static Command CreateDatasetCommand()
         Description = "Root directory containing decrypted database files.",
         Required = true,
     };
-    var outputOption = new Option<string>("--output")
+    var shareableOutputOption = new Option<string>("--shareable-output")
     {
         Description = "Shareable JSON data-set probe output.",
         Required = true,
     };
-    var includeLocalPathsOption = new Option<bool>("--include-local-paths")
+    var snapshotManifestOption = new Option<string?>("--snapshot-manifest")
     {
-        Description = "Include absolute local paths; omitted by default for shareable output.",
+        Description = "Optional existing snapshot manifest whose DB/WAL/SHM hashes can be reused.",
     };
 
     probeCommand.Options.Add(rootOption);
-    probeCommand.Options.Add(outputOption);
-    probeCommand.Options.Add(includeLocalPathsOption);
+    probeCommand.Options.Add(shareableOutputOption);
+    probeCommand.Options.Add(snapshotManifestOption);
     probeCommand.SetAction(async (parseResult, cancellationToken) =>
     {
         var root = parseResult.GetValue(rootOption);
-        var output = parseResult.GetValue(outputOption);
-        var includeLocalPaths = parseResult.GetValue(includeLocalPathsOption);
+        var output = parseResult.GetValue(shareableOutputOption);
+        var snapshotManifestPath = parseResult.GetValue(snapshotManifestOption);
         if (root is null || output is null)
         {
-            Console.Error.WriteLine("Both --root and --output are required.");
+            Console.Error.WriteLine("Both --root and --shareable-output are required.");
             return 2;
         }
 
@@ -310,7 +294,11 @@ static Command CreateDatasetCommand()
         {
             var probe = await new DataSetProbeService().ProbeAsync(
                 root,
-                new DataSetProbeOptions(includeLocalPaths),
+                new DataSetProbeOptions(
+                    IncludeLocalPaths: false,
+                    SnapshotManifest: snapshotManifestPath is null
+                        ? null
+                        : await ReadJsonFileAsync<SnapshotManifest>(snapshotManifestPath, cancellationToken).ConfigureAwait(false)),
                 cancellationToken).ConfigureAwait(false);
             await WriteJsonFileAsync(output, probe, cancellationToken).ConfigureAwait(false);
             WriteJson(new DatasetProbeResult(
@@ -337,22 +325,151 @@ static Command CreateDatasetCommand()
     return datasetCommand;
 }
 
+static Command CreateWorkspaceCommand()
+{
+    var workspaceCommand = new Command("workspace", "Create an executable local database workspace.");
+    var createCommand = new Command("create", "Probe a decrypted database root and retain local paths for execution.");
+    var materializeCommand = new Command("materialize", "Run a fixed external decryptor and validate ordinary SQLite output.");
+    var rootOption = new Option<string>("--root")
+    {
+        Description = "Root directory containing decrypted database files.",
+        Required = true,
+    };
+    var outputOption = new Option<string>("--output")
+    {
+        Description = "Local workspace JSON, for example .wechatvoice/local-workspace.json.",
+        Required = true,
+    };
+
+    createCommand.Options.Add(rootOption);
+    createCommand.Options.Add(outputOption);
+    createCommand.SetAction(async (parseResult, cancellationToken) =>
+    {
+        var root = parseResult.GetValue(rootOption);
+        var output = parseResult.GetValue(outputOption);
+        if (root is null || output is null)
+        {
+            Console.Error.WriteLine("Both --root and --output are required.");
+            return 2;
+        }
+
+        try
+        {
+            var workspace = await new LocalWorkspaceCreator().CreateAsync(root, cancellationToken).ConfigureAwait(false);
+            await WriteJsonFileAsync(output, workspace, cancellationToken).ConfigureAwait(false);
+            WriteJson(new WorkspaceCreateResult(
+                Path.GetFullPath(output),
+                workspace.WorkspaceId,
+                workspace.DataSet.DataSetId,
+                workspace.DataSet.Databases.Count,
+                workspace.Issues.Count));
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Workspace creation was cancelled.");
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
+    });
+
+    workspaceCommand.Subcommands.Add(createCommand);
+
+    var snapshotDirectoryOption = new Option<string>("--snapshot-directory")
+    {
+        Description = "Raw snapshot directory produced by snapshot create.",
+        Required = true,
+    };
+    var snapshotManifestOption = new Option<string?>("--snapshot-manifest")
+    {
+        Description = "Optional snapshot manifest; defaults to .wechatvoice/snapshot-manifest.json under the snapshot directory.",
+    };
+    var snapshotIdOption = new Option<string?>("--snapshot-id")
+    {
+        Description = "Stable raw snapshot identifier; defaults to the snapshot directory name.",
+    };
+    var decryptorOption = new Option<string>("--external-decryptor")
+    {
+        Description = "Fixed external decryptor executable implementing --input-root/--output-root/--key-file.",
+        Required = true,
+    };
+    var keyFileOption = new Option<string?>("--key-file")
+    {
+        Description = "Optional key file passed as a fixed decryptor argument.",
+    };
+    var materializedOutputOption = new Option<string>("--output")
+    {
+        Description = "New ordinary SQLite output directory.",
+        Required = true,
+    };
+    materializeCommand.Options.Add(snapshotDirectoryOption);
+    materializeCommand.Options.Add(snapshotManifestOption);
+    materializeCommand.Options.Add(snapshotIdOption);
+    materializeCommand.Options.Add(decryptorOption);
+    materializeCommand.Options.Add(keyFileOption);
+    materializeCommand.Options.Add(materializedOutputOption);
+    materializeCommand.SetAction(async (parseResult, cancellationToken) =>
+    {
+        var snapshotDirectory = parseResult.GetValue(snapshotDirectoryOption);
+        var snapshotManifest = parseResult.GetValue(snapshotManifestOption);
+        var snapshotId = parseResult.GetValue(snapshotIdOption);
+        var decryptor = parseResult.GetValue(decryptorOption);
+        var keyFile = parseResult.GetValue(keyFileOption);
+        var output = parseResult.GetValue(materializedOutputOption);
+        if (snapshotDirectory is null || decryptor is null || output is null)
+        {
+            Console.Error.WriteLine("--snapshot-directory, --external-decryptor, and --output are required.");
+            return 2;
+        }
+
+        try
+        {
+            var snapshotRoot = Path.GetFullPath(snapshotDirectory);
+            var manifestPath = Path.GetFullPath(snapshotManifest ?? Path.Combine(snapshotRoot, ".wechatvoice", "snapshot-manifest.json"));
+            var manifest = await ReadJsonFileAsync<SnapshotManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
+            var rawSnapshot = new RawSnapshot(snapshotId ?? Path.GetFileName(snapshotRoot), manifest, snapshotRoot);
+            var workspace = await new ExternalDatabaseMaterializer(decryptor).MaterializeAsync(
+                rawSnapshot,
+                new MaterializationOptions(Path.GetFullPath(output), keyFile is null ? null : Path.GetFullPath(keyFile)),
+                cancellationToken).ConfigureAwait(false);
+            WriteJson(workspace);
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Database materialization was cancelled.");
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
+    });
+    workspaceCommand.Subcommands.Add(materializeCommand);
+    return workspaceCommand;
+}
+
 static Command CreateContactCommand()
 {
     var contactCommand = new Command("contact", "Discover contacts using stable internal identifiers.");
     var listCommand = new Command("list", "List contacts from a verified data-set adapter.");
     var searchCommand = new Command("search", "Search contacts by username, WeChat ID, remark, or nickname.");
-    var datasetOption = new Option<string>("--dataset") { Description = "JSON data-set probe.", Required = true };
+    var listWorkspaceOption = new Option<string>("--workspace") { Description = "Local executable workspace JSON.", Required = true };
+    var searchWorkspaceOption = new Option<string>("--workspace") { Description = "Local executable workspace JSON.", Required = true };
     var searchOption = new Option<string>("--query") { Description = "Search text.", Required = true };
 
-    var listDatasetOption = new Option<string>("--dataset") { Description = "JSON data-set probe.", Required = true };
-    listCommand.Options.Add(listDatasetOption);
+    listCommand.Options.Add(listWorkspaceOption);
     listCommand.SetAction(async (parseResult, cancellationToken) =>
     {
-        var dataset = parseResult.GetValue(listDatasetOption);
+        var workspace = parseResult.GetValue(listWorkspaceOption);
         try
         {
-            var catalog = await OpenCatalogAsync(dataset!, cancellationToken).ConfigureAwait(false);
+            var catalog = await OpenCatalogAsync(workspace!, cancellationToken).ConfigureAwait(false);
             var contacts = new List<ContactRecord>();
             await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
@@ -369,15 +486,15 @@ static Command CreateContactCommand()
         }
     });
 
-    searchCommand.Options.Add(datasetOption);
+    searchCommand.Options.Add(searchWorkspaceOption);
     searchCommand.Options.Add(searchOption);
     searchCommand.SetAction(async (parseResult, cancellationToken) =>
     {
-        var dataset = parseResult.GetValue(datasetOption);
+        var workspace = parseResult.GetValue(searchWorkspaceOption);
         var queryText = parseResult.GetValue(searchOption);
         try
         {
-            var catalog = await OpenCatalogAsync(dataset!, cancellationToken).ConfigureAwait(false);
+            var catalog = await OpenCatalogAsync(workspace!, cancellationToken).ConfigureAwait(false);
             var contacts = new List<ContactRecord>();
             await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(queryText), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
@@ -401,18 +518,23 @@ static Command CreateContactCommand()
 
 static async Task<IVoiceCatalog> OpenCatalogAsync(string path, CancellationToken cancellationToken)
 {
-    var probe = await ReadDataSetProbeAsync(path, cancellationToken).ConfigureAwait(false);
-    var resolver = new DataSetAdapterResolver(Array.Empty<IWeChatDataSetAdapter>());
-    var adapter = resolver.Resolve(probe.DataSet);
-    return await adapter.OpenAsync(probe.DataSet, cancellationToken).ConfigureAwait(false);
+    var workspace = await ReadLocalWorkspaceAsync(path, cancellationToken).ConfigureAwait(false);
+    if (workspace.DataSet.Databases.Any(static artifact => string.IsNullOrWhiteSpace(artifact.LocalPath)))
+    {
+        throw new InvalidDataException("The workspace is shareable-only and has no executable local paths. Recreate it with 'workspace create'.");
+    }
+
+    var resolver = new DataSetAdapterResolver(BuiltInAdapters.Create());
+    var adapter = resolver.Resolve(workspace.DataSet);
+    return await adapter.OpenAsync(workspace.DataSet, cancellationToken).ConfigureAwait(false);
 }
 
-static async Task<DataSetProbe> ReadDataSetProbeAsync(string path, CancellationToken cancellationToken)
+static async Task<LocalWorkspace> ReadLocalWorkspaceAsync(string path, CancellationToken cancellationToken)
 {
     var fullPath = Path.GetFullPath(path);
     await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-    var probe = await JsonSerializer.DeserializeAsync<DataSetProbe>(stream, CliJson.Options, cancellationToken).ConfigureAwait(false);
-    return probe ?? throw new InvalidDataException("The data-set probe was empty.");
+    var workspace = await JsonSerializer.DeserializeAsync<LocalWorkspace>(stream, CliJson.Options, cancellationToken).ConfigureAwait(false);
+    return workspace ?? throw new InvalidDataException("The local workspace was empty.");
 }
 
 static VoiceQuery BuildVoiceQuery(string? conversationId, string? contactUsername, string? directionText, string? fromText, string? toText)
@@ -565,6 +687,14 @@ static async Task WriteJsonFileAsync<T>(string outputPath, T value, Cancellation
     }
 }
 
+static async Task<T> ReadJsonFileAsync<T>(string path, CancellationToken cancellationToken)
+{
+    var fullPath = Path.GetFullPath(path);
+    await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+    var value = await JsonSerializer.DeserializeAsync<T>(stream, CliJson.Options, cancellationToken).ConfigureAwait(false);
+    return value ?? throw new InvalidDataException($"The JSON document was empty: '{fullPath}'.");
+}
+
 static void WriteJson<T>(T value) =>
     Console.WriteLine(JsonSerializer.Serialize(value, CliJson.Options));
 
@@ -589,6 +719,8 @@ internal sealed record SecurityBoundary(
 internal sealed record SchemaProbeResult(string OutputPath, int ObjectCount);
 
 internal sealed record DatasetProbeResult(string OutputPath, string DataSetId, int DatabaseCount, int IssueCount, int AdapterCandidateCount);
+
+internal sealed record WorkspaceCreateResult(string OutputPath, string WorkspaceId, string DataSetId, int DatabaseCount, int IssueCount);
 
 internal static class CliJson
 {

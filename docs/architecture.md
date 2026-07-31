@@ -6,6 +6,11 @@ SQLite schema inspection, lease-backed file export, and external SILK decoding.
 `Windows` contains local process primitives. `Cli` composes the allowed
 operations, while `ElevatedHelper` has a deliberately tiny JSON Lines protocol.
 
+`DataSetProbe` is a shareable report and never carries executable local paths.
+`LocalWorkspace` is the separate local-only binding consumed by adapters and
+must remain under `.wechatvoice/`. `BuiltInAdapters` is the single adapter
+composition root shared by probing, resolution, doctor, and future hosts.
+
 Snapshots copy the complete source file group into a staging directory and
 accept it only when the before/after inventory agrees. WeChat is required to be
 closed unless the caller explicitly opts into `--allow-live-source`; manifests
@@ -26,8 +31,15 @@ history is kept under `runs/` and `latest.manifest.json` is the only rolling
 pointer.
 
 `dataset probe` discovers database files, pairs message/media shards, records
-WAL/SHM completeness, hashes files, and emits a deterministic Schema Fingerprint.
-The default JSON is shareable and redacts local paths. Adapter candidates are
-reported only from registered probes; filename discovery never chooses a schema
-mapping by itself. `voice scan` is metadata-only and must precede the raw SILK
-export path.
+WAL/SHM completeness, hashes every DB/WAL/SHM member, and emits a deterministic
+database-group and Schema Fingerprint. The output is shareable and redacts local
+paths. `workspace create` repeats the probe into an executable local binding.
+Adapter candidates are reported only from the central registry; filename
+discovery never chooses a schema mapping by itself. `voice scan` is metadata-only
+and must precede the raw SILK export path.
+
+Encrypted or proprietary database containers are reported as
+`encrypted-or-non-sqlite`. `IDatabaseMaterializer` is the only boundary allowed
+to turn a raw snapshot into ordinary SQLite; its first implementation uses a
+fixed external process protocol and validates SQLite headers plus
+`PRAGMA quick_check` before returning a workspace.
