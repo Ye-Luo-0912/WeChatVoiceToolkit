@@ -20,7 +20,6 @@ internal sealed class KeyBrokerClient
         string snapshotManifestPath,
         string outputRoot,
         string workspaceOutput,
-        bool allowExperimentalProfile,
         CancellationToken cancellationToken,
         Action<KeyBrokerStage>? reportStage = null)
     {
@@ -48,11 +47,6 @@ internal sealed class KeyBrokerClient
         startInfo.ArgumentList.Add(Path.GetFullPath(outputRoot));
         startInfo.ArgumentList.Add("--workspace-output");
         startInfo.ArgumentList.Add(Path.GetFullPath(workspaceOutput));
-        if (allowExperimentalProfile)
-        {
-            startInfo.ArgumentList.Add("--allow-experimental-profile");
-        }
-
         Process process;
         try
         {
@@ -136,7 +130,8 @@ internal sealed class KeyBrokerClient
             TryGetInt32(root, "completedGroups"),
             TryGetInt32(root, "totalGroups"),
             TryGetInt32(root, "completedDatabases"),
-            TryGetInt32(root, "totalDatabases"));
+            TryGetInt32(root, "totalDatabases"),
+            TryGetInt32(root, "firstUnvalidatedGroupOrdinal"));
     }
 
     private static long? TryGetInt64(JsonElement root, string name)
@@ -180,7 +175,8 @@ internal sealed record KeyBrokerStage(
     int? CompletedGroups,
     int? TotalGroups,
     int? CompletedDatabases,
-    int? TotalDatabases);
+    int? TotalDatabases,
+    int? FirstUnvalidatedGroupOrdinal);
 
 internal sealed class KeyBrokerOperationException(string code, string message) : InvalidOperationException(message)
 {

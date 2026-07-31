@@ -3,6 +3,7 @@ using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Sqlite;
 using WeChatVoice.KeyAcquisition.Models;
+using WeChatVoice.KeyAcquisition.Validation;
 using WeChatVoice.KeyBroker;
 using WeChatVoice.Windows;
 
@@ -16,34 +17,41 @@ public sealed class SqlCipherMaterializerTests
         using var temporary = new TestTemporaryDirectory();
         var snapshotRoot = temporary.CreateDirectory("snapshot");
         var encrypted = Path.Combine(snapshotRoot, "message_0.db");
+        var optionalMigration = Path.Combine(snapshotRoot, "migrate", "unspportmsg.db");
         var fixture = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherFixture.dll");
-        var worker = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.dll");
+        var worker = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.exe");
         Assert.Equal(0, await RunDotnetAsync(fixture, ["--output", encrypted]));
+        Directory.CreateDirectory(Path.GetDirectoryName(optionalMigration)!);
+        await File.WriteAllBytesAsync(optionalMigration, Enumerable.Repeat((byte)0xA5, 4096).ToArray());
 
         var bytes = await File.ReadAllBytesAsync(encrypted);
+        var optionalBytes = await File.ReadAllBytesAsync(optionalMigration);
         var manifest = new SnapshotManifest(
             snapshotRoot,
             snapshotRoot,
             DateTimeOffset.UtcNow,
-            [new SnapshotFileRecord("message_0.db", bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), File.GetLastWriteTimeUtc(encrypted))]);
+            [
+                new SnapshotFileRecord("message_0.db", bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), File.GetLastWriteTimeUtc(encrypted)),
+                new SnapshotFileRecord("migrate/unspportmsg.db", optionalBytes.LongLength, Convert.ToHexString(SHA256.HashData(optionalBytes)).ToLowerInvariant(), File.GetLastWriteTimeUtc(optionalMigration)),
+            ]);
         var verifiedSnapshot = await new RawSnapshotVerifier().VerifyAsync(new RawSnapshot(manifest), CancellationToken.None);
         var probe = await new DataSetProbeService().ProbeAsync(snapshotRoot, new DataSetProbeOptions(IncludeLocalPaths: true), CancellationToken.None);
-        var artifact = Assert.Single(probe.DataSet.Databases);
+        var artifact = Assert.Single(probe.DataSet.Databases, static database => database.DatabasePath == "message_0.db");
         var key = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
         using var protectedKey = new SensitiveBuffer(key);
         CryptographicOperations.ZeroMemory(key);
         using var acquisition = new VerifiedKeyAcquisition(
             "acquisition-test",
             verifiedSnapshot.Snapshot.SnapshotId,
-            "weixin-windows-4.1.11.55-wcdb-ascii-key-v1",
+            "weixin-windows-4.1.11.55-wcdb-protected-spec-v2",
             [new DatabaseKeyBinding(
                 verifiedSnapshot.Snapshot.SnapshotId,
                 "S-1-5-21-test",
                 artifact.DatabaseGroupFingerprint ?? throw new InvalidDataException("The test artifact did not have a group fingerprint."),
                 artifact.DatabasePath,
                 artifact.ShardNumber,
-                "weixin-windows-4.1.11.55-wcdb-ascii-key-v1",
-                "weixin-windows-4.sqlcipher4-page-hmac-sha512-v1",
+                "weixin-windows-4.1.11.55-wcdb-protected-spec-v2",
+                WeixinWindows4SqlCipherKeyValidator.EncryptionProfileId,
                 protectedKey)],
             DateTimeOffset.UtcNow);
 
@@ -58,6 +66,9 @@ public sealed class SqlCipherMaterializerTests
         Assert.True(File.Exists(Path.Combine(output, "databases", "message_0.db")));
         Assert.True(File.Exists(result.Result.ManifestPath));
         Assert.Equal("ok", await ReadQuickCheckAsync(Path.Combine(output, "databases", "message_0.db")));
+        var ignored = Assert.Single(result.Result.Databases, static database => database.Status == MaterializationDatabaseStatus.IntentionallyIgnored);
+        Assert.Equal("migrate/unspportmsg.db", ignored.SourceRelativePath);
+        Assert.Empty(ignored.OutputRelativePath);
     }
 
     private static async Task<int> RunDotnetAsync(string assembly, IReadOnlyList<string> arguments)

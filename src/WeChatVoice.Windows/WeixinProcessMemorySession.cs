@@ -47,7 +47,7 @@ internal sealed class WeixinProcessMemorySession : IDisposable
 {
     internal const int ChunkSize = 1024 * 1024;
     internal const long MaximumRegionBytes = 128L * 1024 * 1024;
-    internal const long MaximumTotalBytes = 768L * 1024 * 1024;
+    internal const long MaximumTotalBytes = 1024L * 1024 * 1024;
     internal const int MaximumRegions = 8192;
     internal static readonly TimeSpan MaximumDuration = TimeSpan.FromSeconds(60);
 

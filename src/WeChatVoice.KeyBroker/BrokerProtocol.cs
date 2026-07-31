@@ -100,7 +100,8 @@ internal sealed record BrokerStageEvent(
     int? CompletedGroups = null,
     int? TotalGroups = null,
     int? CompletedDatabases = null,
-    int? TotalDatabases = null);
+    int? TotalDatabases = null,
+    int? FirstUnvalidatedGroupOrdinal = null);
 
 internal sealed class BrokerProtocolException(string code, string message, string? requestId = null) : Exception(message)
 {

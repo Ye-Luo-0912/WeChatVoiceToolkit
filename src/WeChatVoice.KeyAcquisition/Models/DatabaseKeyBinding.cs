@@ -22,4 +22,5 @@ public sealed record ValidatedDatabaseKey(
     SensitiveBuffer KeyMaterial,
     string? SourceRelativePath = null,
     string? LogicalRole = null,
-    int? ShardNumber = null);
+    int? ShardNumber = null,
+    string? EncryptionProfileId = null);

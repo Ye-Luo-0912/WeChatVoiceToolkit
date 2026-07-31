@@ -5,24 +5,26 @@ using WeChatVoice.KeyAcquisition.Ports;
 namespace WeChatVoice.KeyAcquisition.Validation;
 
 /// <summary>
-/// Candidate-only validator for the observed Weixin Windows 4.x 4096-byte
-/// SQLCipher page shape. This does not acquire keys, decrypt databases, or
-/// constitute an enabled build Profile.
+/// Validates the WCDB configuration produced by applying SQLCipher
+/// compatibility 3 and then overriding cipher_page_size to 4096. The HMAC is
+/// SHA-1, its 48-byte reserve contains IV + HMAC + padding, and the raw key
+/// still uses the database salt from page one.
 /// </summary>
-public sealed class WeixinWindows4SqlCipherKeyValidator : IDatabaseKeyValidator
+public sealed class WeixinWindows4SqlCipher3Page4096KeyValidator : IDatabaseKeyValidator
 {
-    public const string EncryptionProfileId = "weixin-windows-4.sqlcipher4-page4096-hmac-sha512-v1";
+    public const string EncryptionProfileId = "weixin-windows-4.sqlcipher3-page4096-hmac-sha1-v1";
     public const int PageSize = 4096;
     public const int KeySize = 32;
     public const int SaltSize = 16;
-    public const int ReservedSize = 80;
-    public const int HmacSize = 64;
+    public const int ReservedSize = 48;
+    public const int HmacSize = 20;
     public const int KdfIterations = 2;
     public const byte HmacSaltMask = 0x3A;
 
     private const int PageNumberSize = sizeof(uint);
     private const int AuthenticatedPageEnd = PageSize - ReservedSize + SaltSize;
     private const int AuthenticatedPageLength = AuthenticatedPageEnd - SaltSize;
+    private const int StoredHmacOffset = PageSize - ReservedSize + SaltSize;
 
     public string Id => EncryptionProfileId;
 
@@ -56,13 +58,13 @@ public sealed class WeixinWindows4SqlCipherKeyValidator : IDatabaseKeyValidator
                 hmacSalt,
                 hmacKey,
                 KdfIterations,
-                HashAlgorithmName.SHA512);
+                HashAlgorithmName.SHA1);
 
             encryptedFirstPage.Slice(SaltSize, AuthenticatedPageLength).CopyTo(authenticatedData);
             BinaryPrimitives.WriteUInt32LittleEndian(authenticatedData[AuthenticatedPageLength..], 1);
-            HMACSHA512.HashData(hmacKey, authenticatedData, computedHmac);
+            HMACSHA1.HashData(hmacKey, authenticatedData, computedHmac);
 
-            var storedHmac = encryptedFirstPage[(PageSize - HmacSize)..];
+            var storedHmac = encryptedFirstPage.Slice(StoredHmacOffset, HmacSize);
             return CryptographicOperations.FixedTimeEquals(computedHmac, storedHmac)
                 ? DatabaseKeyValidationResult.ValidFor(EncryptionProfileId)
                 : DatabaseKeyValidationResult.Invalid(DatabaseKeyValidationFailure.AuthenticationMismatch);

@@ -70,6 +70,31 @@ public sealed class HexKeyCandidateScannerTests
     }
 
     [Fact]
+    public void Scanner_decodes_version_bound_xor_protected_spec_across_chunk_boundary()
+    {
+        var expectedKey = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        var expectedSalt = Enumerable.Range(160, 16).Select(static value => (byte)value).ToArray();
+        var plain = Encoding.ASCII.GetBytes($"x'{Convert.ToHexString(expectedKey)}{Convert.ToHexString(expectedSalt)}'");
+        var mask = WeixinWindows41155Profile.WcdbMemoryProtectionMask.ToArray();
+        var protectedSpec = Protect(plain, mask);
+        byte[]? observedKey = null;
+        byte[]? observedSalt = null;
+        using var scanner = new HexKeyCandidateScanner((key, salt) =>
+        {
+            observedKey = key.ToArray();
+            observedSalt = salt.ToArray();
+            return true;
+        }, mask);
+
+        Assert.True(scanner.ProcessChunk(protectedSpec[..41], startsRegion: true));
+        Assert.True(scanner.ProcessChunk(protectedSpec[41..], startsRegion: false));
+
+        Assert.Equal(1, scanner.CandidateCount);
+        Assert.Equal(expectedKey, observedKey);
+        Assert.Equal(expectedSalt, observedSalt);
+    }
+
+    [Fact]
     public void Scanner_stops_after_the_fixed_candidate_limit()
     {
         var patterns = Enumerable.Range(0, HexKeyCandidateScanner.MaximumCandidates + 1)
@@ -91,5 +116,16 @@ public sealed class HexKeyCandidateScannerTests
 
         Assert.False(shouldContinue);
         Assert.Equal(HexKeyCandidateScanner.MaximumCandidates + 1, scanner.CandidateCount);
+    }
+
+    private static byte[] Protect(ReadOnlySpan<byte> plain, ReadOnlySpan<byte> mask)
+    {
+        var result = new byte[plain.Length];
+        for (var index = 0; index < plain.Length; index++)
+        {
+            result[index] = (byte)(plain[index] ^ mask[index & 31]);
+        }
+
+        return result;
     }
 }

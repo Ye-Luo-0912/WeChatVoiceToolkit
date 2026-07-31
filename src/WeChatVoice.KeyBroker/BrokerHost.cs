@@ -84,13 +84,27 @@ internal static class BrokerHost
                 cancellationToken).ConfigureAwait(false);
             verifiedSnapshot = stagedSnapshot.Snapshot;
             snapshotStaged = true;
+            reportStage?.Invoke(new BrokerStageEvent("snapshot-staged"));
             var profile = GuardedKeyExtractionProfiles.Create(
-                scan => reportStage?.Invoke(new BrokerStageEvent("memory-scan", scan.ScannedBytes, scan.CandidateCount))).Single();
+                scan =>
+                {
+                    reportStage?.Invoke(new BrokerStageEvent(
+                        "memory-scan",
+                        scan.Memory.ScannedBytes,
+                        scan.Memory.CandidateCount));
+                    reportStage?.Invoke(new BrokerStageEvent(
+                        "key-validation",
+                        CompletedGroups: scan.ValidatedGroups,
+                        TotalGroups: scan.TotalGroups,
+                        FirstUnvalidatedGroupOrdinal: scan.FirstUnvalidatedGroupOrdinal));
+                }).Single();
+            reportStage?.Invoke(new BrokerStageEvent("profile-selected"));
             var materializer = new SqlCipherEphemeralDatabaseMaterializer(
                 progress: (completed, total) => reportStage?.Invoke(new BrokerStageEvent(
                     "materializing",
                     CompletedDatabases: completed,
-                    TotalDatabases: total)));
+                    TotalDatabases: total)),
+                checkpoint: stage => reportStage?.Invoke(new BrokerStageEvent(stage)));
             var service = new EphemeralAcquireAndMaterializeService(
                 new ProfileDrivenKeyAcquisitionService(
                     new WeixinProcessLocator(),
@@ -100,10 +114,15 @@ internal static class BrokerHost
                 materializer);
             var materialization = await service.ExecuteAsync(
                 verifiedSnapshot,
-                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60), 768L * 1024 * 1024, 256, allowExperimentalProfile),
+                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60), 1024L * 1024 * 1024, 256, allowExperimentalProfile),
                 new MaterializationOptions(Path.GetFullPath(outputRoot)),
                 cancellationToken).ConfigureAwait(false);
-            var workspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);
+            var accountId = WeixinWindowsAccountIdentity.TryDeriveCandidate(
+                verifiedSnapshot.Snapshot.Manifest.SourceDirectory);
+            var workspace = await new LocalWorkspaceCreator().CreateAsync(
+                materialization,
+                accountId,
+                cancellationToken).ConfigureAwait(false);
             var workspacePath = Path.GetFullPath(workspaceOutput);
             Directory.CreateDirectory(Path.GetDirectoryName(workspacePath)!);
             await using (var workspaceStream = new FileStream(workspacePath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
@@ -138,6 +157,13 @@ internal static class BrokerHost
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
         {
             var noProfile = exception is InvalidDataException;
+            reportStage?.Invoke(new BrokerStageEvent(exception switch
+            {
+                InvalidDataException => "operation-failed-validation",
+                UnauthorizedAccessException => "operation-failed-access",
+                IOException => "operation-failed-io",
+                _ => "operation-failed-input",
+            }));
             if (!snapshotVerified || !snapshotStaged)
             {
                 BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_invalid", "The snapshot could not be verified."));
@@ -149,6 +175,21 @@ internal static class BrokerHost
                 noProfile ? "profile_unavailable" : "materialization_failed",
                 noProfile ? "No running Weixin process matched the Profile, or no candidate key validated every database group." : "The Broker could not complete the verified materialization."));
             return noProfile ? 3 : 1;
+        }
+        catch (OperationCanceledException)
+        {
+            reportStage?.Invoke(new BrokerStageEvent("operation-cancelled"));
+            BrokerProtocol.Write(output, Failed(request?.RequestId, "cancelled", "The one-shot Broker operation was cancelled."));
+            return 130;
+        }
+        catch (Exception)
+        {
+            // A one-shot elevated process must still return a bounded,
+            // non-sensitive terminal response for unexpected runtime errors.
+            // Exception messages and stack traces never cross the pipe.
+            reportStage?.Invoke(new BrokerStageEvent("operation-failed-runtime"));
+            BrokerProtocol.Write(output, Failed(request?.RequestId, "broker_internal", "The Key Broker encountered an internal runtime failure."));
+            return 1;
         }
     }
 

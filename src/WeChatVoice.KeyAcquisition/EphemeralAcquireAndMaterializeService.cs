@@ -39,7 +39,7 @@ public sealed class EphemeralAcquireAndMaterializeService(
             throw new InvalidDataException("The acquired keys are not bound to the verified SnapshotId.");
         }
 
-        if (acquisition.Bindings.Any(binding => !string.Equals(binding.EncryptionProfileId, materializer.EncryptionProfileId, StringComparison.Ordinal)))
+        if (acquisition.Bindings.Any(binding => !materializer.SupportedEncryptionProfileIds.Contains(binding.EncryptionProfileId)))
         {
             throw new InvalidDataException("The acquired keys are bound to an encryption Profile the materializer does not support.");
         }

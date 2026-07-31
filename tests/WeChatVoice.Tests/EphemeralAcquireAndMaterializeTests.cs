@@ -132,7 +132,7 @@ public sealed class EphemeralAcquireAndMaterializeTests
     {
         public string BackendId => "fake-backend";
 
-        public string EncryptionProfileId => "fake-profile";
+        public IReadOnlySet<string> SupportedEncryptionProfileIds { get; } = new HashSet<string>(StringComparer.Ordinal) { "fake-profile" };
 
         internal byte[]? ObservedKey { get; private set; }
 
@@ -163,7 +163,7 @@ public sealed class EphemeralAcquireAndMaterializeTests
     {
         public string BackendId => "fake-backend";
 
-        public string EncryptionProfileId => "fake-profile";
+        public IReadOnlySet<string> SupportedEncryptionProfileIds { get; } = new HashSet<string>(StringComparer.Ordinal) { "fake-profile" };
 
         public Task<VerifiedMaterialization> MaterializeAsync(
             VerifiedRawSnapshot snapshot,
@@ -176,7 +176,7 @@ public sealed class EphemeralAcquireAndMaterializeTests
     {
         public string BackendId => "fake-backend";
 
-        public string EncryptionProfileId => "fake-profile";
+        public IReadOnlySet<string> SupportedEncryptionProfileIds { get; } = new HashSet<string>(StringComparer.Ordinal) { "fake-profile" };
 
         public Task<VerifiedMaterialization> MaterializeAsync(
             VerifiedRawSnapshot snapshot,

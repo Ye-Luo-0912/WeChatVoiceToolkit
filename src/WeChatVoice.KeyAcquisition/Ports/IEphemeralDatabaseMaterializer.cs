@@ -12,7 +12,7 @@ public interface IEphemeralDatabaseMaterializer
 {
     string BackendId { get; }
 
-    string EncryptionProfileId { get; }
+    IReadOnlySet<string> SupportedEncryptionProfileIds { get; }
 
     Task<VerifiedMaterialization> MaterializeAsync(
         VerifiedRawSnapshot snapshot,

@@ -45,6 +45,7 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
 
         var currentSid = WindowsIdentity.GetCurrent().User?.Value
             ?? throw new UnauthorizedAccessException("The current Windows user SID was unavailable.");
+        reportStage?.Invoke(new BrokerStageEvent("process-locating"));
         var matches = new List<(IWeixinKeyExtractionProfile Profile, WeChatProcessInfo Process, WeixinProcessIdentityEvidence Evidence)>();
         foreach (var process in processLocator.LocateTrustedProcessTree())
         {
@@ -81,6 +82,8 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
         {
             throw new InvalidDataException("No running Weixin process matched the requested exact key-extraction Profile.");
         }
+
+        reportStage?.Invoke(new BrokerStageEvent("process-matched"));
 
         var profileGroups = matches.GroupBy(static match => match.Profile.Id, StringComparer.Ordinal).ToArray();
         if (profileGroups.Length != 1)
@@ -132,7 +135,8 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
                     key.SourceRelativePath,
                     key.ShardNumber,
                     match.Profile.Id,
-                    match.Profile.Descriptor.DatabaseEncryptionProfileId,
+                    key.EncryptionProfileId
+                        ?? throw new InvalidDataException("A validated key did not retain its exact database-encryption Profile."),
                     key.KeyMaterial));
             }
 

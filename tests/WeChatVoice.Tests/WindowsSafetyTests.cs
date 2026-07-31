@@ -62,7 +62,7 @@ public sealed class WindowsSafetyTests
     {
         Assert.Equal(1024 * 1024, WeixinProcessMemorySession.ChunkSize);
         Assert.Equal(128L * 1024 * 1024, WeixinProcessMemorySession.MaximumRegionBytes);
-        Assert.Equal(768L * 1024 * 1024, WeixinProcessMemorySession.MaximumTotalBytes);
+        Assert.Equal(1024L * 1024 * 1024, WeixinProcessMemorySession.MaximumTotalBytes);
         Assert.Equal(8192, WeixinProcessMemorySession.MaximumRegions);
         Assert.Equal(TimeSpan.FromSeconds(60), WeixinProcessMemorySession.MaximumDuration);
     }

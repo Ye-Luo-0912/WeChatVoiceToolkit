@@ -13,17 +13,19 @@ public static class SqlCipherWorkerHost
 {
     private const int KeySize = 32;
     private const int MaximumPathLength = 32 * 1024;
+    private const string SqlCipher3Page4096ProfileId = "weixin-windows-4.sqlcipher3-page4096-hmac-sha1-v1";
+    private const string SqlCipher4Page4096ProfileId = "weixin-windows-4.sqlcipher4-page4096-hmac-sha512-v1";
     private static readonly byte[] ProtocolMagic = "WCV1"u8.ToArray();
 
     public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
     {
         try
         {
-            var (inputPath, outputPath) = ParseArguments(args);
+            var (inputPath, outputPath, encryptionProfileId) = ParseArguments(args);
             var key = await ReadKeyAsync(Console.OpenStandardInput(), cancellationToken).ConfigureAwait(false);
             try
             {
-                await MaterializeAsync(inputPath, outputPath, key, cancellationToken).ConfigureAwait(false);
+                await MaterializeAsync(inputPath, outputPath, encryptionProfileId, key, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -58,6 +60,7 @@ public static class SqlCipherWorkerHost
     private static async Task MaterializeAsync(
         string inputPath,
         string outputPath,
+        string encryptionProfileId,
         byte[] key,
         CancellationToken cancellationToken)
     {
@@ -98,7 +101,7 @@ public static class SqlCipherWorkerHost
             stage = "key";
             await ApplyRawKeyAsync(connection, key, cancellationToken).ConfigureAwait(false);
             stage = "compatibility";
-            await ExecuteAsync(connection, "PRAGMA cipher_compatibility = 4;", cancellationToken).ConfigureAwait(false);
+            await ApplyEncryptionProfileAsync(connection, encryptionProfileId, cancellationToken).ConfigureAwait(false);
             stage = "quick_check";
             var quickCheck = await ScalarAsync(connection, "PRAGMA quick_check;", cancellationToken).ConfigureAwait(false);
             if (!string.Equals(quickCheck, "ok", StringComparison.OrdinalIgnoreCase))
@@ -114,15 +117,14 @@ public static class SqlCipherWorkerHost
             await AttachPlaintextAsync(connection, outputPath, cancellationToken).ConfigureAwait(false);
             try
             {
+                stage = "export";
+                await ExecuteAsync(connection, "SELECT sqlcipher_export('plaintext');", cancellationToken).ConfigureAwait(false);
                 stage = "plaintext_quick_check";
                 var plaintextQuickCheck = await ScalarAsync(connection, "PRAGMA plaintext.quick_check;", cancellationToken).ConfigureAwait(false);
                 if (!string.Equals(plaintextQuickCheck, "ok", StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidDataException("The plaintext destination failed quick_check.");
                 }
-
-                stage = "export";
-                await ExecuteAsync(connection, "SELECT sqlcipher_export('plaintext');", cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -174,6 +176,21 @@ public static class SqlCipherWorkerHost
             ZeroString(sql);
             ZeroString(keyHex);
         }
+    }
+
+    private static async Task ApplyEncryptionProfileAsync(
+        SqliteConnection connection,
+        string encryptionProfileId,
+        CancellationToken cancellationToken)
+    {
+        var compatibility = encryptionProfileId switch
+        {
+            SqlCipher3Page4096ProfileId => 3,
+            SqlCipher4Page4096ProfileId => 4,
+            _ => throw new InvalidDataException("The SQLCipher encryption Profile is not supported."),
+        };
+        await ExecuteAsync(connection, $"PRAGMA cipher_compatibility = {compatibility};", cancellationToken).ConfigureAwait(false);
+        await ExecuteAsync(connection, "PRAGMA cipher_page_size = 4096;", cancellationToken).ConfigureAwait(false);
     }
 
     private static void ZeroString(string value)
@@ -273,11 +290,14 @@ public static class SqlCipherWorkerHost
         }
     }
 
-    private static (string InputPath, string OutputPath) ParseArguments(string[] args)
+    private static (string InputPath, string OutputPath, string EncryptionProfileId) ParseArguments(string[] args)
     {
-        if (args.Length != 4 || !string.Equals(args[0], "--input", StringComparison.Ordinal) || !string.Equals(args[2], "--output", StringComparison.Ordinal))
+        if (args.Length != 6
+            || !string.Equals(args[0], "--input", StringComparison.Ordinal)
+            || !string.Equals(args[2], "--output", StringComparison.Ordinal)
+            || !string.Equals(args[4], "--encryption-profile", StringComparison.Ordinal))
         {
-            throw new ArgumentException("The SQLCipher worker accepts only --input and --output.");
+            throw new ArgumentException("The SQLCipher worker accepts only --input, --output, and --encryption-profile.");
         }
 
         var input = Path.GetFullPath(args[1]);
@@ -287,7 +307,12 @@ public static class SqlCipherWorkerHost
             throw new InvalidDataException("The SQLCipher worker input path is invalid.");
         }
 
-        return (input, output);
+        if (args[5] is not (SqlCipher3Page4096ProfileId or SqlCipher4Page4096ProfileId))
+        {
+            throw new InvalidDataException("The SQLCipher encryption Profile is not supported.");
+        }
+
+        return (input, output, args[5]);
     }
 
     private sealed class SqlCipherWorkerSqliteException(string stage, int sqliteErrorCode, Exception innerException)

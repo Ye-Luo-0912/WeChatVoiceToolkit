@@ -1,21 +1,20 @@
 using WeChatVoice.KeyAcquisition.Ports;
 using WeChatVoice.KeyAcquisition.Validation;
-using WeChatVoice.Windows;
 
 namespace WeChatVoice.KeyBroker;
 
 /// <summary>
-/// Reviewed candidate Profiles known to this build. These are discoverable
-/// for diagnostics, but a Profile is not considered usable until a matching
-/// plaintext materializer is registered by the Broker host.
+/// Reviewed Profiles known to this build. The Broker still requires a matching
+/// fixed plaintext materializer before one can be selected.
 /// </summary>
 public static class GuardedKeyExtractionProfiles
 {
-    internal static IReadOnlyList<IWeixinKeyExtractionProfile> Create(Action<ProcessMemoryScanResult>? scanProgress = null) =>
+    internal static IReadOnlyList<IWeixinKeyExtractionProfile> Create(Action<WeixinKeyScanProgress>? scanProgress = null) =>
     [
         new WeixinWindows41155Profile(
-            new WeixinWindows4SqlCipherKeyValidator(),
+            new WeixinWindows41155SqlCipherKeyValidator(),
             new WindowsWeixinProcessMemorySourceFactory(),
+            new VersionedWcdbModuleIdentityVerifier(),
             scanProgress),
     ];
 }

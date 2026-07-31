@@ -1,66 +1,43 @@
 # Roadmap
 
-## Completed foundation
+## Completed main path
 
-1. Group-level snapshots now have content-addressed IDs and exclude only the
-   reserved `.wechatvoice/` metadata directory.
-2. Shareable probes and executable workspaces are separate. Workspace loads
-   require `ILocalWorkspaceVerifier`; adapters receive only a verified local
-   workspace.
-3. Materialization has a verified raw-snapshot boundary, source-to-output
-   database mapping, strict output traversal, SQLite acceptance checks, and a
-   persisted materialization manifest. The CLI closes the path into a local
-   workspace JSON.
-4. Export paths use only `SourceStableKey`, catalogs are disposable, and run
-   Journals use a Run Lease with processing/failure/cancellation and manifest
-   commit events. `voice export recover --journal` rebuilds a manifest after a
-   crash.
-5. Route two now has a separate one-shot UAC Key Broker, fixed request protocol,
-   raw Snapshot verification before Profile selection, registered
-   materialization backends, bounded backend execution, a guarded
-   experimental Profile-driven key acquisition service, and a fixed SQLCipher
-   Worker that completes synthetic encrypted-fixture materialization into a
-   Local Workspace. The Broker enforces launched-PID binding, private Snapshot
-   staging, caller budgets, and explicit experimental-profile opt-in. It
-   identifies the unique current-session Weixin root and may inspect only its
-   same-image descendants under the same exact identity policy.
-6. Stable business/login snapshots for the observed build pass group-level
-   verification. A candidate-only first-page HMAC validator has fixed synthetic
-   vectors, zeroes temporary key material, and remains outside the Profile
-   registry.
-7. The formal CLI owns the one-command UAC Broker flow. The Broker uses a
-   one-time current-user pipe, fixed four-field request, read-only process
-   foundations, exact identity policies, bounded overlapping scans, and
-   deterministic key disposal. CI uses Fakes and never reads a real process.
+1. Stable, group-validated snapshots use content-addressed IDs and preserve all
+   source files outside the reserved `.wechatvoice/` metadata directory.
+2. Shareable probes, verified raw snapshots, verified materializations, and
+   executable local workspaces are separate trust boundaries.
+3. The one-shot elevated Key Broker verifies the current-user Weixin process
+   tree, exact 4.1.11.55 executable identity, and exact versioned WCDB module.
+   It accepts no caller-selected PID, address, length, command, or raw-key
+   output.
+4. The 4.1.11.55 Profile recognizes the observed protected WCDB key specs,
+   validates candidates using exact SQLCipher page profiles, binds keys to
+   database-group fingerprints, and clears sensitive buffers.
+5. The fixed SQLCipher Worker materializes 20 required databases into ordinary
+   SQLite. Every output passes header, schema, hash, and `PRAGMA quick_check`
+   acceptance. The migration-only `migrate/unspportmsg.db` is the sole narrow
+   intentionally-ignored source status.
+6. Materialization automatically emits a verified local workspace containing a
+   stable account identity; no plaintext key file is created.
+7. The exact Weixin 4.x Adapter supports contact list/search, direction-aware
+   voice scanning, strict message/media association, streaming BLOB reads, and
+   raw SILK export.
+8. Export uses stable source keys, content-addressed paths, per-run flushed
+   Journals, committed Manifests, hash verification, and repeat-run safe skips.
 
-## Current blocker and next step
+## Next product work
 
-The actual WeChat 4.x business database first pages observed on the development
-machine are encrypted or proprietary rather than ordinary SQLite. The separate
-login `key_info.db` is ordinary SQLite, but its BLOB semantics remain unverified.
-Do not guess tables, BLOB formats, or keys. Message and media filename shards
-are also not one-to-one; only an Adapter with verified schema evidence may
-resolve their relationship.
-The first controlled live attempt verified the unique current-session Weixin
-root and its same-image descendants, staged the stable 21-database Snapshot,
-scanned the bounded process-tree budget, and found zero candidates in the
-current WCDB ASCII key-spec forms (including bounded longer even-length forms).
-Materialization stopped before Worker output. The next step is evidence-backed
-analysis of the exact page/key format; do not weaken validation
-or guess a new format. The Worker is currently proven only with synthetic
-SQLCipher fixtures and must not be treated as a Weixin decryptor until page
-format, KDF/HMAC, and WAL behavior match. After that evidence, implement one
-isolated adapter for exact contact selection, incoming voice association, and
-raw SILK output. No plaintext key-file interface is supported on the formal
-path.
+1. Split the oversized CLI composition file into command and service classes
+   without changing verified command behavior.
+2. Add a guided command that composes snapshot selection, materialization,
+   contact selection, scan confirmation, and export while retaining the same
+   trust boundaries.
+3. Recover voice duration from verified message metadata, if evidence supports
+   it, so scan and training-quality manifests can report duration accurately.
+4. Add packaged/self-contained win-x64 smoke tests and an installer that places
+   the Broker/Worker bundle in a normal-user non-writable directory.
+5. After raw SILK remains stable, add a batch or resident decoder worker and
+   strict RIFF/PCM validation. WAV/RVC work remains a derived later phase.
 
-The currently observed signed Weixin build is 4.1.11.55. Stable raw business and
-login snapshots exist only in the ignored local workspace; they must never be
-committed. The 21 business databases have distinct first-page salts. Process
-version, salt, or login-metadata evidence alone must not be promoted into a
-key-extraction Profile. The formal backend remains experimental until a candidate
-also passes full DB/WAL materialization and `PRAGMA quick_check` against the
-real signed build.
-
-WAV decoding remains a derived, later phase and must not become a prerequisite
-for the first usable SILK chain.
+New Weixin versions require a new exact process/module Profile and schema
+evidence. There is no unknown-version heuristic fallback.

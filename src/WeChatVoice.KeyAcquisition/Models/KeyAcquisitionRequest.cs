@@ -26,9 +26,9 @@ public sealed record KeyAcquisitionOptions
             throw new ArgumentOutOfRangeException(nameof(maximumDuration), "The acquisition duration must be positive and no more than 30 minutes.");
         }
 
-        if (maximumScanBytes is <= 0 or > 768L * 1024 * 1024)
+        if (maximumScanBytes is <= 0 or > 1024L * 1024 * 1024)
         {
-            throw new ArgumentOutOfRangeException(nameof(maximumScanBytes), "The acquisition scan budget must be positive and no more than 768 MiB.");
+            throw new ArgumentOutOfRangeException(nameof(maximumScanBytes), "The acquisition scan budget must be positive and no more than 1 GiB.");
         }
 
         if (maximumCandidates is <= 0 or > 4096)

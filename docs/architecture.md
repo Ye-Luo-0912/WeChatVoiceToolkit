@@ -66,5 +66,14 @@ separate `WeChatVoice.KeyBroker.exe` (`runas`/UAC manifest). The request contain
 only protocol version, RequestId, SnapshotId, and `acquire-and-materialize`.
 Exact process/database behavior is supplied through reviewed registries, while
 arbitrary memory coordinates, writable access, key output, and unknown-version
-fallback remain impossible. The empty registry currently returns
-`profile_unavailable`.
+fallback remain impossible. The registry contains one live-validated Profile
+for the exact signed Weixin 4.1.11.55 executable and versioned WCDB module.
+It binds validated keys to database groups and invokes a fixed SQLCipher Worker
+without persisting or returning key material.
+
+The matching `weixin-windows-4` Adapter recognizes only the verified contact,
+message, and media schemas. It selects contacts by stable internal username,
+derives `Msg_<md5(username)>`, maps direction from exact observed values, and
+requires conversation plus local ID, server ID, and creation time for media
+association. Payloads are exposed as owning read-only streams so SQLite
+connections are released when the caller disposes the stream.

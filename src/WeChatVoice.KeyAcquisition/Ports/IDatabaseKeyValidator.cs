@@ -16,9 +16,16 @@ public interface IDatabaseKeyValidator
 
 public readonly record struct DatabaseKeyValidationResult(
     bool IsValid,
-    DatabaseKeyValidationFailure Failure)
+    DatabaseKeyValidationFailure Failure,
+    string? EncryptionProfileId = null)
 {
     public static DatabaseKeyValidationResult Valid { get; } = new(true, DatabaseKeyValidationFailure.None);
+
+    public static DatabaseKeyValidationResult ValidFor(string encryptionProfileId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(encryptionProfileId);
+        return new DatabaseKeyValidationResult(true, DatabaseKeyValidationFailure.None, encryptionProfileId);
+    }
 
     public static DatabaseKeyValidationResult Invalid(DatabaseKeyValidationFailure failure) => new(false, failure);
 }

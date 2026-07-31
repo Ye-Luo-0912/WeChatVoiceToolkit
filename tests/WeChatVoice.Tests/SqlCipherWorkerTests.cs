@@ -5,6 +5,8 @@ namespace WeChatVoice.Tests;
 
 public sealed class SqlCipherWorkerTests
 {
+    private const string FixtureEncryptionProfileId = "weixin-windows-4.sqlcipher4-page4096-hmac-sha512-v1";
+
     [Fact]
     public async Task Worker_materializes_a_synthetic_cipher_database_without_persisting_the_key()
     {
@@ -24,7 +26,7 @@ public sealed class SqlCipherWorkerTests
         key.CopyTo(envelope, 5);
         CryptographicOperations.ZeroMemory(key);
 
-        var exitCode = await RunDotnetAsync(worker, ["--input", encrypted, "--output", plaintext], envelope);
+        var exitCode = await RunDotnetAsync(worker, WorkerArguments(encrypted, plaintext), envelope);
         CryptographicOperations.ZeroMemory(envelope);
 
         Assert.Equal(0, exitCode);
@@ -48,7 +50,7 @@ public sealed class SqlCipherWorkerTests
         var worker = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.dll");
         Assert.Equal(0, await RunDotnetAsync(fixture, ["--output", encrypted], ReadOnlyMemory<byte>.Empty));
 
-        var malformed = await RunDotnetAsync(worker, ["--input", encrypted, "--output", output], "WCV1"u8.ToArray(), throwOnFailure: false);
+        var malformed = await RunDotnetAsync(worker, WorkerArguments(encrypted, output), "WCV1"u8.ToArray(), throwOnFailure: false);
         Assert.Equal(1, malformed.ExitCode);
         Assert.False(File.Exists(output));
         Assert.DoesNotContain("WCV1", malformed.StandardError, StringComparison.Ordinal);
@@ -60,7 +62,7 @@ public sealed class SqlCipherWorkerTests
         key.CopyTo(envelope, 5);
         envelope[^1] = 0x7F;
         CryptographicOperations.ZeroMemory(key);
-        var trailing = await RunDotnetAsync(worker, ["--input", encrypted, "--output", output], envelope, throwOnFailure: false);
+        var trailing = await RunDotnetAsync(worker, WorkerArguments(encrypted, output), envelope, throwOnFailure: false);
         CryptographicOperations.ZeroMemory(envelope);
         Assert.Equal(1, trailing.ExitCode);
         Assert.False(File.Exists(output));
@@ -83,7 +85,7 @@ public sealed class SqlCipherWorkerTests
         envelope[4] = 32;
         wrongKey.CopyTo(envelope, 5);
         CryptographicOperations.ZeroMemory(wrongKey);
-        var result = await RunDotnetAsync(worker, ["--input", encrypted, "--output", output], envelope, throwOnFailure: false);
+        var result = await RunDotnetAsync(worker, WorkerArguments(encrypted, output), envelope, throwOnFailure: false);
         CryptographicOperations.ZeroMemory(envelope);
         Assert.Equal(1, result.ExitCode);
         Assert.Equal([1, 2, 3], await File.ReadAllBytesAsync(output));
@@ -92,6 +94,9 @@ public sealed class SqlCipherWorkerTests
 
     private static async Task<int> RunDotnetAsync(string assembly, IReadOnlyList<string> arguments, ReadOnlyMemory<byte> stdin)
         => (await RunDotnetAsync(assembly, arguments, stdin, throwOnFailure: true)).ExitCode;
+
+    private static string[] WorkerArguments(string input, string output) =>
+        ["--input", input, "--output", output, "--encryption-profile", FixtureEncryptionProfileId];
 
     private static async Task<(int ExitCode, string StandardError)> RunDotnetAsync(
         string assembly,

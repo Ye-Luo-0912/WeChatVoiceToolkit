@@ -41,7 +41,8 @@ public sealed class WeixinWindows41155ProfileTests
             "x64");
         var profile = new WeixinWindows41155Profile(
             new WeixinWindows4SqlCipherKeyValidator(),
-            new FakeMemorySourceFactory(Encoding.ASCII.GetBytes($"x'{Convert.ToHexString(key)}'")));
+            new FakeMemorySourceFactory(ProtectSpec(Encoding.ASCII.GetBytes($"x'{Convert.ToHexString(key)}'"))),
+            new AcceptingModuleIdentityVerifier());
 
         var validated = await profile.AcquireAsync(
             process,
@@ -59,7 +60,8 @@ public sealed class WeixinWindows41155ProfileTests
                 "message_0.db",
                 0,
                 profile.Id,
-                profile.Descriptor.DatabaseEncryptionProfileId,
+                validated[0].EncryptionProfileId
+                    ?? throw new InvalidDataException("The validated test key did not have an encryption Profile."),
                 validated[0].KeyMaterial)],
             DateTimeOffset.UtcNow);
 
@@ -96,7 +98,7 @@ public sealed class WeixinWindows41155ProfileTests
         var manifest = new SnapshotManifest(root, root, DateTimeOffset.UtcNow, files);
         var verified = new VerifiedRawSnapshot(new RawSnapshot(manifest, root), DateTimeOffset.UtcNow);
         var process = new VerifiedWeixinProcess(42, DateTimeOffset.UnixEpoch, "C:\\Weixin.exe", WeixinWindows41155Profile.SupportedImageSha256, WeixinWindows41155Profile.SupportedVersion, "S-1-5-21-test", 1, "x64");
-        var profile = new WeixinWindows41155Profile(new FakeValidator(), new FakeMemorySourceFactory(Encoding.ASCII.GetBytes($"prefix x'{Convert.ToHexString(key)}' suffix")));
+        var profile = new WeixinWindows41155Profile(new FakeValidator(), new FakeMemorySourceFactory(Encoding.ASCII.GetBytes($"prefix x'{Convert.ToHexString(key)}' suffix")), new AcceptingModuleIdentityVerifier());
 
         var result = await profile.AcquireAsync(process, verified, new KeyAcquisitionBudget(TimeSpan.FromSeconds(30), 64 * 1024 * 1024, 256), CancellationToken.None);
 
@@ -131,7 +133,8 @@ public sealed class WeixinWindows41155ProfileTests
             {
                 [42] = Encoding.ASCII.GetBytes("no candidate in the root"),
                 [43] = Encoding.ASCII.GetBytes($"x'{Convert.ToHexString(key)}'"),
-            }));
+            }),
+            new AcceptingModuleIdentityVerifier());
 
         var result = await profile.AcquireAsync(
             new[] { first, second },
@@ -159,9 +162,67 @@ public sealed class WeixinWindows41155ProfileTests
         var manifest = new SnapshotManifest(root, root, DateTimeOffset.UtcNow, [file]);
         var verified = new VerifiedRawSnapshot(new RawSnapshot(manifest, root), DateTimeOffset.UtcNow);
         var process = new VerifiedWeixinProcess(42, DateTimeOffset.UnixEpoch, "C:\\Weixin.exe", WeixinWindows41155Profile.SupportedImageSha256, WeixinWindows41155Profile.SupportedVersion, "S-1-5-21-test", 1, "x64");
-        var profile = new WeixinWindows41155Profile(new RejectingValidator(), new FakeMemorySourceFactory(Encoding.ASCII.GetBytes($"x'{new string('a', 64)}'")));
+        var profile = new WeixinWindows41155Profile(new RejectingValidator(), new FakeMemorySourceFactory(Encoding.ASCII.GetBytes($"x'{new string('a', 64)}'")), new AcceptingModuleIdentityVerifier());
 
         await Assert.ThrowsAsync<InvalidDataException>(() => profile.AcquireAsync(process, verified, new KeyAcquisitionBudget(TimeSpan.FromSeconds(30), 64 * 1024 * 1024, 256), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Profile_allows_only_the_exact_migration_auxiliary_group_to_lack_a_key()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("snapshot");
+        var messagePage = new byte[4096];
+        var migrationPage = Enumerable.Repeat((byte)0xEE, 4096).ToArray();
+        var messagePath = temporary.WriteFile(Path.Combine("snapshot", "message", "message_0.db"), messagePage);
+        var migrationPath = temporary.WriteFile(Path.Combine("snapshot", "migrate", "unspportmsg.db"), migrationPage);
+        var manifest = new SnapshotManifest(
+            root,
+            root,
+            DateTimeOffset.UtcNow,
+            [
+                new SnapshotFileRecord("message/message_0.db", messagePage.LongLength, Hash(messagePage), File.GetLastWriteTimeUtc(messagePath)),
+                new SnapshotFileRecord("migrate/unspportmsg.db", migrationPage.LongLength, Hash(migrationPage), File.GetLastWriteTimeUtc(migrationPath)),
+            ]);
+        var verified = new VerifiedRawSnapshot(new RawSnapshot(manifest, root), DateTimeOffset.UtcNow);
+        var process = new VerifiedWeixinProcess(42, DateTimeOffset.UnixEpoch, "C:\\Weixin.exe", WeixinWindows41155Profile.SupportedImageSha256, WeixinWindows41155Profile.SupportedVersion, "S-1-5-21-test", 1, "x64");
+        var key = new byte[32];
+        var profile = new WeixinWindows41155Profile(
+            new RejectMarkedPageValidator(),
+            new FakeMemorySourceFactory(Encoding.ASCII.GetBytes($"x'{Convert.ToHexString(key)}'")),
+            new AcceptingModuleIdentityVerifier());
+
+        var result = await profile.AcquireAsync(
+            process,
+            verified,
+            new KeyAcquisitionBudget(TimeSpan.FromSeconds(30), 64 * 1024 * 1024, 256),
+            CancellationToken.None);
+
+        var validated = Assert.Single(result);
+        Assert.Equal("message/message_0.db", validated.SourceRelativePath);
+        validated.KeyMaterial.Dispose();
+    }
+
+    [Fact]
+    public async Task Production_module_verifier_rejects_an_adjacent_module_with_the_wrong_hash()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var image = temporary.WriteFile("Weixin.exe", [1, 2, 3]);
+        temporary.WriteFile(Path.Combine(WeixinWindows41155Profile.SupportedVersion, "Weixin.dll"), [4, 5, 6]);
+        var process = new VerifiedWeixinProcess(
+            42,
+            DateTimeOffset.UnixEpoch,
+            image,
+            WeixinWindows41155Profile.SupportedImageSha256,
+            WeixinWindows41155Profile.SupportedVersion,
+            "S-1-5-21-test",
+            1,
+            "x64");
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            () => new VersionedWcdbModuleIdentityVerifier().VerifyAsync([process], CancellationToken.None));
+
+        Assert.Contains("module hash", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static byte[] BuildPage(byte[] key, uint pageNumber)
@@ -174,6 +235,18 @@ public sealed class WeixinWindows41155ProfileTests
     }
 
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static byte[] ProtectSpec(ReadOnlySpan<byte> plain)
+    {
+        var mask = WeixinWindows41155Profile.WcdbMemoryProtectionMask;
+        var protectedSpec = new byte[plain.Length];
+        for (var index = 0; index < plain.Length; index++)
+        {
+            protectedSpec[index] = (byte)(plain[index] ^ mask[index & 31]);
+        }
+
+        return protectedSpec;
+    }
 
     private static async Task<int> RunDotnetAsync(string assembly, IReadOnlyList<string> arguments)
     {
@@ -223,13 +296,35 @@ public sealed class WeixinWindows41155ProfileTests
         public string Id => "fake";
 
         public DatabaseKeyValidationResult ValidateFirstPage(ReadOnlySpan<byte> page, ReadOnlySpan<byte> candidate) =>
-            candidate.Length == 32 && page.Length == 4096 && candidate[0] == 0 ? DatabaseKeyValidationResult.Valid : DatabaseKeyValidationResult.Invalid(DatabaseKeyValidationFailure.AuthenticationMismatch);
+            candidate.Length == 32 && page.Length == 4096 && candidate[0] == 0
+                ? DatabaseKeyValidationResult.ValidFor("fake-encryption-profile")
+                : DatabaseKeyValidationResult.Invalid(DatabaseKeyValidationFailure.AuthenticationMismatch);
+    }
+
+    private sealed class AcceptingModuleIdentityVerifier : IWeixinModuleIdentityVerifier
+    {
+        public Task VerifyAsync(IReadOnlyList<VerifiedWeixinProcess> processes, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Assert.NotEmpty(processes);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class RejectingValidator : IDatabaseKeyValidator
     {
         public string Id => "fake";
         public DatabaseKeyValidationResult ValidateFirstPage(ReadOnlySpan<byte> page, ReadOnlySpan<byte> candidate) => DatabaseKeyValidationResult.Invalid(DatabaseKeyValidationFailure.AuthenticationMismatch);
+    }
+
+    private sealed class RejectMarkedPageValidator : IDatabaseKeyValidator
+    {
+        public string Id => "fake";
+
+        public DatabaseKeyValidationResult ValidateFirstPage(ReadOnlySpan<byte> page, ReadOnlySpan<byte> candidate) =>
+            page.Length == 4096 && candidate.Length == 32 && page[0] != 0xEE
+                ? DatabaseKeyValidationResult.ValidFor("fake-encryption-profile")
+                : DatabaseKeyValidationResult.Invalid(DatabaseKeyValidationFailure.AuthenticationMismatch);
     }
 
     private sealed class FakeMemorySourceFactory(byte[] memory) : IWeixinProcessMemorySourceFactory

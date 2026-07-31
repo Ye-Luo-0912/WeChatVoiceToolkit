@@ -38,11 +38,21 @@ public sealed class LocalWorkspaceCreator
     public Task<LocalWorkspace> CreateAsync(VerifiedMaterialization materialization, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(materialization);
-        return CreateFromMaterializationAsync(materialization, cancellationToken);
+        return CreateFromMaterializationAsync(materialization, accountId: null, cancellationToken);
+    }
+
+    public Task<LocalWorkspace> CreateAsync(
+        VerifiedMaterialization materialization,
+        string? accountId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(materialization);
+        return CreateFromMaterializationAsync(materialization, accountId, cancellationToken);
     }
 
     private async Task<LocalWorkspace> CreateFromMaterializationAsync(
         VerifiedMaterialization materialization,
+        string? accountId,
         CancellationToken cancellationToken)
     {
         var probe = await _probeService.ProbeAsync(
@@ -59,10 +69,18 @@ public sealed class LocalWorkspaceCreator
             materialization.Result.BackendVersion,
             materialization.Result.BackendSha256,
             manifestHash);
+        var dataSet = string.IsNullOrWhiteSpace(accountId)
+            ? probe.DataSet
+            : new WeChatDataSet(
+                probe.DataSet.DataSetId,
+                accountId,
+                probe.DataSet.Databases,
+                provenance.SourceSnapshotId,
+                probe.DataSet.AdapterId);
         return new LocalWorkspace(
             ComputeWorkspaceId(sourceRoot, probe.DataSet.DataSetId),
             sourceRoot,
-            probe.DataSet,
+            dataSet,
             DateTimeOffset.UtcNow,
             probe.Issues,
             probe.AdapterCandidates,

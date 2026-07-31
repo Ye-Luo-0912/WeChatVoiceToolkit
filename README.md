@@ -4,11 +4,11 @@ A .NET 10, Windows-focused foundation for safely inspecting user-provided
 WeChat data snapshots and exporting voice media through version-specific schema
 adapters.
 
-The repository contains the restricted Broker and ephemeral acquisition
-infrastructure. The observed Weixin 4.1.11.55 key-extraction Profile is wired
-as `ExperimentalLive`: it is available only through the explicit
-`--allow-experimental-profile` opt-in and is not production-certified. There is
-still no guessed schema mapping or UI.
+The repository now contains a live-validated, end-to-end path for the exact
+signed Weixin Windows 4.1.11.55 build: restricted in-memory key acquisition,
+ephemeral SQLCipher materialization, verified local workspace creation,
+contact lookup, voice audit, and idempotent raw SILK export. No plaintext key
+file or UI is involved.
 
 ## Current commands
 
@@ -25,7 +25,7 @@ dotnet run --project src/WeChatVoice.Cli -- voice scan --workspace .\.wechatvoic
 dotnet run --project src/WeChatVoice.Cli -- voice export --workspace .\.wechatvoice\local-workspace.json --contact-username wxid_xxx --direction incoming --format silk --output .\exports\peer
 dotnet run --project src/WeChatVoice.Cli -- voice export recover --journal .\exports\peer\runs\<run-id>.jsonl
 dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wechatvoice\local-workspace.json
-dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --backend weixin-windows-4 --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json --allow-experimental-profile
+dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --backend weixin-windows-4 --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
 ```
 
@@ -47,12 +47,14 @@ workspace document.
 
 `workspace verify` rechecks every path, reparse-point boundary, DB/WAL/SHM
 length, hash, and database-group fingerprint before an adapter can open a
-workspace. The built-in `weixin-windows-4` adapter identity is registered
-centrally but is non-matching until a verified schema mapping is supplied.
-Commands therefore fail clearly instead of guessing table mappings. The
-experimental Profile is never selected without the explicit opt-in flag.
+workspace. The built-in `weixin-windows-4` adapter matches only the verified
+4.1.11.55 contact/message/media schema. It associates media only by
+conversation plus `local_id`, `server_id`, and `create_time`; it never falls
+back to a partial join.
 `workspace materialize` is the single formal acquire-and-materialize entry.
-It launches the installed one-shot Broker. A development-only external backend requires both
+It launches the installed one-shot Broker, verifies the exact executable and
+versioned WCDB module, performs bounded acquisition, materializes ordinary
+SQLite, and clears key buffers. A development-only external backend requires both
 `--external-decryptor` and `--allow-untrusted-backend`; it accepts only
 `--input-root`, `--output-root`, and an explicit source-to-output manifest. Key
 files are deliberately not accepted. The host verifies the raw snapshot file
@@ -71,6 +73,13 @@ is rejected before payload access. Runs are stored under
 The voice commands use exit code `0` for complete success or safe skips, `2`
 for invalid parameters, `3` for item-level partial failure, `4` for no
 matching records, `1` for run-level failure, and `130` for cancellation.
+
+The exact path was validated on 2026-08-01 against a stable 21-database raw
+snapshot: 20 business databases materialized and passed SQLite header, schema,
+hash, and `PRAGMA quick_check`; the one unsupported migration-only auxiliary
+database is explicitly recorded as intentionally ignored. A real incoming scan
+and raw SILK export completed, and a second run safely skipped every
+hash-matching artifact.
 
 See [architecture.md](docs/architecture.md), [adr-0001-sqlite-runtime.md](docs/adr-0001-sqlite-runtime.md), [security.md](docs/security.md),
 and [agent-handoff.md](docs/agent-handoff.md) before extending the project.

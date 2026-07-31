@@ -32,6 +32,12 @@ isolated compatibility runtime. The Worker receives the validated key only
 through its private stdin envelope, accepts a fixed input/output pair, copies
 the DB/WAL/SHM group to private staging, and removes failed staging/output
 artifacts. It never emits a key or accepts arbitrary commands. This runtime is
-not a generic decryptor and is not considered a production Weixin backend
-until the exact version-bound Profile validates real database pages and WAL
-behavior.
+not a generic decryptor. The exact signed Weixin 4.1.11.55 Profile has been
+live-validated against real database groups through materialization and
+`PRAGMA quick_check`; any other executable version, image hash, WCDB module
+hash, key-spec protection, or page-cipher profile is rejected.
+
+The fixed module path is `<verified-install-root>/4.1.11.55/Weixin.dll`; the
+Broker does not search `PATH` or arbitrary directories. One exact migration
+auxiliary database may be recorded as intentionally ignored, but required
+message, media, and contact databases must all materialize successfully.

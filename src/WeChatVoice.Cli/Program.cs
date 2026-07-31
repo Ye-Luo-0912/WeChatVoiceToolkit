@@ -27,51 +27,80 @@ return rootCommand.Parse(args).Invoke();
 
 static Command CreateDoctorCommand()
 {
-    var command = new Command("doctor", "Report the local runtime and the deliberately limited capabilities.");
-    command.SetAction(_ =>
+    var command = new Command("doctor", "Report installed capabilities and optionally match a verified local workspace.");
+    var workspaceOption = new Option<string?>("--workspace")
     {
-        var adapters = BuiltInAdapters.Create();
-        var materializationBackends = BuiltInMaterializationBackends.Create();
-        var keyProfiles = BuiltInKeyProfileMetadata.Create();
-        var runningProcesses = WeChatProcessDiscovery.ListRunning();
-        var report = new DoctorReport(
-            System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
-            Environment.OSVersion.VersionString,
-            OperatingSystem.IsWindows(),
-            WeChatProcessDiscovery.SupportedProcessNames,
-            runningProcesses,
-            new SecurityBoundary(
-                RegisteredAdapterCount: adapters.Count,
-                MatchingAdapterCount: 0,
-                HasUsableSchemaAdapter: false,
-                RegisteredKeyAcquisitionProfileCount: keyProfiles.Count,
-                MatchingKeyAcquisitionProfileCount: CountMatchingKeyProfiles(keyProfiles),
-                HasDatabaseEncryptionProfile: keyProfiles.Any(static profile => !string.IsNullOrWhiteSpace(profile.DatabaseEncryptionProfileId)),
-                HasMaterializationBackend: materializationBackends.Any(static backend => !string.Equals(backend.Version, "profile-unavailable", StringComparison.OrdinalIgnoreCase))
-                    || File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.exe")),
-                AllowsKeyScanning: false,
-                AllowsDatabaseDecryption: false,
-                AllowsArbitraryProcessMemoryRead: false,
-                HasMaterializationBoundary: true,
-                HasUserInterface: false));
+        Description = "Optional local workspace JSON to verify and probe against registered adapters.",
+    };
+    command.Options.Add(workspaceOption);
+    command.SetAction(async (parseResult, cancellationToken) =>
+    {
+        try
+        {
+            var adapters = BuiltInAdapters.Create();
+            var keyProfiles = BuiltInKeyProfileMetadata.Create();
+            var runningProcesses = WeChatProcessDiscovery.ListRunning();
+            var matchingAdapters = Array.Empty<string>();
+            var workspacePath = parseResult.GetValue(workspaceOption);
+            if (!string.IsNullOrWhiteSpace(workspacePath))
+            {
+                var workspace = await new WorkspaceLoader().LoadVerifiedAsync(workspacePath, cancellationToken).ConfigureAwait(false);
+                matchingAdapters = adapters
+                    .Where(adapter => adapter.Probe(workspace.DataSet).IsMatch)
+                    .Select(static adapter => adapter.Id)
+                    .Order(StringComparer.Ordinal)
+                    .ToArray();
+            }
 
-        WriteJson(report);
-        return 0;
+            var matchingProfiles = GetMatchingKeyProfiles(keyProfiles);
+            var workerInstalled = File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.exe"));
+            var brokerInstalled = File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe"));
+            var report = new DoctorReport(
+                System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+                Environment.OSVersion.VersionString,
+                OperatingSystem.IsWindows(),
+                WeChatProcessDiscovery.SupportedProcessNames,
+                runningProcesses,
+                new CapabilityReport(
+                    RegisteredAdapters: adapters.Select(static adapter => adapter.Id).Order(StringComparer.Ordinal).ToArray(),
+                    AdapterMatchEvaluated: !string.IsNullOrWhiteSpace(workspacePath),
+                    MatchingAdapters: matchingAdapters,
+                    KeyAcquisitionProfiles: keyProfiles,
+                    MatchingKeyAcquisitionProfiles: matchingProfiles,
+                    MaterializationBackends: ["weixin-windows-4"],
+                    BrokerAcquireAndMaterializeAvailable: brokerInstalled && workerInstalled && matchingProfiles.Count > 0,
+                    OrdinaryCliCanReadProcessMemory: false,
+                    AllowsArbitraryProcessMemoryRead: false,
+                    HasUserInterface: false));
+
+            WriteJson(report);
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Doctor was cancelled.");
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
     });
     return command;
 }
 
-static int CountMatchingKeyProfiles(IReadOnlyList<KeyProfileMetadata> profiles)
+static IReadOnlyList<string> GetMatchingKeyProfiles(IReadOnlyList<KeyProfileMetadata> profiles)
 {
     if (!OperatingSystem.IsWindows())
     {
-        return 0;
+        return [];
     }
 
     var currentSid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
     if (string.IsNullOrWhiteSpace(currentSid))
     {
-        return 0;
+        return [];
     }
 
     var reader = new WindowsWeixinProcessIdentityReader();
@@ -103,7 +132,7 @@ static int CountMatchingKeyProfiles(IReadOnlyList<KeyProfileMetadata> profiles)
         }
     }
 
-    return matches.Count;
+    return matches.Order(StringComparer.Ordinal).ToArray();
 }
 
 static Command CreateSnapshotCommand()
@@ -545,10 +574,6 @@ static Command CreateWorkspaceCommand()
     {
         Description = "Explicitly allow the development-only external backend. It is never a formal backend pin.",
     };
-    var allowExperimentalProfileOption = new Option<bool>("--allow-experimental-profile")
-    {
-        Description = "Explicitly allow the ExperimentalLive Weixin key profile for controlled validation.",
-    };
     var materializedOutputOption = new Option<string>("--output")
     {
         Description = "New ordinary SQLite output directory.",
@@ -563,7 +588,6 @@ static Command CreateWorkspaceCommand()
     materializeCommand.Options.Add(backendOption);
     materializeCommand.Options.Add(decryptorOption);
     materializeCommand.Options.Add(allowUntrustedBackendOption);
-    materializeCommand.Options.Add(allowExperimentalProfileOption);
     materializeCommand.Options.Add(materializedOutputOption);
     materializeCommand.Options.Add(workspaceOutputOption);
     materializeCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -573,7 +597,6 @@ static Command CreateWorkspaceCommand()
         var backendId = parseResult.GetValue(backendOption);
         var decryptor = parseResult.GetValue(decryptorOption);
         var allowUntrustedBackend = parseResult.GetValue(allowUntrustedBackendOption);
-        var allowExperimentalProfile = parseResult.GetValue(allowExperimentalProfileOption);
         var output = parseResult.GetValue(materializedOutputOption);
         var workspaceOutput = parseResult.GetValue(workspaceOutputOption);
         if (snapshotDirectory is null || backendId is null || output is null)
@@ -614,7 +637,6 @@ static Command CreateWorkspaceCommand()
                     manifestPath,
                     Path.GetFullPath(output),
                     localWorkspacePath,
-                    allowExperimentalProfile,
                     cancellationToken,
                     ReportBrokerStage).ConfigureAwait(false);
                 if (!string.Equals(brokerResult.Status, "completed", StringComparison.Ordinal) ||
@@ -912,6 +934,11 @@ static void ReportBrokerStage(KeyBrokerStage stage)
         details.Add($"databases={completedDatabases}/{totalDatabases}");
     }
 
+    if (stage.FirstUnvalidatedGroupOrdinal is { } ordinal)
+    {
+        details.Add($"firstUnvalidatedGroup={ordinal}");
+    }
+
     Console.Error.WriteLine($"broker-stage:{stage.Stage}{(details.Count == 0 ? string.Empty : " " + string.Join(' ', details))}");
 }
 
@@ -939,20 +966,18 @@ internal sealed record DoctorReport(
     bool IsWindows,
     IReadOnlyList<string> RecognizedProcessNames,
     IReadOnlyList<WeChatProcessInfo> RunningWeChatProcesses,
-    SecurityBoundary Security);
+    CapabilityReport Capabilities);
 
-internal sealed record SecurityBoundary(
-    int RegisteredAdapterCount,
-    int MatchingAdapterCount,
-    bool HasUsableSchemaAdapter,
-    int RegisteredKeyAcquisitionProfileCount,
-    int MatchingKeyAcquisitionProfileCount,
-    bool HasDatabaseEncryptionProfile,
-    bool HasMaterializationBackend,
-    bool AllowsKeyScanning,
-    bool AllowsDatabaseDecryption,
+internal sealed record CapabilityReport(
+    IReadOnlyList<string> RegisteredAdapters,
+    bool AdapterMatchEvaluated,
+    IReadOnlyList<string> MatchingAdapters,
+    IReadOnlyList<KeyProfileMetadata> KeyAcquisitionProfiles,
+    IReadOnlyList<string> MatchingKeyAcquisitionProfiles,
+    IReadOnlyList<string> MaterializationBackends,
+    bool BrokerAcquireAndMaterializeAvailable,
+    bool OrdinaryCliCanReadProcessMemory,
     bool AllowsArbitraryProcessMemoryRead,
-    bool HasMaterializationBoundary,
     bool HasUserInterface);
 
 internal sealed record SchemaProbeResult(string OutputPath, int ObjectCount);

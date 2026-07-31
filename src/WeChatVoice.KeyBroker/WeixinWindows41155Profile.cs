@@ -17,26 +17,41 @@ namespace WeChatVoice.KeyBroker;
 internal sealed class WeixinWindows41155Profile(
     IDatabaseKeyValidator validator,
     IWeixinProcessMemorySourceFactory memorySourceFactory,
-    Action<ProcessMemoryScanResult>? progress = null) : IWeixinProcessTreeKeyExtractionProfile
+    IWeixinModuleIdentityVerifier moduleIdentityVerifier,
+    Action<WeixinKeyScanProgress>? progress = null) : IWeixinProcessTreeKeyExtractionProfile
 {
     internal const string SupportedVersion = "4.1.11.55";
     internal const string SupportedImageSha256 = "ac599744a7ce7b65640ebe18c939c0d4e4a06cd039d89cddee7f1e9afc56875d";
+    internal const string SupportedWcdbModuleSha256 = "ab925b9428239def44b252d970c337034d75e66b27eb5529633dc10669fc796a";
+
+    // Extracted from the memory-protection routine in the signed
+    // Weixin.dll above. SQLCipher applies this 32-byte sequence repeatedly
+    // to raw cipher specs retained in memory. It is profile metadata, not a
+    // database key.
+    internal static ReadOnlySpan<byte> WcdbMemoryProtectionMask =>
+    [
+        0x55, 0xe8, 0x9c, 0x9f, 0xcc, 0x23, 0xe3, 0x48,
+        0x2f, 0x46, 0x54, 0xd4, 0xf9, 0xd7, 0x23, 0x7e,
+        0x1a, 0xcc, 0x83, 0xe5, 0xca, 0xd1, 0x41, 0x3c,
+        0x7f, 0xc6, 0x59, 0xcb, 0x2a, 0x33, 0xad, 0xaf,
+    ];
 
     private readonly IDatabaseKeyValidator validator = validator ?? throw new ArgumentNullException(nameof(validator));
     private readonly IWeixinProcessMemorySourceFactory memorySourceFactory = memorySourceFactory ?? throw new ArgumentNullException(nameof(memorySourceFactory));
-    private readonly Action<ProcessMemoryScanResult>? scanProgress = progress;
+    private readonly IWeixinModuleIdentityVerifier moduleIdentityVerifier = moduleIdentityVerifier ?? throw new ArgumentNullException(nameof(moduleIdentityVerifier));
+    private readonly Action<WeixinKeyScanProgress>? scanProgress = progress;
 
     // This identifier describes how a key is located and validated in the
     // signed Weixin build. The database cipher is a separate descriptor value
     // so another Weixin build can reuse the same SQLCipher materializer.
-    public string Id => "weixin-windows-4.1.11.55-wcdb-ascii-key-v1";
+    public string Id => "weixin-windows-4.1.11.55-wcdb-protected-spec-v2";
 
     public WeixinKeyExtractionProfileDescriptor Descriptor { get; } = new(
         new HashSet<string>(StringComparer.Ordinal) { SupportedVersion },
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { SupportedImageSha256 },
-        "weixin-windows-4.sqlcipher4-page-hmac-sha512-v1",
+        "weixin-windows-4.1.11.55.sqlcipher-exact-set-v1",
         "x64",
-        ProfileMaturity.ExperimentalLive);
+        ProfileMaturity.LiveValidated);
 
     public async Task<IReadOnlyList<ValidatedDatabaseKey>> AcquireAsync(
         VerifiedWeixinProcess process,
@@ -66,6 +81,8 @@ internal sealed class WeixinWindows41155Profile(
             throw new InvalidDataException("A verified process does not match the 4.1.11.55 Profile.");
         }
 
+        await moduleIdentityVerifier.VerifyAsync(processes, cancellationToken).ConfigureAwait(false);
+
         var targets = await DatabaseGroupTarget.LoadAsync(snapshot, cancellationToken).ConfigureAwait(false);
         if (targets.Count == 0)
         {
@@ -73,7 +90,7 @@ internal sealed class WeixinWindows41155Profile(
         }
 
         var validated = new Dictionary<string, ValidatedDatabaseKey>(StringComparer.Ordinal);
-        using var scanner = new HexKeyCandidateScanner((candidate, _) =>
+        using var scanner = new HexKeyCandidateScanner((candidate, salt) =>
         {
             foreach (var target in targets)
             {
@@ -82,7 +99,14 @@ internal sealed class WeixinWindows41155Profile(
                     continue;
                 }
 
-                if (!validator.ValidateFirstPage(target.FirstPage, candidate).IsValid)
+                if (!salt.IsEmpty
+                    && !target.FirstPage.AsSpan(0, WeixinWindows4SqlCipherKeyValidator.SaltSize).SequenceEqual(salt))
+                {
+                    continue;
+                }
+
+                var validation = validator.ValidateFirstPage(target.FirstPage, candidate);
+                if (!validation.IsValid || string.IsNullOrWhiteSpace(validation.EncryptionProfileId))
                 {
                     continue;
                 }
@@ -95,11 +119,12 @@ internal sealed class WeixinWindows41155Profile(
                     key,
                     target.SourceRelativePath,
                     target.LogicalRole,
-                    target.ShardNumber));
+                    target.ShardNumber,
+                    validation.EncryptionProfileId));
             }
 
             return validated.Count != targets.Count;
-        }, budget.MaximumCandidates);
+        }, WcdbMemoryProtectionMask, budget.MaximumCandidates);
 
         var started = Stopwatch.StartNew();
         long scannedBytes = 0;
@@ -124,11 +149,19 @@ internal sealed class WeixinWindows41155Profile(
                     cancellationToken);
                 scannedBytes = checked(scannedBytes + scan.ScannedBytes);
                 reachedLimit |= scan.ReachedLimit;
-                scanProgress?.Invoke(new ProcessMemoryScanResult(
-                    scan.RegionCount,
-                    scannedBytes,
-                    reachedLimit,
-                    scanner.CandidateCount));
+                scanProgress?.Invoke(new WeixinKeyScanProgress(
+                    new ProcessMemoryScanResult(
+                        scan.RegionCount,
+                        scannedBytes,
+                        reachedLimit,
+                        scanner.CandidateCount),
+                    validated.Count,
+                    targets.Count,
+                    targets
+                        .Select(static (target, index) => (target, ordinal: index + 1))
+                        .Where(item => !validated.ContainsKey(item.target.DatabaseGroupFingerprint))
+                        .Select(static item => (int?)item.ordinal)
+                        .FirstOrDefault()));
             }
             catch (UnauthorizedAccessException) when (validated.Count < targets.Count)
             {
@@ -142,7 +175,10 @@ internal sealed class WeixinWindows41155Profile(
             }
         }
 
-        if (validated.Count != targets.Count)
+        var missingTargets = targets
+            .Where(target => !validated.ContainsKey(target.DatabaseGroupFingerprint))
+            .ToArray();
+        if (missingTargets.Any(target => !WeixinWindows41155DatabasePolicy.CanIntentionallyIgnore(target.SourceRelativePath)))
         {
             foreach (var item in validated.Values)
             {
@@ -155,6 +191,71 @@ internal sealed class WeixinWindows41155Profile(
         return validated.Values.ToArray();
     }
 }
+
+internal interface IWeixinModuleIdentityVerifier
+{
+    Task VerifyAsync(IReadOnlyList<VerifiedWeixinProcess> processes, CancellationToken cancellationToken);
+}
+
+internal sealed class VersionedWcdbModuleIdentityVerifier : IWeixinModuleIdentityVerifier
+{
+    public async Task VerifyAsync(IReadOnlyList<VerifiedWeixinProcess> processes, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(processes);
+        var imageDirectories = processes
+            .Select(static process => Path.GetDirectoryName(process.ImagePath))
+            .Where(static directory => !string.IsNullOrWhiteSpace(directory))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (imageDirectories.Length != 1)
+        {
+            throw new InvalidDataException("The verified Weixin process tree did not resolve to one installation directory.");
+        }
+
+        var versions = processes.Select(static process => process.ProductVersion).Distinct(StringComparer.Ordinal).ToArray();
+        if (versions.Length != 1 || !string.Equals(versions[0], WeixinWindows41155Profile.SupportedVersion, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The verified Weixin process tree did not resolve to the Profile's exact version directory.");
+        }
+
+        // Current Weixin keeps the stable launcher at the installation root
+        // and versioned WCDB code beneath <version>/Weixin.dll. The Profile
+        // binds that exact path; it never searches for another DLL.
+        var installationRoot = Path.GetFullPath(imageDirectories[0]!);
+        var modulePath = Path.GetFullPath(Path.Combine(installationRoot, versions[0], "Weixin.dll"));
+        var requiredPrefix = installationRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? installationRoot
+            : installationRoot + Path.DirectorySeparatorChar;
+        if (!modulePath.StartsWith(requiredPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The exact WCDB module path escaped the verified Weixin installation directory.");
+        }
+
+        if (!File.Exists(modulePath) || (File.GetAttributes(modulePath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidDataException("The exact WCDB module required by the selected Profile was not found as a regular versioned file.");
+        }
+
+        await using var stream = new FileStream(
+            modulePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read | FileShare.Delete,
+            128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var hash = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
+        if (!string.Equals(hash, WeixinWindows41155Profile.SupportedWcdbModuleSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The adjacent WCDB module hash does not match the selected exact Profile.");
+        }
+    }
+}
+
+internal sealed record WeixinKeyScanProgress(
+    ProcessMemoryScanResult Memory,
+    int ValidatedGroups,
+    int TotalGroups,
+    int? FirstUnvalidatedGroupOrdinal);
 
 internal interface IWeixinProcessMemorySourceFactory
 {
