@@ -15,3 +15,11 @@ user-supplied, lawfully accessible WeChat data source.
   process-memory access, key export, or database decryption to its protocol.
 - Treat snapshots, exports, logs, and manifests as potentially sensitive.
   Keep them out of source control.
+- A snapshot is valid only after group-level before/after inventory checks over
+  database, WAL, SHM, and related files. Keep snapshot metadata in the reserved
+  `.wechatvoice/` directory and exclude it from source enumeration.
+- New WeChat integrations must use `WeChatDataSet` and
+  `IWeChatDataSetAdapter`/`IVoiceCatalog`; never infer a payload relationship
+  from a single `SchemaSnapshot`.
+- Export application code must use `IExportItemLease`; do not add absolute-path
+  writes back into `VoiceExportService`.

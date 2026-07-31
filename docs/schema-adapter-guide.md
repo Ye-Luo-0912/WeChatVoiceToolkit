@@ -1,6 +1,12 @@
 # Schema adapter guide
 
-An adapter must implement `IWeChatVoiceSchemaAdapter` and operate only on a
-verified schema snapshot. It should map source records into the stable
-`VoiceMessage` model and stream payloads through `IVoiceSource`. Do not encode
-unverified table, column, or encryption assumptions in shared code.
+An adapter must implement `IWeChatDataSetAdapter` and operate only on a
+verified `WeChatDataSet`. The data set should include every related
+`DatabaseArtifact` (message, media, contact, and any shard), its SHA-256, and a
+read-only `SchemaSnapshot`.
+
+`Probe` must return no match for an unverified schema. `OpenAsync` returns an
+`IVoiceCatalog`; `QueryVoicesAsync` produces `VoiceRecord` values whose
+`VoicePayloadLocator` identifies the media database and BLOB key. The catalog
+also owns contact queries and payload streams. Do not encode unverified table,
+column, encryption, or shard assumptions in shared code.

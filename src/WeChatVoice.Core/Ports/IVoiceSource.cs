@@ -6,6 +6,7 @@ namespace WeChatVoice.Core.Ports;
 /// Supplies voice metadata and independently-opened payload streams.
 /// Each returned stream is owned and disposed by the caller.
 /// </summary>
+[Obsolete("Use IVoiceCatalog from a verified IWeChatDataSetAdapter.")]
 public interface IVoiceSource
 {
     IAsyncEnumerable<VoiceMessage> QueryAsync(VoiceQuery query, CancellationToken cancellationToken);

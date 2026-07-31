@@ -4,6 +4,7 @@ namespace WeChatVoice.Core.Models;
 /// Store-owned physical destinations and portable manifest paths for one voice export.
 /// The store is responsible for making the parent directories available.
 /// </summary>
+[Obsolete("Use IExportItemLease; application code should not consume physical paths.")]
 public sealed record VoiceExportPaths
 {
     /// <summary>

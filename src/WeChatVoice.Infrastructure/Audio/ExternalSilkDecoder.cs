@@ -29,6 +29,36 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder
             : Path.GetFullPath(workingDirectory);
     }
 
+    public async Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(output);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var directory = Path.Combine(Path.GetTempPath(), "wechatvoice-decoder");
+        Directory.CreateDirectory(directory);
+        var token = Guid.NewGuid().ToString("N");
+        var temporaryInputPath = Path.Combine(directory, $"{token}.input.silk");
+        var temporaryOutputPath = Path.Combine(directory, $"{token}.output.wav");
+        try
+        {
+            await using (var inputFile = new FileStream(temporaryInputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, BufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await input.CopyToAsync(inputFile, BufferSize, cancellationToken).ConfigureAwait(false);
+                await inputFile.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await DecodeAsync(temporaryInputPath, temporaryOutputPath, cancellationToken).ConfigureAwait(false);
+            await using var outputFile = new FileStream(temporaryOutputPath, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await outputFile.CopyToAsync(output, BufferSize, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            TryDelete(temporaryInputPath);
+            TryDelete(temporaryOutputPath);
+        }
+    }
+
     public async Task DecodeAsync(string inputPath, string outputPath, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(inputPath);

@@ -15,6 +15,7 @@ artifacts/
 /workspace/
 /exports/
 /snapshots/
+.wechatvoice/
 *.db
 *.db-wal
 *.db-shm

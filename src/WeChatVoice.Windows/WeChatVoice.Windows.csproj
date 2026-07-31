@@ -8,4 +8,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\WeChatVoice.Core\WeChatVoice.Core.csproj" />
+  </ItemGroup>
+
 </Project>

@@ -7,6 +7,42 @@ namespace WeChatVoice.Tests;
 public sealed class FileSystemVoiceExportStoreTests
 {
     [Fact]
+    public async Task BeginItemAsync_owns_stream_commit_and_rollback_without_exposing_absolute_paths()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var store = new FileSystemVoiceExportStore(temporary.GetPath("export"));
+        var record = new VoiceRecord(
+            "lease-message",
+            "conversation",
+            new DateTimeOffset(2026, 7, 31, 12, 0, 0, TimeSpan.Zero),
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "blob-1"));
+
+        await using var lease = await store.BeginItemAsync(record, ExportExistingPolicy.Fail, CancellationToken.None);
+        Assert.False(Path.IsPathRooted(lease.OriginalManifestPath));
+        Assert.False(Path.IsPathRooted(lease.DecodedManifestPath));
+
+        await using (var original = await lease.OpenOriginalWriteAsync(CancellationToken.None))
+        {
+            await original.WriteAsync(new byte[] { 1, 2, 3 });
+        }
+
+        var originalArtifact = await lease.CommitOriginalAsync(CancellationToken.None);
+        Assert.Equal(3, originalArtifact.ByteLength);
+        Assert.Equal(originalArtifact.RelativePath, lease.OriginalManifestPath);
+
+        await using (var decoded = await lease.OpenDecodedWriteAsync(CancellationToken.None))
+        {
+            await decoded.WriteAsync(new byte[] { 4, 5 });
+        }
+
+        var decodedArtifact = await lease.CommitDecodedAsync(CancellationToken.None);
+        Assert.Equal(2, decodedArtifact.ByteLength);
+        await lease.RollbackAsync(CancellationToken.None);
+        Assert.Empty(Directory.EnumerateFiles(store.ExportRoot, "*.tmp", SearchOption.AllDirectories));
+    }
+
+    [Fact]
     public async Task CreatePathsAsync_keeps_media_destinations_under_the_configured_root_and_reserves_unique_names()
     {
         using var temporary = new TestTemporaryDirectory();

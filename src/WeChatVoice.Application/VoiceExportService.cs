@@ -1,32 +1,39 @@
 using System.Buffers;
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 
 namespace WeChatVoice.Application;
 
 /// <summary>
-/// Coordinates source reads, raw SILK persistence, optional WAV decoding, and
-/// manifest creation. It deliberately has no knowledge of database schemas or
-/// the export directory layout.
+/// Coordinates catalog reads, lease-owned artifact persistence, optional WAV
+/// decoding, and manifest creation. It never interprets physical output paths.
 /// </summary>
 public sealed class VoiceExportService
 {
     private const int CopyBufferSize = 81_920;
 
-    private readonly IVoiceSource _voiceSource;
+    private readonly IVoiceCatalog _voiceCatalog;
     private readonly IVoiceExportStore _exportStore;
     private readonly IVoiceDecoder? _voiceDecoder;
 
     public VoiceExportService(
-        IVoiceSource voiceSource,
+        IVoiceCatalog voiceCatalog,
         IVoiceExportStore exportStore,
         IVoiceDecoder? voiceDecoder = null)
     {
-        _voiceSource = voiceSource ?? throw new ArgumentNullException(nameof(voiceSource));
+        _voiceCatalog = voiceCatalog ?? throw new ArgumentNullException(nameof(voiceCatalog));
         _exportStore = exportStore ?? throw new ArgumentNullException(nameof(exportStore));
         _voiceDecoder = voiceDecoder;
+    }
+
+    [Obsolete("Use the IVoiceCatalog constructor.")]
+    public VoiceExportService(
+        IVoiceSource voiceSource,
+        IVoiceExportStore exportStore,
+        IVoiceDecoder? voiceDecoder = null)
+        : this(new LegacyVoiceCatalog(voiceSource ?? throw new ArgumentNullException(nameof(voiceSource))), exportStore, voiceDecoder)
+    {
     }
 
     public Task<VoiceExportManifest> ExportAsync(
@@ -34,11 +41,6 @@ public sealed class VoiceExportService
         CancellationToken cancellationToken = default)
         => ExportAsync(query, options: null, cancellationToken);
 
-    /// <summary>
-    /// Exports all messages returned by <paramref name="query"/>. Query and
-    /// per-message errors are captured in the resulting manifest; caller
-    /// cancellation is still propagated after a best-effort manifest write.
-    /// </summary>
     public async Task<VoiceExportManifest> ExportAsync(
         VoiceQuery query,
         VoiceExportOptions? options,
@@ -49,9 +51,7 @@ public sealed class VoiceExportService
         options ??= new VoiceExportOptions();
         if (options.MaxDegreeOfParallelism <= 0)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                "MaxDegreeOfParallelism must be greater than zero.");
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxDegreeOfParallelism must be greater than zero.");
         }
 
         var entries = new ConcurrentQueue<VoiceExportEntry>();
@@ -61,19 +61,18 @@ public sealed class VoiceExportService
 
         try
         {
-            await foreach (var message in _voiceSource
-                .QueryAsync(query, cancellationToken)
+            await foreach (var record in _voiceCatalog
+                .QueryVoicesAsync(query, cancellationToken)
                 .WithCancellation(cancellationToken)
                 .ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
                 if (activeExports.Count >= options.MaxDegreeOfParallelism)
                 {
                     await DrainOneAsync(activeExports, cancellationToken).ConfigureAwait(false);
                 }
 
-                activeExports.Add(ExportOneAsync(message, options, entries, failures, cancellationToken));
+                activeExports.Add(ExportOneAsync(record, options, entries, failures, cancellationToken));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -82,7 +81,7 @@ public sealed class VoiceExportService
         }
         catch (Exception exception)
         {
-            failures.Enqueue(CreateFailure(messageId: null, stage: "query", exception));
+            failures.Enqueue(CreateFailure(null, "query", exception));
         }
         finally
         {
@@ -98,18 +97,12 @@ public sealed class VoiceExportService
 
         var manifest = new VoiceExportManifest(
             DateTimeOffset.UtcNow,
-            entries
-                .OrderBy(static entry => entry.OccurredAtUtc)
-                .ThenBy(static entry => entry.MessageId, StringComparer.Ordinal),
-            failures
-                .OrderBy(static failure => failure.MessageId ?? string.Empty, StringComparer.Ordinal)
+            entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal),
+            failures.OrderBy(static failure => failure.MessageId ?? string.Empty, StringComparer.Ordinal)
                 .ThenBy(static failure => failure.Stage, StringComparer.Ordinal)
                 .ThenBy(static failure => failure.Error, StringComparer.Ordinal));
 
-        // A cancellation token is intentionally not supplied here. The
-        // partial-run manifest is what makes a cancelled export auditable.
-        await _exportStore.WriteManifestAsync(manifest, CancellationToken.None).ConfigureAwait(false);
-
+        await _exportStore.FinalizeRunAsync(manifest, CancellationToken.None).ConfigureAwait(false);
         if (cancellationObserved || cancellationToken.IsCancellationRequested)
         {
             throw new OperationCanceledException(cancellationToken);
@@ -122,39 +115,39 @@ public sealed class VoiceExportService
     {
         var completed = await Task.WhenAny(activeExports).ConfigureAwait(false);
         activeExports.Remove(completed);
-
         try
         {
             await completed.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // The caller's cancellation will be observed by the enumeration or
-            // the final Task.WhenAll, after which the manifest is still written.
         }
     }
 
     private async Task ExportOneAsync(
-        VoiceMessage message,
+        VoiceRecord record,
         VoiceExportOptions options,
         ConcurrentQueue<VoiceExportEntry> entries,
         ConcurrentQueue<VoiceExportFailure> failures,
         CancellationToken cancellationToken)
     {
-        VoiceExportPaths? paths = null;
-
+        IExportItemLease? lease = null;
         try
         {
-            paths = await _exportStore.CreatePathsAsync(message, cancellationToken).ConfigureAwait(false);
-            var copyResult = await CopyOriginalAsync(message, paths, cancellationToken).ConfigureAwait(false);
+            lease = await _exportStore.BeginItemAsync(record, ExportExistingPolicy.Fail, cancellationToken).ConfigureAwait(false);
+            if (lease.IsSkipped)
+            {
+                return;
+            }
 
+            var originalArtifact = await CopyOriginalAsync(record, lease, cancellationToken).ConfigureAwait(false);
             string? decodedPath = null;
             if (options.DecodeToWav)
             {
                 if (_voiceDecoder is null)
                 {
                     failures.Enqueue(new VoiceExportFailure(
-                        message.MessageId,
+                        record.MessageId,
                         "decode",
                         "WAV decoding was requested but no voice decoder was configured.",
                         nameof(InvalidOperationException)));
@@ -163,10 +156,14 @@ public sealed class VoiceExportService
                 {
                     try
                     {
-                        await _voiceDecoder
-                            .DecodeAsync(paths.OriginalFilePath, paths.DecodedFilePath, cancellationToken)
-                            .ConfigureAwait(false);
-                        decodedPath = paths.DecodedManifestPath;
+                        await using (var input = await lease.OpenOriginalReadAsync(cancellationToken).ConfigureAwait(false))
+                        await using (var output = await lease.OpenDecodedWriteAsync(cancellationToken).ConfigureAwait(false))
+                        {
+                            await _voiceDecoder.DecodeAsync(input, output, cancellationToken).ConfigureAwait(false);
+                            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                        }
+                        var decodedArtifact = await lease.CommitDecodedAsync(cancellationToken).ConfigureAwait(false);
+                        decodedPath = decodedArtifact.RelativePath;
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
@@ -174,19 +171,19 @@ public sealed class VoiceExportService
                     }
                     catch (Exception exception)
                     {
-                        failures.Enqueue(CreateFailure(message.MessageId, "decode", exception));
+                        failures.Enqueue(CreateFailure(record.MessageId, "decode", exception));
                     }
                 }
             }
 
             entries.Enqueue(new VoiceExportEntry(
-                message.MessageId,
-                message.ConversationId,
-                message.OccurredAtUtc,
-                message.Direction,
-                paths.OriginalManifestPath,
-                copyResult.ByteLength,
-                copyResult.Sha256,
+                record.MessageId,
+                record.ConversationId,
+                record.OccurredAtUtc,
+                record.Direction,
+                originalArtifact.RelativePath,
+                originalArtifact.ByteLength,
+                originalArtifact.Sha256,
                 decodedPath));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -195,44 +192,41 @@ public sealed class VoiceExportService
         }
         catch (Exception exception)
         {
-            failures.Enqueue(CreateFailure(message.MessageId, "export", exception));
+            failures.Enqueue(CreateFailure(record.MessageId, "export", exception));
+        }
+        finally
+        {
+            if (lease is not null)
+            {
+                try
+                {
+                    await lease.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    failures.Enqueue(CreateFailure(record.MessageId, "rollback", exception));
+                }
+
+                await lease.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
-    private async Task<PayloadCopyResult> CopyOriginalAsync(
-        VoiceMessage message,
-        VoiceExportPaths paths,
+    private async Task<ExportArtifact> CopyOriginalAsync(
+        VoiceRecord record,
+        IExportItemLease lease,
         CancellationToken cancellationToken)
     {
-        await using var input = await _voiceSource
-            .OpenPayloadAsync(message, cancellationToken)
-            .ConfigureAwait(false);
-
+        await using var input = await _voiceCatalog.OpenPayloadAsync(record.PayloadLocator, cancellationToken).ConfigureAwait(false);
         if (!input.CanRead)
         {
-            throw new InvalidOperationException("The voice source returned a non-readable payload stream.");
+            throw new InvalidOperationException("The voice catalog returned a non-readable payload stream.");
         }
 
-        var outputDirectory = Path.GetDirectoryName(paths.OriginalFilePath)
-            ?? throw new ArgumentException("The original export path must include a directory.", nameof(paths));
-        Directory.CreateDirectory(outputDirectory);
-        var temporaryPath = Path.Combine(
-            outputDirectory,
-            $".{Path.GetFileName(paths.OriginalFilePath)}.{Guid.NewGuid():N}.tmp");
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = ArrayPool<byte>.Shared.Rent(CopyBufferSize);
-        long byteLength = 0;
-
         try
         {
-            PayloadCopyResult result;
-            await using (var output = new FileStream(
-                temporaryPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                CopyBufferSize,
-                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            await using (var output = await lease.OpenOriginalWriteAsync(cancellationToken).ConfigureAwait(false))
             {
                 while (true)
                 {
@@ -243,54 +237,61 @@ public sealed class VoiceExportService
                     }
 
                     await output.WriteAsync(buffer.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
-                    hash.AppendData(buffer, 0, count);
-                    byteLength = checked(byteLength + count);
                 }
 
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
-                result = new PayloadCopyResult(byteLength, Convert.ToHexString(hash.GetHashAndReset()));
             }
 
-            // Do not overwrite a pre-existing file. The store reserves a unique
-            // name, while this move prevents a partially copied SILK file from
-            // ever becoming visible at that final name.
-            File.Move(temporaryPath, paths.OriginalFilePath);
-            return result;
+            return await lease.CommitOriginalAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            TryDeleteTemporaryFile(temporaryPath);
-            CryptographicOperations.ZeroMemory(buffer);
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
-    private static void TryDeleteTemporaryFile(string path)
+    private static VoiceExportFailure CreateFailure(string? messageId, string stage, Exception exception)
+        => new(messageId, stage, string.IsNullOrWhiteSpace(exception.Message) ? exception.GetType().Name : exception.Message, exception.GetType().FullName);
+
+    private sealed class LegacyVoiceCatalog : IVoiceCatalog
     {
-        try
+        private readonly IVoiceSource _source;
+        private readonly ConcurrentDictionary<string, VoiceMessage> _messagesByLocator = new(StringComparer.Ordinal);
+
+        public LegacyVoiceCatalog(IVoiceSource source) => _source = source;
+
+        public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(
+            ContactQuery query,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            if (File.Exists(path))
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public async IAsyncEnumerable<VoiceRecord> QueryVoicesAsync(
+            VoiceQuery query,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await foreach (var message in _source.QueryAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                File.Delete(path);
+                var locator = message.PayloadReference ?? message.MessageId;
+                _messagesByLocator[locator] = message;
+                yield return new VoiceRecord(
+                    message.MessageId,
+                    message.ConversationId,
+                    message.OccurredAtUtc,
+                    message.Direction,
+                    new VoicePayloadLocator("legacy", null, locator));
             }
         }
-        catch (IOException)
+
+        public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
         {
-            // Preserve the copy result or failure. The unique sibling name
-            // makes a residual temporary file safe to identify and remove.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Preserve the copy result or failure.
+            if (!_messagesByLocator.TryGetValue(locator.BlobKey, out var message))
+            {
+                throw new KeyNotFoundException($"The legacy payload locator was not associated with a queried voice message: '{locator.BlobKey}'.");
+            }
+            return _source.OpenPayloadAsync(message, cancellationToken);
         }
     }
-
-    private static VoiceExportFailure CreateFailure(string? messageId, string stage, Exception exception)
-        => new(
-            messageId,
-            stage,
-            string.IsNullOrWhiteSpace(exception.Message) ? exception.GetType().Name : exception.Message,
-            exception.GetType().FullName);
-
-    private sealed record PayloadCopyResult(long ByteLength, string Sha256);
 }

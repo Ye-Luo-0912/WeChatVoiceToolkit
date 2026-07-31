@@ -13,9 +13,23 @@ require verified, user-provided version and schema information.
 ```powershell
 dotnet run --project src/WeChatVoice.Cli -- doctor
 dotnet run --project src/WeChatVoice.Cli -- snapshot create --source <directory> --output <workspace>
+dotnet run --project src/WeChatVoice.Cli -- snapshot create --source <directory> --output <workspace> --allow-live-source
 dotnet run --project src/WeChatVoice.Cli -- schema probe --database <database> --output <schema.json>
+dotnet run --project src/WeChatVoice.Cli -- voice export --dataset <dataset.json> --output <export-root>
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
 ```
+
+Snapshots require recognized WeChat processes to be closed by default. The
+explicit `--allow-live-source` opt-in marks the internal
+`.wechatvoice/snapshot-manifest.json` as `potentiallyInconsistent`; the source
+root `snapshot.json` name is reserved and excluded. Snapshot acceptance is
+group-level: the complete file set, length, modification time, and file
+identity must match before and after an attempt.
+
+`voice export` is now a real application path, but this foundation build does
+not register a verified WeChat data-set adapter yet. It accepts a
+`WeChatDataSet` manifest and fails clearly until an adapter for the inspected
+message/media/contact schemas is registered.
 
 See [architecture.md](docs/architecture.md), [security.md](docs/security.md),
 and [agent-handoff.md](docs/agent-handoff.md) before extending the project.

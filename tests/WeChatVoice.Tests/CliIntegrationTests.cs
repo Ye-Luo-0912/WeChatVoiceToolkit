@@ -20,11 +20,12 @@ public sealed class CliIntegrationTests
             "--source",
             sourceDirectory,
             "--output",
-            outputDirectory);
+            outputDirectory,
+            "--allow-live-source");
 
         Assert.True(result.ExitCode == 0, result.StandardError);
         Assert.True(File.Exists(Path.Combine(outputDirectory, "media", "voice.db-wal")));
-        Assert.True(File.Exists(Path.Combine(outputDirectory, "snapshot.json")));
+        Assert.True(File.Exists(Path.Combine(outputDirectory, ".wechatvoice", "snapshot-manifest.json")));
 
         using var resultDocument = JsonDocument.Parse(result.StandardOutput);
         Assert.Equal(Path.GetFullPath(outputDirectory), resultDocument.RootElement.GetProperty("snapshotDirectory").GetString());
