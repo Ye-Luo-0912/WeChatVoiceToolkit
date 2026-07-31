@@ -94,10 +94,11 @@ public sealed class WeixinWindows41155ProfileTests
 
     private sealed class FakeMemorySource(byte[] memory) : IWeixinProcessMemorySource
     {
-        public void Scan(ProcessMemoryChunkHandler handler, CancellationToken cancellationToken)
+        public ProcessMemoryScanResult Scan(ProcessMemoryChunkHandler handler, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             handler(memory, true);
+            return new ProcessMemoryScanResult(1, memory.LongLength, false);
         }
 
         public void Dispose() { }

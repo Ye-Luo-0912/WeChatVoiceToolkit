@@ -99,7 +99,12 @@ public sealed class KeyBrokerProtocolTests
             snapshotId,
             operation = "acquire-and-materialize",
         }));
-        var responseLine = await reader.ReadLineAsync(timeout.Token);
+        string? responseLine;
+        do
+        {
+            responseLine = await reader.ReadLineAsync(timeout.Token);
+        }
+        while (responseLine is not null && responseLine.Contains("\"stage\"", StringComparison.Ordinal));
 
         Assert.Equal(3, await serverTask);
         Assert.NotNull(responseLine);
