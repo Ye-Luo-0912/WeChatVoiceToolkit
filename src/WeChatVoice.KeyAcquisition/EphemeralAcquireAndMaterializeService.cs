@@ -25,6 +25,11 @@ public sealed class EphemeralAcquireAndMaterializeService(
         ArgumentNullException.ThrowIfNull(acquisitionOptions);
         ArgumentNullException.ThrowIfNull(materializationOptions);
 
+        if (!string.Equals(acquisitionOptions.ProfileId, materializer.EncryptionProfileId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The requested encryption Profile is not accepted by the materializer.");
+        }
+
         using var acquisition = await acquisitionService.AcquireAsync(
             snapshot,
             acquisitionOptions,
@@ -35,10 +40,17 @@ public sealed class EphemeralAcquireAndMaterializeService(
             throw new InvalidDataException("The acquired keys are not bound to the verified SnapshotId.");
         }
 
-        return await materializer.MaterializeAsync(
+        var materialization = await materializer.MaterializeAsync(
             snapshot,
             acquisition,
             materializationOptions,
             cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(materialization.Result.SourceSnapshotId, snapshot.Snapshot.SnapshotId, StringComparison.Ordinal)
+            || !string.Equals(materialization.Result.BackendId, materializer.BackendId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The materializer returned a result with an unexpected SnapshotId or BackendId.");
+        }
+
+        return materialization;
     }
 }

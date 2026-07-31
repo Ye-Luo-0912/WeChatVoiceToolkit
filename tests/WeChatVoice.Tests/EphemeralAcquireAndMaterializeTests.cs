@@ -71,6 +71,40 @@ public sealed class EphemeralAcquireAndMaterializeTests
         Assert.Throws<ObjectDisposedException>(() => key.CopyTo(new byte[4]));
     }
 
+    [Fact]
+    public void VerifiedKeyAcquisition_rejects_mismatched_profile_and_clears_buffer()
+    {
+        using var key = new SensitiveBuffer(new byte[] { 1, 2, 3, 4 });
+
+        Assert.Throws<InvalidDataException>(() => new VerifiedKeyAcquisition(
+            "acquisition",
+            new string('a', 64),
+            "profile-a",
+            [new DatabaseKeyBinding(new string('a', 64), "account", "group", "message.db", 0, "profile-b", key)],
+            DateTimeOffset.UtcNow));
+
+        Assert.Throws<ObjectDisposedException>(() => key.CopyTo(new byte[4]));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_rejects_materializer_result_from_the_wrong_snapshot_and_disposes_key()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var snapshot = CreateSnapshot(temporary);
+        var key = new SensitiveBuffer(new byte[] { 7, 8, 9, 10 });
+        var service = new EphemeralAcquireAndMaterializeService(
+            new FakeAcquisitionService(CreateAcquisition(snapshot.SnapshotId, key)),
+            new MismatchedResultMaterializer());
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.ExecuteAsync(
+            snapshot,
+            new KeyAcquisitionOptions("fake-profile", TimeSpan.FromSeconds(1)),
+            new MaterializationOptions(temporary.GetPath("output")),
+            CancellationToken.None));
+
+        Assert.Throws<ObjectDisposedException>(() => key.CopyTo(new byte[4]));
+    }
+
     private static VerifiedRawSnapshot CreateSnapshot(TestTemporaryDirectory temporary)
     {
         var root = temporary.CreateDirectory("snapshot");
@@ -83,7 +117,7 @@ public sealed class EphemeralAcquireAndMaterializeTests
             "fake-acquisition",
             snapshotId,
             "fake-profile",
-            [new DatabaseKeyBinding(snapshotId, "account", "group", "message/message_0.db", 0, "fake-encryption", key)],
+            [new DatabaseKeyBinding(snapshotId, "account", "group", "message/message_0.db", 0, "fake-profile", key)],
             DateTimeOffset.UtcNow);
 
     private sealed class FakeAcquisitionService(VerifiedKeyAcquisition acquisition) : IKeyAcquisitionService
@@ -96,6 +130,10 @@ public sealed class EphemeralAcquireAndMaterializeTests
 
     private sealed class FakeEphemeralMaterializer(string outputRoot) : IEphemeralDatabaseMaterializer
     {
+        public string BackendId => "fake-backend";
+
+        public string EncryptionProfileId => "fake-profile";
+
         internal byte[]? ObservedKey { get; private set; }
 
         public Task<VerifiedMaterialization> MaterializeAsync(
@@ -123,10 +161,40 @@ public sealed class EphemeralAcquireAndMaterializeTests
 
     private sealed class ThrowingMaterializer : IEphemeralDatabaseMaterializer
     {
+        public string BackendId => "fake-backend";
+
+        public string EncryptionProfileId => "fake-profile";
+
         public Task<VerifiedMaterialization> MaterializeAsync(
             VerifiedRawSnapshot snapshot,
             VerifiedKeyAcquisition acquisition,
             MaterializationOptions options,
             CancellationToken cancellationToken) => throw new InvalidDataException("fake materialization failure");
+    }
+
+    private sealed class MismatchedResultMaterializer : IEphemeralDatabaseMaterializer
+    {
+        public string BackendId => "fake-backend";
+
+        public string EncryptionProfileId => "fake-profile";
+
+        public Task<VerifiedMaterialization> MaterializeAsync(
+            VerifiedRawSnapshot snapshot,
+            VerifiedKeyAcquisition acquisition,
+            MaterializationOptions options,
+            CancellationToken cancellationToken)
+        {
+            var result = new MaterializationResult(
+                "fake-workspace",
+                new string('f', 64),
+                "fake-backend",
+                "1",
+                new string('0', 64),
+                options.OutputDirectory,
+                [],
+                [],
+                Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json"));
+            return Task.FromResult(new VerifiedMaterialization(result, DateTimeOffset.UtcNow));
+        }
     }
 }

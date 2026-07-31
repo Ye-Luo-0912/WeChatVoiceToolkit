@@ -43,6 +43,13 @@ in the formal registry until a real plaintext materializer exists. Do not adopt
 the reviewed upstream scanner's whole-region reads or its key/PID/address
 logging.
 
+`IEphemeralDatabaseMaterializer` now declares `BackendId` and
+`EncryptionProfileId`. `VerifiedKeyAcquisition` rejects duplicate or
+cross-Snapshot/cross-Profile bindings, and the orchestration service validates
+the returned materialization provenance before releasing the result. The
+available `sqlite3.exe` is ordinary SQLite without SQLCipher codec support, so
+do not wire it to the encrypted business databases.
+
 `DatabaseMaterializerTests` use a real fake child process and cover success,
 missing/extra/invalid/duplicate/unknown mappings, sensitive output redaction,
 binary hash mismatch, timeout, and cancellation. The next blocker is a bounded

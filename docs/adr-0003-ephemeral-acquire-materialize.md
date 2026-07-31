@@ -22,6 +22,13 @@ Profile passes database-group-bound `SensitiveBuffer` instances directly to an
 ephemeral materializer. Disposal clears every binding on success, failure,
 mismatch, or cancellation. Only the non-sensitive result persists.
 
+The materializer now declares both `BackendId` and
+`EncryptionProfileId`. Acquisition construction rejects duplicate groups and
+any binding whose SnapshotId or ProfileId differs from the acquisition. The
+orchestrator also rejects a materializer result from the wrong Snapshot or
+Backend, so a future SQLCipher implementation cannot accidentally consume a
+key for a different database format.
+
 Process identity and database behavior are Profile-driven rather than globally
 hardcoded. Version, image hash, Authenticode trust/publisher, owner SID, session,
 architecture, start time, and image path are verified before and after handle

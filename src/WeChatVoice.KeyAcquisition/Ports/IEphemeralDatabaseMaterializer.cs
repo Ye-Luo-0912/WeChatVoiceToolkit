@@ -10,6 +10,10 @@ namespace WeChatVoice.KeyAcquisition.Ports;
 /// </summary>
 public interface IEphemeralDatabaseMaterializer
 {
+    string BackendId { get; }
+
+    string EncryptionProfileId { get; }
+
     Task<VerifiedMaterialization> MaterializeAsync(
         VerifiedRawSnapshot snapshot,
         VerifiedKeyAcquisition acquisition,

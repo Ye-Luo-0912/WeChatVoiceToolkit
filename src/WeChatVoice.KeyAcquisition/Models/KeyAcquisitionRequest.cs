@@ -37,6 +37,19 @@ public sealed class VerifiedKeyAcquisition : IDisposable
         this.ProfileId = ProfileId;
         this.Bindings = Bindings.ToArray();
         this.AcquiredAtUtc = AcquiredAtUtc.ToUniversalTime();
+        try
+        {
+            ValidateBindings(this.Bindings);
+        }
+        catch
+        {
+            foreach (var binding in this.Bindings)
+            {
+                binding.ProtectedKeyMaterial.Dispose();
+            }
+
+            throw;
+        }
     }
 
     public string AcquisitionId { get; }
@@ -59,6 +72,24 @@ public sealed class VerifiedKeyAcquisition : IDisposable
         foreach (var binding in Bindings)
         {
             binding.ProtectedKeyMaterial.Dispose();
+        }
+    }
+
+    private void ValidateBindings(IReadOnlyList<DatabaseKeyBinding> bindings)
+    {
+        var groups = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var binding in bindings)
+        {
+            ArgumentNullException.ThrowIfNull(binding);
+            if (!string.Equals(binding.SnapshotId, SnapshotId, StringComparison.Ordinal)
+                || !string.Equals(binding.EncryptionProfileId, ProfileId, StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(binding.DatabaseGroupFingerprint)
+                || !groups.Add(binding.DatabaseGroupFingerprint))
+            {
+                throw new InvalidDataException("Key bindings must be unique and bound to the acquisition SnapshotId, ProfileId, and database group.");
+            }
+
+            _ = binding.ProtectedKeyMaterial.Length;
         }
     }
 }
