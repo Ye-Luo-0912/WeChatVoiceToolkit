@@ -31,4 +31,20 @@ public sealed class DataSetProbeTests
         Assert.NotNull(roundTrip);
         Assert.Equal(probe.DataSet.DataSetId, roundTrip!.DataSet.DataSetId);
     }
+
+    [Fact]
+    public async Task ProbeAsync_reports_encrypted_or_non_sqlite_database_without_attempting_decryption()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("decrypted-db");
+        await File.WriteAllBytesAsync(Path.Combine(root, "message_0.db"),
+            Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray());
+
+        var probe = await new DataSetProbeService().ProbeAsync(root, new DataSetProbeOptions(), CancellationToken.None);
+
+        var issue = Assert.Single(probe.Issues, item => item.Code == "encrypted-or-non-sqlite");
+        Assert.Contains("No decryption is attempted", issue.Message, StringComparison.Ordinal);
+        Assert.Equal("message", probe.DataSet.Databases[0].LogicalRole);
+        Assert.False(string.IsNullOrWhiteSpace(probe.DataSet.Databases[0].Sha256));
+    }
 }

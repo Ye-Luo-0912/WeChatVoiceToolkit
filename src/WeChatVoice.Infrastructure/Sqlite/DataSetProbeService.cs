@@ -64,22 +64,26 @@ public sealed class DataSetProbeService
 
             var hash = await FileHashing.ComputeSha256Async(localPath, cancellationToken).ConfigureAwait(false);
             SchemaSnapshot schema;
-            try
+            if (!await HasPlainSqliteHeaderAsync(localPath, cancellationToken).ConfigureAwait(false))
             {
-                schema = await _schemaInspector.InspectAsync(
-                    localPath,
-                    new SchemaInspectionOptions(options.IncludeLocalPaths, walPath, shmPath),
-                    cancellationToken).ConfigureAwait(false);
+                const string message = "The database does not have a plain SQLite header; it may be encrypted or use a proprietary container. No decryption is attempted.";
+                issues.Add(new DataSetIssue("encrypted-or-non-sqlite", "error", message, file.RelativePath));
+                schema = CreateUnavailableSchema(localPath, hash, options, walPresent, shmPresent, completenessIssue);
             }
-            catch (Exception exception) when (exception is SqliteException or InvalidDataException or IOException)
+            else
             {
-                issues.Add(new DataSetIssue("schema-probe-failed", "error", exception.Message, file.RelativePath));
-                schema = new SchemaSnapshot(
-                    options.IncludeLocalPaths ? localPath : Path.GetFileName(localPath),
-                    DateTimeOffset.UtcNow,
-                    DatabaseSha256: hash,
-                    FileCompleteness: new SchemaFileCompleteness(walPresent, shmPresent, completenessIssue is null, completenessIssue),
-                    LocalPath: options.IncludeLocalPaths ? localPath : null);
+                try
+                {
+                    schema = await _schemaInspector.InspectAsync(
+                        localPath,
+                        new SchemaInspectionOptions(options.IncludeLocalPaths, walPath, shmPath),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is SqliteException or InvalidDataException or IOException)
+                {
+                    issues.Add(new DataSetIssue("schema-probe-failed", "error", exception.Message, file.RelativePath));
+                    schema = CreateUnavailableSchema(localPath, hash, options, walPresent, shmPresent, completenessIssue);
+                }
             }
 
             artifacts.Add(new DatabaseArtifact(
@@ -146,6 +150,46 @@ public sealed class DataSetProbeService
             .Select(static item => $"{item.LogicalRole}|{item.ShardNumber}|{item.DatabasePath}|{item.Sha256}|{item.Schema.SchemaFingerprint}"));
         return "dataset-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant()[..16];
     }
+
+    private static async Task<bool> HasPlainSqliteHeaderAsync(string path, CancellationToken cancellationToken)
+    {
+        var header = new byte[16];
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            header.Length,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var read = 0;
+        while (read < header.Length)
+        {
+            var count = await stream.ReadAsync(header.AsMemory(read), cancellationToken).ConfigureAwait(false);
+            if (count == 0)
+            {
+                break;
+            }
+
+            read += count;
+        }
+
+        return read == header.Length
+            && header.AsSpan().SequenceEqual("SQLite format 3\0"u8);
+    }
+
+    private static SchemaSnapshot CreateUnavailableSchema(
+        string localPath,
+        string hash,
+        DataSetProbeOptions options,
+        bool walPresent,
+        bool shmPresent,
+        string? completenessIssue)
+        => new(
+            options.IncludeLocalPaths ? localPath : Path.GetFileName(localPath),
+            DateTimeOffset.UtcNow,
+            DatabaseSha256: hash,
+            FileCompleteness: new SchemaFileCompleteness(walPresent, shmPresent, completenessIssue is null, completenessIssue),
+            LocalPath: options.IncludeLocalPaths ? localPath : null);
 
     private static ArtifactRole Classify(string fileName)
     {
