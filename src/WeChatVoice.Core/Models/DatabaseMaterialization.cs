@@ -4,13 +4,8 @@ namespace WeChatVoice.Core.Models;
 
 public sealed record RawSnapshot
 {
-    public RawSnapshot(string SnapshotId, SnapshotManifest Manifest, string? SnapshotDirectory = null)
+    public RawSnapshot(SnapshotManifest Manifest, string? SnapshotDirectory = null)
     {
-        if (string.IsNullOrWhiteSpace(SnapshotId))
-        {
-            throw new ArgumentException("A raw snapshot identifier is required.", nameof(SnapshotId));
-        }
-
         ArgumentNullException.ThrowIfNull(Manifest);
         if (SnapshotDirectory is not null
             && (string.IsNullOrWhiteSpace(SnapshotDirectory) || !Path.IsPathFullyQualified(SnapshotDirectory)))
@@ -18,7 +13,7 @@ public sealed record RawSnapshot
             throw new ArgumentException("The optional raw snapshot directory must be absolute.", nameof(SnapshotDirectory));
         }
 
-        this.SnapshotId = SnapshotId;
+        this.SnapshotId = Manifest.SnapshotId;
         this.Manifest = Manifest;
         this.SnapshotDirectoryOverride = SnapshotDirectory is null ? null : Path.GetFullPath(SnapshotDirectory);
     }
@@ -60,21 +55,52 @@ public sealed record MaterializationOptions
     public string? KeyFile { get; }
 }
 
+public enum MaterializationDatabaseStatus
+{
+    Materialized,
+    CopiedAsPlaintext,
+    IntentionallyIgnored,
+    Failed,
+}
+
 public sealed record MaterializedDatabase(
+    string SourceRelativePath,
+    string SourceGroupFingerprint,
+    string OutputRelativePath,
     string LogicalRole,
     int? ShardNumber,
-    string DatabasePath,
+    string Sha256,
+    long ByteLength,
+    string SchemaFingerprint,
+    MaterializationDatabaseStatus Status = MaterializationDatabaseStatus.Materialized,
+    string? Error = null);
+
+public sealed record MaterializationFile(
+    string OutputRelativePath,
     string Sha256,
     long ByteLength);
 
-public sealed record DecryptedWorkspace
+public sealed record MaterializationManifest(
+    string WorkspaceId,
+    string SourceSnapshotId,
+    string BackendId,
+    string BackendVersion,
+    string BackendSha256,
+    IReadOnlyList<MaterializedDatabase> Databases,
+    IReadOnlyList<MaterializationFile> Files);
+
+public sealed record MaterializationResult
 {
-    public DecryptedWorkspace(
+    public MaterializationResult(
         string WorkspaceId,
         string SourceSnapshotId,
         string BackendId,
         string BackendVersion,
-        IReadOnlyList<MaterializedDatabase> Databases)
+        string BackendSha256,
+        string OutputRoot,
+        IReadOnlyList<MaterializedDatabase> Databases,
+        IReadOnlyList<MaterializationFile> Files,
+        string ManifestPath)
     {
         if (string.IsNullOrWhiteSpace(WorkspaceId))
         {
@@ -92,12 +118,20 @@ public sealed record DecryptedWorkspace
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(BackendVersion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(BackendSha256);
+        ArgumentException.ThrowIfNullOrWhiteSpace(OutputRoot);
         ArgumentNullException.ThrowIfNull(Databases);
+        ArgumentNullException.ThrowIfNull(Files);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ManifestPath);
         this.WorkspaceId = WorkspaceId;
         this.SourceSnapshotId = SourceSnapshotId;
         this.BackendId = BackendId;
         this.BackendVersion = BackendVersion;
+        this.BackendSha256 = BackendSha256;
+        this.OutputRoot = Path.GetFullPath(OutputRoot);
         this.Databases = new ReadOnlyCollection<MaterializedDatabase>(Databases.ToArray());
+        this.Files = new ReadOnlyCollection<MaterializationFile>(Files.ToArray());
+        this.ManifestPath = Path.GetFullPath(ManifestPath);
     }
 
     public string WorkspaceId { get; }
@@ -108,5 +142,13 @@ public sealed record DecryptedWorkspace
 
     public string BackendVersion { get; }
 
+    public string BackendSha256 { get; }
+
+    public string OutputRoot { get; }
+
     public IReadOnlyList<MaterializedDatabase> Databases { get; }
+
+    public IReadOnlyList<MaterializationFile> Files { get; }
+
+    public string ManifestPath { get; }
 }

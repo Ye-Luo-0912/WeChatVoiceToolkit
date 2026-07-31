@@ -13,7 +13,7 @@ public interface IWeChatDataSetAdapter
     AdapterMatch Probe(WeChatDataSet dataSet);
 
     ValueTask<IVoiceCatalog> OpenAsync(
-        WeChatDataSet dataSet,
+        VerifiedLocalWorkspace workspace,
         CancellationToken cancellationToken);
 }
 

@@ -1,7 +1,7 @@
 # Schema adapter guide
 
 An adapter must implement `IWeChatDataSetAdapter` and operate only on a
-verified `WeChatDataSet`. The data set should include every related
+verified `VerifiedLocalWorkspace` (and its `WeChatDataSet`). The data set should include every related
 `DatabaseArtifact` (message, media, contact, and any shard), its SHA-256, and a
 read-only `SchemaSnapshot`. Register it through `BuiltInAdapters`; do not create
 per-command adapter lists.

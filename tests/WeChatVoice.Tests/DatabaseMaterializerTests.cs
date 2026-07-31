@@ -16,7 +16,7 @@ public sealed class DatabaseMaterializerTests
             snapshotRoot,
             DateTimeOffset.UtcNow,
             [new SnapshotFileRecord("message_0.db", new FileInfo(database).Length, new string('0', 64), DateTimeOffset.UtcNow)]);
-        var rawSnapshot = new RawSnapshot("snapshot", manifest);
+        var rawSnapshot = new RawSnapshot(manifest);
         var output = temporary.GetPath("materialized");
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("The test process path is unavailable.");
 

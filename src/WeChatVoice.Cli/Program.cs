@@ -339,6 +339,7 @@ static Command CreateWorkspaceCommand()
 {
     var workspaceCommand = new Command("workspace", "Create an executable local database workspace.");
     var createCommand = new Command("create", "Probe a decrypted database root and retain local paths for execution.");
+    var verifyCommand = new Command("verify", "Verify that a local workspace still points at the unchanged database bundle.");
     var materializeCommand = new Command("materialize", "Run a fixed external decryptor and validate ordinary SQLite output.");
     var rootOption = new Option<string>("--root")
     {
@@ -389,6 +390,46 @@ static Command CreateWorkspaceCommand()
 
     workspaceCommand.Subcommands.Add(createCommand);
 
+    var verifyWorkspaceOption = new Option<string>("--workspace")
+    {
+        Description = "Local executable workspace JSON.",
+        Required = true,
+    };
+    verifyCommand.Options.Add(verifyWorkspaceOption);
+    verifyCommand.SetAction(async (parseResult, cancellationToken) =>
+    {
+        var workspacePath = parseResult.GetValue(verifyWorkspaceOption);
+        if (workspacePath is null)
+        {
+            Console.Error.WriteLine("--workspace is required.");
+            return 2;
+        }
+
+        try
+        {
+            var workspace = await ReadLocalWorkspaceAsync(workspacePath, cancellationToken).ConfigureAwait(false);
+            var verified = await new LocalWorkspaceVerifier().VerifyAsync(workspace, cancellationToken).ConfigureAwait(false);
+            WriteJson(new WorkspaceVerifyResult(
+                Path.GetFullPath(workspacePath),
+                verified.Workspace.WorkspaceId,
+                verified.DataSet.DataSetId,
+                verified.DataSet.Databases.Count,
+                verified.VerifiedAtUtc));
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Workspace verification was cancelled.");
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
+    });
+    workspaceCommand.Subcommands.Add(verifyCommand);
+
     var snapshotDirectoryOption = new Option<string>("--snapshot-directory")
     {
         Description = "Raw snapshot directory produced by snapshot create.",
@@ -397,10 +438,6 @@ static Command CreateWorkspaceCommand()
     var snapshotManifestOption = new Option<string?>("--snapshot-manifest")
     {
         Description = "Optional snapshot manifest; defaults to .wechatvoice/snapshot-manifest.json under the snapshot directory.",
-    };
-    var snapshotIdOption = new Option<string?>("--snapshot-id")
-    {
-        Description = "Stable raw snapshot identifier; defaults to the snapshot directory name.",
     };
     var decryptorOption = new Option<string>("--external-decryptor")
     {
@@ -416,20 +453,24 @@ static Command CreateWorkspaceCommand()
         Description = "New ordinary SQLite output directory.",
         Required = true,
     };
+    var workspaceOutputOption = new Option<string?>("--workspace-output")
+    {
+        Description = "Local workspace JSON; defaults to .wechatvoice/local-workspace.json under the materialized output.",
+    };
     materializeCommand.Options.Add(snapshotDirectoryOption);
     materializeCommand.Options.Add(snapshotManifestOption);
-    materializeCommand.Options.Add(snapshotIdOption);
     materializeCommand.Options.Add(decryptorOption);
     materializeCommand.Options.Add(keyFileOption);
     materializeCommand.Options.Add(materializedOutputOption);
+    materializeCommand.Options.Add(workspaceOutputOption);
     materializeCommand.SetAction(async (parseResult, cancellationToken) =>
     {
         var snapshotDirectory = parseResult.GetValue(snapshotDirectoryOption);
         var snapshotManifest = parseResult.GetValue(snapshotManifestOption);
-        var snapshotId = parseResult.GetValue(snapshotIdOption);
         var decryptor = parseResult.GetValue(decryptorOption);
         var keyFile = parseResult.GetValue(keyFileOption);
         var output = parseResult.GetValue(materializedOutputOption);
+        var workspaceOutput = parseResult.GetValue(workspaceOutputOption);
         if (snapshotDirectory is null || decryptor is null || output is null)
         {
             Console.Error.WriteLine("--snapshot-directory, --external-decryptor, and --output are required.");
@@ -441,12 +482,22 @@ static Command CreateWorkspaceCommand()
             var snapshotRoot = Path.GetFullPath(snapshotDirectory);
             var manifestPath = Path.GetFullPath(snapshotManifest ?? Path.Combine(snapshotRoot, ".wechatvoice", "snapshot-manifest.json"));
             var manifest = await ReadJsonFileAsync<SnapshotManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
-            var rawSnapshot = new RawSnapshot(snapshotId ?? Path.GetFileName(snapshotRoot), manifest, snapshotRoot);
-            var workspace = await new ExternalDatabaseMaterializer(decryptor).MaterializeAsync(
+            var rawSnapshot = new RawSnapshot(manifest, snapshotRoot);
+            var materialization = await new ExternalDatabaseMaterializer(decryptor).MaterializeAsync(
                 rawSnapshot,
                 new MaterializationOptions(Path.GetFullPath(output), keyFile is null ? null : Path.GetFullPath(keyFile)),
                 cancellationToken).ConfigureAwait(false);
-            WriteJson(workspace);
+            var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(output, ".wechatvoice", "local-workspace.json"));
+            var localWorkspace = await new LocalWorkspaceCreator().CreateAsync(materialization.OutputRoot, cancellationToken).ConfigureAwait(false);
+            await WriteJsonFileAsync(localWorkspacePath, localWorkspace, cancellationToken).ConfigureAwait(false);
+            WriteJson(new WorkspaceMaterializationResult(
+                materialization.WorkspaceId,
+                materialization.OutputRoot,
+                materialization.ManifestPath,
+                localWorkspacePath,
+                localWorkspace.WorkspaceId,
+                localWorkspace.DataSet.DataSetId,
+                materialization.Databases.Count));
             return 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -529,14 +580,10 @@ static Command CreateContactCommand()
 static async Task<IVoiceCatalog> OpenCatalogAsync(string path, CancellationToken cancellationToken)
 {
     var workspace = await ReadLocalWorkspaceAsync(path, cancellationToken).ConfigureAwait(false);
-    if (workspace.DataSet.Databases.Any(static artifact => string.IsNullOrWhiteSpace(artifact.LocalPath)))
-    {
-        throw new InvalidDataException("The workspace is shareable-only and has no executable local paths. Recreate it with 'workspace create'.");
-    }
-
+    var verified = await new LocalWorkspaceVerifier().VerifyAsync(workspace, cancellationToken).ConfigureAwait(false);
     var resolver = new DataSetAdapterResolver(BuiltInAdapters.Create());
-    var adapter = resolver.Resolve(workspace.DataSet);
-    return await adapter.OpenAsync(workspace.DataSet, cancellationToken).ConfigureAwait(false);
+    var adapter = resolver.Resolve(verified.DataSet);
+    return await adapter.OpenAsync(verified, cancellationToken).ConfigureAwait(false);
 }
 
 static async Task<LocalWorkspace> ReadLocalWorkspaceAsync(string path, CancellationToken cancellationToken)
@@ -746,6 +793,17 @@ internal sealed record SchemaProbeResult(string OutputPath, int ObjectCount);
 internal sealed record DatasetProbeResult(string OutputPath, string DataSetId, int DatabaseCount, int IssueCount, int AdapterCandidateCount);
 
 internal sealed record WorkspaceCreateResult(string OutputPath, string WorkspaceId, string DataSetId, int DatabaseCount, int IssueCount);
+
+internal sealed record WorkspaceVerifyResult(string WorkspacePath, string WorkspaceId, string DataSetId, int DatabaseCount, DateTimeOffset VerifiedAtUtc);
+
+internal sealed record WorkspaceMaterializationResult(
+    string MaterializationWorkspaceId,
+    string OutputRoot,
+    string MaterializationManifestPath,
+    string LocalWorkspacePath,
+    string LocalWorkspaceId,
+    string DataSetId,
+    int DatabaseCount);
 
 internal static class CliJson
 {

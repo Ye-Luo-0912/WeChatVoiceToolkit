@@ -8,7 +8,10 @@ operations, while `ElevatedHelper` has a deliberately tiny JSON Lines protocol.
 
 `DataSetProbe` is a shareable report and never carries executable local paths.
 `LocalWorkspace` is the separate local-only binding consumed by adapters and
-must remain under `.wechatvoice/`. `BuiltInAdapters` is the single adapter
+must remain under `.wechatvoice/`. It is untrusted when loaded from JSON until
+`ILocalWorkspaceVerifier` rechecks its root, reparse-point boundaries, file
+set, DB/WAL/SHM hashes, and group fingerprints; adapters receive only the
+resulting `VerifiedLocalWorkspace`. `BuiltInAdapters` is the single adapter
 composition root shared by probing, resolution, doctor, and future hosts.
 
 Snapshots copy the complete source file group into a staging directory and
@@ -45,5 +48,7 @@ Encrypted or proprietary database containers are reported as
 `encrypted-or-non-sqlite`. `IDatabaseMaterializer` is the only boundary allowed
 to turn a raw snapshot into ordinary SQLite; its first implementation verifies
 the complete raw snapshot file set and hashes, uses a fixed external process
-protocol, and validates SQLite headers plus `PRAGMA quick_check` before
-returning a workspace.
+protocol, requires source-to-output database mappings, rejects reparse points
+and pre-existing output targets, writes `.wechatvoice/materialization-manifest.json`,
+and validates SQLite headers plus `PRAGMA quick_check` before the CLI creates a
+local workspace.

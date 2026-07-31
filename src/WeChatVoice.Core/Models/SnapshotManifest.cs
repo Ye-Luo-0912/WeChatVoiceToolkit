@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace WeChatVoice.Core.Models;
 
@@ -59,7 +61,9 @@ public sealed record SnapshotManifest
         IEnumerable<SnapshotFileRecord>? Files = null,
         bool PotentiallyInconsistent = false,
         int AttemptCount = 1,
-        IEnumerable<string>? SourceProcessNames = null)
+        IEnumerable<string>? SourceProcessNames = null,
+        string? SnapshotId = null,
+        string? DisplayName = null)
     {
         if (string.IsNullOrWhiteSpace(SourceDirectory))
         {
@@ -83,6 +87,14 @@ public sealed record SnapshotManifest
         this.PotentiallyInconsistent = PotentiallyInconsistent;
         this.AttemptCount = AttemptCount;
         this.SourceProcessNames = new ReadOnlyCollection<string>((SourceProcessNames ?? Array.Empty<string>()).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray());
+        var computedSnapshotId = ComputeSnapshotId(this.Files);
+        if (!string.IsNullOrWhiteSpace(SnapshotId) && !string.Equals(SnapshotId, computedSnapshotId, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("SnapshotId does not match the manifest file content.", nameof(SnapshotId));
+        }
+
+        this.SnapshotId = computedSnapshotId;
+        this.DisplayName = string.IsNullOrWhiteSpace(DisplayName) ? null : DisplayName;
     }
 
     public string SourceDirectory { get; }
@@ -98,6 +110,22 @@ public sealed record SnapshotManifest
     public int AttemptCount { get; }
 
     public IReadOnlyList<string> SourceProcessNames { get; }
+
+    public string SnapshotId { get; }
+
+    public string? DisplayName { get; }
+
+    public static string ComputeSnapshotId(IEnumerable<SnapshotFileRecord> files)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+        var canonical = string.Join("\n", files
+            .OrderBy(static file => file.RelativePath.Replace('\\', '/'), StringComparer.Ordinal)
+            .Select(static file => string.Join('|',
+                file.RelativePath.Replace('\\', '/'),
+                file.ByteLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                file.Sha256.ToLowerInvariant())));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
 }
 
 /// <summary>

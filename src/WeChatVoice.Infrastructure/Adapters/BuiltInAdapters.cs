@@ -26,6 +26,6 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
     public AdapterMatch Probe(WeChatDataSet dataSet)
         => AdapterMatch.NoMatch("The Weixin Windows 4.x schema mapping is not verified yet; provide schema evidence before enabling this adapter.");
 
-    public ValueTask<IVoiceCatalog> OpenAsync(WeChatDataSet dataSet, CancellationToken cancellationToken)
-        => throw new NoMatchingDataSetAdapterException(dataSet.DataSetId);
+    public ValueTask<IVoiceCatalog> OpenAsync(VerifiedLocalWorkspace workspace, CancellationToken cancellationToken)
+        => throw new NoMatchingDataSetAdapterException(workspace.DataSet.DataSetId);
 }

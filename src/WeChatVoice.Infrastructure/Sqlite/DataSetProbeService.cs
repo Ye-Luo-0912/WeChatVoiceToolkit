@@ -43,7 +43,7 @@ public sealed class DataSetProbeService
         }
 
         var issues = new List<DataSetIssue>();
-        var snapshotFiles = BuildSnapshotFileLookup(root, options.SnapshotManifest);
+        var snapshotFiles = await BuildSnapshotFileLookupAsync(root, options.SnapshotManifest, cancellationToken).ConfigureAwait(false);
         var files = SnapshotFileCopier.EnumerateRegularFiles(root)
             .Where(static path => string.Equals(Path.GetExtension(path), ".db", StringComparison.OrdinalIgnoreCase))
             .Select(path => new DiscoveredDatabase(path, NormalizeRelativePath(root, path), Classify(Path.GetFileName(path))))
@@ -183,9 +183,10 @@ public sealed class DataSetProbeService
         return "dataset-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant()[..16];
     }
 
-    private static IReadOnlyDictionary<string, SnapshotFileRecord>? BuildSnapshotFileLookup(
+    private static async Task<IReadOnlyDictionary<string, SnapshotFileRecord>?> BuildSnapshotFileLookupAsync(
         string root,
-        SnapshotManifest? snapshotManifest)
+        SnapshotManifest? snapshotManifest,
+        CancellationToken cancellationToken)
     {
         if (snapshotManifest is null)
         {
@@ -193,17 +194,62 @@ public sealed class DataSetProbeService
         }
 
         var manifestRoot = Path.GetFullPath(snapshotManifest.SnapshotDirectory);
-        var sourceRoot = Path.GetFullPath(snapshotManifest.SourceDirectory);
-        if (!string.Equals(root, manifestRoot, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(root, sourceRoot, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(root, manifestRoot, StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            throw new InvalidDataException("A SnapshotManifest may only be used against its verified SnapshotDirectory, not the original source directory.");
         }
 
-        return snapshotManifest.Files.ToDictionary(
+        var expected = snapshotManifest.Files.ToDictionary(
             static file => file.RelativePath.Replace('\\', '/'),
             static file => file,
             StringComparer.OrdinalIgnoreCase);
+        var actual = SnapshotFileCopier.EnumerateRegularFiles(root)
+            .Where(path => !IsInternalMetadataPath(root, path))
+            .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/'))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!actual.SetEquals(expected.Keys))
+        {
+            throw new InvalidDataException("SnapshotManifest file set does not match the verified snapshot directory.");
+        }
+
+        foreach (var pair in expected)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = CombineUnderRoot(root, pair.Key);
+            var info = new FileInfo(path);
+            var hash = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            if (info.Length != pair.Value.ByteLength
+                || !string.Equals(hash, pair.Value.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException($"Snapshot content does not match its manifest: '{pair.Key}'.");
+            }
+        }
+
+        return expected;
+    }
+
+    private static bool IsInternalMetadataPath(string root, string path)
+    {
+        var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
+        return relative.Equals(".wechatvoice", StringComparison.OrdinalIgnoreCase)
+            || relative.StartsWith(".wechatvoice/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CombineUnderRoot(string root, string relativePath)
+    {
+        if (Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidDataException("SnapshotManifest contains an absolute file path.");
+        }
+
+        var candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("SnapshotManifest contains a path outside its snapshot directory.");
+        }
+
+        return candidate;
     }
 
     private static string ComputeDatabaseGroupFingerprint(

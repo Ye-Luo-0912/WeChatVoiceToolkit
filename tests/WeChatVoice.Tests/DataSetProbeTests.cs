@@ -59,7 +59,24 @@ public sealed class DataSetProbeTests
     }
 
     [Fact]
-    public async Task ProbeAsync_reuses_matching_snapshot_manifest_hashes_for_database_groups()
+    public async Task LocalWorkspaceVerifier_rejects_database_content_changes_after_creation()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("decrypted-db");
+        var databasePath = Path.Combine(root, "message_0.db");
+        await SqliteSchemaInspectorTests.CreateSampleDatabaseAsync(databasePath);
+
+        var workspace = await new LocalWorkspaceCreator().CreateAsync(root, CancellationToken.None);
+        var verified = await new LocalWorkspaceVerifier().VerifyAsync(workspace, CancellationToken.None);
+        Assert.Equal(workspace.WorkspaceId, verified.Workspace.WorkspaceId);
+
+        await File.AppendAllBytesAsync(databasePath, [0x7F]);
+        var exception = await Assert.ThrowsAsync<WorkspaceVerificationException>(() => new LocalWorkspaceVerifier().VerifyAsync(workspace, CancellationToken.None));
+        Assert.Contains("no longer matches", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_rejects_snapshot_manifest_hash_mismatch_instead_of_trusting_it()
     {
         using var temporary = new TestTemporaryDirectory();
         var root = temporary.CreateDirectory("decrypted-db");
@@ -72,12 +89,12 @@ public sealed class DataSetProbeTests
             DateTimeOffset.UtcNow,
             [new SnapshotFileRecord("message_0.db", new FileInfo(databasePath).Length, fakeHash, DateTimeOffset.UtcNow)]);
 
-        var probe = await new DataSetProbeService().ProbeAsync(
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => new DataSetProbeService().ProbeAsync(
             root,
             new DataSetProbeOptions(SnapshotManifest: manifest),
-            CancellationToken.None);
+            CancellationToken.None));
 
-        Assert.Equal(fakeHash, Assert.Single(probe.DataSet.Databases).MainSha256);
+        Assert.Contains("does not match", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

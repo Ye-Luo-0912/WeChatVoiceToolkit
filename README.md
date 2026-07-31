@@ -21,7 +21,8 @@ dotnet run --project src/WeChatVoice.Cli -- contact list --workspace .\.wechatvo
 dotnet run --project src/WeChatVoice.Cli -- contact search --workspace .\.wechatvoice\local-workspace.json --query wxid
 dotnet run --project src/WeChatVoice.Cli -- voice scan --workspace .\.wechatvoice\local-workspace.json --contact-username wxid_xxx --direction incoming --from 2025-01-01
 dotnet run --project src/WeChatVoice.Cli -- voice export --workspace .\.wechatvoice\local-workspace.json --contact-username wxid_xxx --direction incoming --format silk --output .\exports\peer
-dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --external-decryptor .\tools\decryptor.exe --output .\decrypted-db --key-file .\key.bin
+dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wechatvoice\local-workspace.json
+dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --external-decryptor .\tools\decryptor.exe --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json --key-file .\key.bin
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
 ```
 
@@ -38,13 +39,17 @@ executable. `workspace create` writes the local-only
 must not be uploaded or committed. Contact, scan, and export consume only this
 workspace document.
 
-The built-in `weixin-windows-4` adapter identity is registered centrally but is
-non-matching until a verified schema mapping is supplied. Commands therefore
-fail clearly instead of guessing table mappings. `workspace materialize` is a
-fixed external decryptor boundary: it passes only `--input-root`, `--output-root`,
-and optional `--key-file`; it first verifies the raw snapshot file set and
-hashes, then validates SQLite headers and `PRAGMA quick_check` on every output
-database.
+`workspace verify` rechecks every path, reparse-point boundary, DB/WAL/SHM
+length, hash, and database-group fingerprint before an adapter can open a
+workspace. The built-in `weixin-windows-4` adapter identity is registered
+centrally but is non-matching until a verified schema mapping is supplied.
+Commands therefore fail clearly instead of guessing table mappings.
+`workspace materialize` is a fixed external decryptor boundary: it passes only
+`--input-root`, `--output-root`, and optional `--key-file`; it first verifies the
+raw snapshot file set and hashes, requires every source database to be mapped,
+then validates SQLite headers and `PRAGMA quick_check` on every output database.
+It writes a materialization manifest and creates the local workspace JSON as one
+closed workflow.
 
 Export output is idempotent by `SourceStableKey` (adapter family, account,
 conversation, message primary key, and media primary key); snapshot and

@@ -60,10 +60,31 @@ public sealed class CoreModelTests
         var movedPath = temporary.CreateDirectory("moved");
         var manifest = new SnapshotManifest(recordedPath, recordedPath, DateTimeOffset.UtcNow);
 
-        var snapshot = new RawSnapshot("snapshot", manifest, movedPath);
+        var snapshot = new RawSnapshot(manifest, movedPath);
 
         Assert.Equal(Path.GetFullPath(movedPath), snapshot.SnapshotDirectory);
         Assert.Equal(Path.GetFullPath(movedPath), snapshot.SnapshotDirectoryOverride);
+        Assert.Equal(manifest.SnapshotId, snapshot.SnapshotId);
+    }
+
+    [Fact]
+    public void SnapshotManifest_id_is_content_addressed_and_cannot_be_overridden()
+    {
+        var files = new[]
+        {
+            new SnapshotFileRecord("b.db", 2, "bb", DateTimeOffset.UtcNow),
+            new SnapshotFileRecord("a.db", 1, "aa", DateTimeOffset.UtcNow),
+        };
+        var first = new SnapshotManifest("C:\\source", "C:\\snapshot", DateTimeOffset.UtcNow, files);
+        var reordered = new SnapshotManifest("D:\\other", "D:\\moved", DateTimeOffset.UtcNow, files.Reverse());
+
+        Assert.Equal(first.SnapshotId, reordered.SnapshotId);
+        Assert.Throws<ArgumentException>(() => new SnapshotManifest(
+            "C:\\source",
+            "C:\\snapshot",
+            DateTimeOffset.UtcNow,
+            files,
+            SnapshotId: new string('0', 64)));
     }
 
     [Fact]
