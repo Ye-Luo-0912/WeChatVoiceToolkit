@@ -1,0 +1,22 @@
+name: build-and-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.301
+      - run: dotnet restore WeChatVoice.slnx
+      - run: dotnet build WeChatVoice.slnx --configuration Release --no-restore
+      - run: dotnet test WeChatVoice.slnx --configuration Release --no-build

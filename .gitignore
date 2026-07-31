@@ -1,0 +1,30 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Tt]est[Rr]esult*/
+artifacts/
+
+# IDE and user settings
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+
+# Local data and exported media (may contain personal data)
+workspace/
+exports/
+snapshots/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.silk
+*.wav
+
+# Secrets and local tools
+.env
+.env.*
+tools/

@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WeChatVoice.Application/WeChatVoice.Application.csproj" />
+    <Project Path="src/WeChatVoice.Cli/WeChatVoice.Cli.csproj" />
+    <Project Path="src/WeChatVoice.Core/WeChatVoice.Core.csproj" />
+    <Project Path="src/WeChatVoice.ElevatedHelper/WeChatVoice.ElevatedHelper.csproj" />
+    <Project Path="src/WeChatVoice.Infrastructure/WeChatVoice.Infrastructure.csproj" />
+    <Project Path="src/WeChatVoice.Windows/WeChatVoice.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WeChatVoice.Tests/WeChatVoice.Tests.csproj" />
+  </Folder>
+</Solution>
