@@ -64,6 +64,11 @@
         "resolved": "3.0.3",
         "contentHash": "bjm6FY4lZyP+t7GmiuvSM0QXpFihAvyE0Y9O2yibm3g95AAWJPNnHOKVNJGyPTGIKuK7Pr4Wh8Rd8/aOtAclQw=="
       },
+      "System.Security.Principal.Windows": {
+        "type": "Transitive",
+        "resolved": "6.0.0-preview.5.21301.5",
+        "contentHash": "ywwCqFAaRVbgqqORqYg8jdaX6NUEpzbuhxyUhAs+7mZ8AFAO4PzFYrZ5JPkYejXwougDldtbi0zOkk1lLzugLw=="
+      },
       "xunit.abstractions": {
         "type": "Transitive",
         "resolved": "2.0.3",
@@ -155,6 +160,7 @@
       "wechatvoice.keybroker": {
         "type": "Project",
         "dependencies": {
+          "System.IO.Pipes.AccessControl": "[6.0.0-preview.5.21301.5, )",
           "WeChatVoice.Core": "[1.0.0, )",
           "WeChatVoice.Infrastructure": "[1.0.0, )",
           "WeChatVoice.KeyAcquisition": "[1.0.0, )",
@@ -225,6 +231,15 @@
         "requested": "[2.0.10, )",
         "resolved": "2.0.10",
         "contentHash": "6i1D6/U3i1f/PiXTt9pDvbJwdXEe0F2DZPup6BHzeIu5yPk/lkFzgtrJnPbj54JWUh8Y9vJeKG/TZIT6MkF8TA=="
+      },
+      "System.IO.Pipes.AccessControl": {
+        "type": "CentralTransitive",
+        "requested": "[6.0.0-preview.5.21301.5, )",
+        "resolved": "6.0.0-preview.5.21301.5",
+        "contentHash": "tv3KAjydzPusgdXwueOHldZ70FEh7ECs+q82UCnZZFNmW7nxGzrCgCMPomY5JpesaoJWcgvi3zEhSvJddXuu1g==",
+        "dependencies": {
+          "System.Security.Principal.Windows": "6.0.0-preview.5.21301.5"
+        }
       }
     }
   }

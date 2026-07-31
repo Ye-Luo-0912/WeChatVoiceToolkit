@@ -11,7 +11,8 @@ internal delegate bool ProcessMemoryChunkHandler(ReadOnlySpan<byte> chunk, bool 
 public readonly record struct ProcessMemoryScanResult(
     int RegionCount,
     long ScannedBytes,
-    bool ReachedLimit);
+    bool ReachedLimit,
+    int CandidateCount = 0);
 
 internal readonly record struct ProcessMemoryScanBudget
 {

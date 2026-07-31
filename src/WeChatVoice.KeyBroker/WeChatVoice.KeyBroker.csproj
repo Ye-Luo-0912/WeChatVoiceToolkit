@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.IO.Pipes.AccessControl" />
     <ProjectReference Include="..\WeChatVoice.Core\WeChatVoice.Core.csproj" />
     <ProjectReference Include="..\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />
     <ProjectReference Include="..\WeChatVoice.KeyAcquisition\WeChatVoice.KeyAcquisition.csproj" />

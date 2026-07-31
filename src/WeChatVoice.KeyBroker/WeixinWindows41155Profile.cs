@@ -91,7 +91,7 @@ internal sealed class WeixinWindows41155Profile(
         }, budget.MaximumCandidates);
 
         var scan = source.Scan(scanner.ProcessChunk, budget, cancellationToken);
-        scanProgress?.Invoke(scan);
+        scanProgress?.Invoke(scan with { CandidateCount = scanner.CandidateCount });
         if (validated.Count != targets.Count)
         {
             foreach (var item in validated.Values)

@@ -27,14 +27,21 @@ internal static class BrokerPipeServer
         ValidateOutputPath(outputRoot, nameof(outputRoot));
         ValidateOutputPath(workspaceOutput, nameof(workspaceOutput));
 
-        await using var pipe = new NamedPipeServerStream(
-            PipePrefix + pipeToken.ToLowerInvariant(),
-            PipeDirection.InOut,
-            1,
-            PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly,
-            BrokerProtocol.MaximumRequestLength,
-            BrokerProtocol.MaximumRequestLength);
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("The Key Broker pipe server is Windows-only.");
+        }
+
+        var pipeSecurity = BrokerPipeSecurity.CreateForCurrentUser();
+        await using var pipe = NamedPipeServerStreamAcl.Create(
+                PipePrefix + pipeToken.ToLowerInvariant(),
+                PipeDirection.InOut,
+                1,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous,
+                BrokerProtocol.MaximumRequestLength,
+                BrokerProtocol.MaximumRequestLength,
+                pipeSecurity);
         using (var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
             connectionTimeout.CancelAfter(ConnectionTimeout);

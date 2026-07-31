@@ -96,6 +96,7 @@ internal sealed record BrokerError(string Code, string Message);
 internal sealed record BrokerStageEvent(
     string Stage,
     long? ScannedBytes = null,
+    int? Candidates = null,
     int? CompletedGroups = null,
     int? TotalGroups = null,
     int? CompletedDatabases = null,

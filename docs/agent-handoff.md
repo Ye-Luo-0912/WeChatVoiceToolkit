@@ -57,8 +57,14 @@ do not wire it to the encrypted business databases.
 
 `DatabaseMaterializerTests` use a real fake child process and cover success,
 missing/extra/invalid/duplicate/unknown mappings, sensitive output redaction,
-binary hash mismatch, timeout, and cancellation. The next blocker is real-data
-validation for signed Weixin 4.1.11.55, followed by the first schema adapter
-and multi-group incoming SILK association. The SQLCipher Worker already has
+binary hash mismatch, timeout, and cancellation. The first controlled live
+attempt on 2026-08-01 found one matching signed Weixin process and verified the
+stable 21-database Snapshot. The Broker pipe, identity check, private staging,
+and 768 MiB scan all completed, but the experimental ASCII candidate scanner
+found zero candidates and therefore stopped before any Worker output. This is
+evidence that the current Profile assumptions do not match the live format; do
+not weaken validation or guess a new key format. The next blocker is an
+evidence-backed Profile update, followed by the first schema adapter and
+multi-group incoming SILK association. The SQLCipher Worker already has
 synthetic multi-step coverage for DB/WAL staging, quick-check, wrong-key
 rejection, protocol rejection, and destination safety.

@@ -108,7 +108,10 @@ Weixin databases use the same cipher parameters.
 
 ## Next evidence required
 
-The next route-two implementation needs a bounded candidate-location fixture for
+The first controlled live attempt on 2026-08-01 matched one signed process and
+scanned 768 MiB with zero candidates in the experimental ASCII form. No Worker
+was invoked and no key material was emitted. The next route-two implementation
+needs an evidence-backed candidate-location fixture and page-format analysis for
 the exact signed build. After a candidate validates independently against the
 required message, media, and contact groups, the Profile must still pass full
-DB/WAL materialization and `PRAGMA quick_check` before it can be registered.
+DB/WAL materialization and `PRAGMA quick_check` before it can be certified.

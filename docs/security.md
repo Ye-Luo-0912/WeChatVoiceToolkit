@@ -20,10 +20,12 @@ materializers are registries. The permanent safety floor is:
 - every key is database-group bound, validated, and deterministically cleared;
 - all database probing remains read-only and local artifacts remain ignored by Git.
 
-The pipe uses `CurrentUserOnly`; an elevated process retains the same user SID,
-which is stricter than allowing every local administrator. Its random token is
-part of the pipe name and never appears in the JSON request. The Broker accepts
-one connection and one request, then exits.
+The pipe uses an explicit ACL for the current user SID, local administrators,
+and the operating system. It intentionally does not request a mandatory-label
+SACL because that would require `SeSecurityPrivilege` just to create the pipe.
+The random token is part of the pipe name and never appears in the JSON request,
+and the CLI verifies the connected server PID. The Broker accepts one
+connection and one request, then exits.
 
 The current materialization path uses the fixed SQLCipher Worker as an
 isolated compatibility runtime. The Worker receives the validated key only

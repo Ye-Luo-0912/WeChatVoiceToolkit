@@ -67,7 +67,7 @@ internal sealed class KeyBrokerClient
             try
             {
                 await using var pipe = new NamedPipeClientStream(
-                    ".", PipePrefix + token, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                    ".", PipePrefix + token, PipeDirection.InOut, PipeOptions.Asynchronous);
                 using var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 connectionTimeout.CancelAfter(ConnectionTimeout);
                 await pipe.ConnectAsync(connectionTimeout.Token).ConfigureAwait(false);

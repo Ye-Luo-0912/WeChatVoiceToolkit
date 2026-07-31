@@ -85,7 +85,7 @@ internal static class BrokerHost
             verifiedSnapshot = stagedSnapshot.Snapshot;
             snapshotStaged = true;
             var profile = GuardedKeyExtractionProfiles.Create(
-                scan => reportStage?.Invoke(new BrokerStageEvent("memory-scan", ScannedBytes: scan.ScannedBytes))).Single();
+                scan => reportStage?.Invoke(new BrokerStageEvent("memory-scan", scan.ScannedBytes, scan.CandidateCount))).Single();
             var materializer = new SqlCipherEphemeralDatabaseMaterializer(
                 progress: (completed, total) => reportStage?.Invoke(new BrokerStageEvent(
                     "materializing",
@@ -100,7 +100,7 @@ internal static class BrokerHost
                 materializer);
             var materialization = await service.ExecuteAsync(
                 verifiedSnapshot,
-                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60), 64L * 1024 * 1024, 256, allowExperimentalProfile),
+                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60), 768L * 1024 * 1024, 256, allowExperimentalProfile),
                 new MaterializationOptions(Path.GetFullPath(outputRoot)),
                 cancellationToken).ConfigureAwait(false);
             var workspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);
@@ -147,7 +147,7 @@ internal static class BrokerHost
             BrokerProtocol.Write(output, Failed(
                 request?.RequestId,
                 noProfile ? "profile_unavailable" : "materialization_failed",
-                noProfile ? "No running Weixin process matched a verified key-extraction Profile." : "The Broker could not complete the verified materialization."));
+                noProfile ? "No running Weixin process matched the Profile, or no candidate key validated every database group." : "The Broker could not complete the verified materialization."));
             return noProfile ? 3 : 1;
         }
     }

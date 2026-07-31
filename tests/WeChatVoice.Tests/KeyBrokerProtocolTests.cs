@@ -116,7 +116,7 @@ public sealed class KeyBrokerProtocolTests
             ".",
             BrokerPipeServer.PipePrefix + token,
             PipeDirection.InOut,
-            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            PipeOptions.Asynchronous);
         await client.ConnectAsync(timeout.Token);
         await using var writer = new StreamWriter(client, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
         using var reader = new StreamReader(client, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false, 4096, leaveOpen: true);

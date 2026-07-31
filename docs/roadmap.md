@@ -39,10 +39,12 @@ login `key_info.db` is ordinary SQLite, but its BLOB semantics remain unverified
 Do not guess tables, BLOB formats, or keys. Message and media filename shards
 are also not one-to-one; only an Adapter with verified schema evidence may
 resolve their relationship.
-The next implementation step is validating the experimental Profile and Worker
-against the user's exact signed build and real `message_N.db`, `media_N.db`,
-and contact groups. The Worker is currently proven only with synthetic
-SQLCipher fixtures; it must not be treated as a Weixin decryptor until page
+The first controlled live attempt matched one signed process, staged the stable
+21-database Snapshot, scanned 768 MiB, and found zero candidates in the current
+ASCII key form. Materialization stopped before Worker output. The next step is
+evidence-backed analysis of the exact page/key format; do not weaken validation
+or guess a new format. The Worker is currently proven only with synthetic
+SQLCipher fixtures and must not be treated as a Weixin decryptor until page
 format, KDF/HMAC, and WAL behavior match. After that evidence, implement one
 isolated adapter for exact contact selection, incoming voice association, and
 raw SILK output. No plaintext key-file interface is supported on the formal
