@@ -8,6 +8,13 @@ public enum ExistingArtifactPolicy
     Replace,
 }
 
+public enum ExportArtifactState
+{
+    Missing,
+    VerifiedExisting,
+    Conflict,
+}
+
 public sealed record ExportArtifact
 {
     public ExportArtifact(string RelativePath, long ByteLength, string Sha256)
@@ -50,6 +57,35 @@ public sealed class ExistingArtifactConflictException : IOException
 public sealed class ExistingArtifactNeedsHashException : IOException
 {
     public ExistingArtifactNeedsHashException(string message)
+        : base(message)
+    {
+    }
+}
+
+public sealed class SourceContentMismatchException : IOException
+{
+    public SourceContentMismatchException(string artifactKind, long? expectedLength, long actualLength, string? expectedSha256, string actualSha256)
+        : base($"The committed {artifactKind} does not match the source expectation. " +
+               $"Expected length {expectedLength?.ToString() ?? "unknown"}, actual length {actualLength}; " +
+               $"expected SHA-256 {expectedSha256 ?? "unknown"}, actual SHA-256 {actualSha256}.")
+    {
+        ArtifactKind = artifactKind;
+        ExpectedLength = expectedLength;
+        ActualLength = actualLength;
+        ExpectedSha256 = expectedSha256;
+        ActualSha256 = actualSha256;
+    }
+
+    public string ArtifactKind { get; }
+    public long? ExpectedLength { get; }
+    public long ActualLength { get; }
+    public string? ExpectedSha256 { get; }
+    public string ActualSha256 { get; }
+}
+
+public sealed class SourceIdentityRequiredException : InvalidOperationException
+{
+    public SourceIdentityRequiredException(string message)
         : base(message)
     {
     }

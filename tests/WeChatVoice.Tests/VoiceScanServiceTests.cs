@@ -12,8 +12,8 @@ public sealed class VoiceScanServiceTests
     {
         var records = new[]
         {
-            new VoiceRecord("one", "conversation", DateTimeOffset.UtcNow.AddMinutes(-2), VoiceDirection.Incoming, new VoicePayloadLocator("media", 0, "one"), ShardId: "0", DurationMs: 1200, PayloadSha256: "same", PayloadByteLength: 4),
-            new VoiceRecord("two", "conversation", DateTimeOffset.UtcNow.AddMinutes(-1), VoiceDirection.Incoming, new VoicePayloadLocator("media", 1, "two"), ShardId: "1", DurationMs: 800, PayloadSha256: "same", PayloadByteLength: 0, MediaLinked: false),
+            new VoiceRecord("one", "conversation", DateTimeOffset.UtcNow.AddMinutes(-2), VoiceDirection.Incoming, new VoicePayloadLocator("media", 0, "one"), ShardId: "0", DurationMs: 1200, PayloadSha256: "same", PayloadByteLength: 4, AdapterId: "adapter", AccountId: "account"),
+            new VoiceRecord("two", "conversation", DateTimeOffset.UtcNow.AddMinutes(-1), VoiceDirection.Incoming, null, ShardId: "1", DurationMs: 800, PayloadSha256: "same", PayloadByteLength: 0, MediaLinked: false, AdapterId: "adapter", AccountId: "account"),
         };
 
         var report = await new VoiceScanService(new FakeCatalog(records)).ScanAsync(new VoiceQuery(Direction: VoiceDirection.Incoming));
@@ -29,6 +29,8 @@ public sealed class VoiceScanServiceTests
 
     private sealed class FakeCatalog(IReadOnlyList<VoiceRecord> records) : IVoiceCatalog
     {
+        public VoiceCatalogContext Context { get; } = new("dataset", "adapter", "1", "account", ["db-fingerprint"]);
+
         public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(ContactQuery query, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             await Task.CompletedTask;

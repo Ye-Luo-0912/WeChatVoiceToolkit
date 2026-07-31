@@ -72,6 +72,11 @@ internal sealed partial class SnapshotFileCopier
 
     internal static IEnumerable<string> EnumerateRegularFiles(string sourceRoot)
     {
+        if ((File.GetAttributes(sourceRoot) & FileAttributes.ReparsePoint) != 0)
+        {
+            yield break;
+        }
+
         var pendingDirectories = new Stack<string>();
         pendingDirectories.Push(sourceRoot);
 

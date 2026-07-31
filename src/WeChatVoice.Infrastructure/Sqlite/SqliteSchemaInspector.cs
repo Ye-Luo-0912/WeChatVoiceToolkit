@@ -84,8 +84,8 @@ public sealed class SqliteSchemaInspector : ISchemaInspector
             walPresent == shmPresent,
             walPresent == shmPresent ? null : "SQLite WAL and SHM sidecars are not present as a complete pair.");
 
-        var hash = await FileHashing.ComputeSha256Async(fullDatabasePath, cancellationToken).ConfigureAwait(false);
-        var fingerprint = ComputeFingerprint(objects, indexes, foreignKeys, triggers, pragma, sqliteVersion);
+        var hash = options.PrecomputedSha256 ?? await FileHashing.ComputeSha256Async(fullDatabasePath, cancellationToken).ConfigureAwait(false);
+        var fingerprint = ComputeFingerprint(objects, indexes, foreignKeys, triggers, pragma);
         var displayPath = options.IncludeLocalPaths ? fullDatabasePath : Path.GetFileName(fullDatabasePath);
         return new SchemaSnapshot(
             displayPath,
@@ -274,8 +274,7 @@ public sealed class SqliteSchemaInspector : ISchemaInspector
         IReadOnlyList<SchemaIndexSnapshot> indexes,
         IReadOnlyList<SchemaForeignKeySnapshot> foreignKeys,
         IReadOnlyList<SchemaTriggerSnapshot> triggers,
-        SchemaPragmaSnapshot pragmas,
-        string? sqliteVersion)
+        SchemaPragmaSnapshot pragmas)
     {
         var canonical = new
         {
@@ -283,8 +282,14 @@ public sealed class SqliteSchemaInspector : ISchemaInspector
             Indexes = indexes,
             ForeignKeys = foreignKeys,
             Triggers = triggers,
-            Pragmas = pragmas,
-            sqliteVersion,
+            Pragmas = new
+            {
+                pragmas.UserVersion,
+                pragmas.ApplicationId,
+                pragmas.PageSize,
+                pragmas.Encoding,
+                pragmas.SchemaVersion,
+            },
         };
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(canonical, new JsonSerializerOptions { WriteIndented = false }));
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

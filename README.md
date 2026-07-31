@@ -44,9 +44,15 @@ fail clearly instead of guessing table mappings. `workspace materialize` is a
 fixed external decryptor boundary: it passes only `--input-root`, `--output-root`,
 and optional `--key-file`, then validates SQLite headers and `PRAGMA quick_check`.
 
-Export output is idempotent by stable data-set key and source SHA-256. Runs are
-stored under `runs/<run-id>.manifest.json` and `runs/<run-id>.jsonl`; only
-`latest.manifest.json` is replaced.
+Export output is idempotent by `SourceStableKey` (adapter family, account,
+conversation, message primary key, and media primary key); snapshot and
+database hashes remain provenance only. Missing identity or media association
+is rejected before payload access. Runs are stored under
+`runs/<run-id>.manifest.json` and an append-and-flush
+`runs/<run-id>.jsonl` journal; only `latest.manifest.json` is replaced.
+The voice commands use exit code `0` for complete success or safe skips, `2`
+for invalid parameters, `3` for item-level partial failure, `4` for no
+matching records, `1` for run-level failure, and `130` for cancellation.
 
 See [architecture.md](docs/architecture.md), [adr-0001-sqlite-runtime.md](docs/adr-0001-sqlite-runtime.md), [security.md](docs/security.md),
 and [agent-handoff.md](docs/agent-handoff.md) before extending the project.

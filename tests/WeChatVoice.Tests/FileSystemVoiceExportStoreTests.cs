@@ -15,7 +15,9 @@ public sealed class FileSystemVoiceExportStoreTests
             "conversation",
             new DateTimeOffset(2026, 7, 31, 12, 0, 0, TimeSpan.Zero),
             VoiceDirection.Incoming,
-            new VoicePayloadLocator("media", 0, "blob-1"));
+            new VoicePayloadLocator("media", 0, "blob-1"),
+            AdapterId: "adapter",
+            AccountId: "account");
 
         await using var lease = await store.BeginItemAsync(record, ExistingArtifactPolicy.Fail, CancellationToken.None);
         Assert.False(Path.IsPathRooted(lease.OriginalManifestPath));
@@ -78,9 +80,18 @@ public sealed class FileSystemVoiceExportStoreTests
         await second.DisposeAsync();
 
         await using var skipped = await store.BeginItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, CancellationToken.None);
-        Assert.True(skipped.IsSkipped);
+        Assert.Equal(ExportArtifactState.VerifiedExisting, skipped.OriginalState);
         Assert.NotNull(skipped.ExistingOriginalArtifact);
 
+        await using (var journal = await store.BeginRunAsync(
+            new VoiceExportRunContext(
+                "run-test",
+                new VoiceCatalogContext("dataset", "adapter", "1", "account", ["db-fingerprint"]),
+                DateTimeOffset.UtcNow),
+            CancellationToken.None))
+        {
+            await journal.AppendAsync(new VoiceExportJournalEvent("run-started", "run-test", DateTimeOffset.UtcNow), CancellationToken.None);
+        }
         await store.FinalizeRunAsync(new VoiceExportManifest(DateTimeOffset.UtcNow), CancellationToken.None);
         Assert.True(File.Exists(Path.Combine(store.ExportRoot, "latest.manifest.json")));
         Assert.Single(Directory.EnumerateFiles(Path.Combine(store.ExportRoot, "runs"), "*.manifest.json"));

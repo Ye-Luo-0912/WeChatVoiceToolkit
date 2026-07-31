@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Text.Json;
 using WeChatVoice.Application;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
@@ -28,12 +29,15 @@ public sealed class VoiceExportServiceTests
 
         var entry = Assert.Single(manifest.Entries);
         Assert.Equal("voice-1", entry.MessageId);
-        Assert.Equal(Convert.ToHexString(SHA256.HashData(payload)), entry.OriginalSha256);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant(), entry.OriginalSha256);
         Assert.Null(entry.DecodedPath);
         Assert.Equal(payload, await File.ReadAllBytesAsync(Path.Combine(exportRoot, entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar))));
         Assert.Single(manifest.Failures, failure => failure.MessageId == "voice-1" && failure.Stage == "decode");
         Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.wav", SearchOption.AllDirectories));
         Assert.True(File.Exists(Path.Combine(exportRoot, "latest.manifest.json")));
+        var journalLines = await File.ReadAllLinesAsync(Assert.Single(Directory.EnumerateFiles(Path.Combine(exportRoot, "runs"), "*.jsonl")));
+        var events = journalLines.Select(line => JsonDocument.Parse(line).RootElement.GetProperty("event").GetString()!).ToArray();
+        Assert.Equal(["run-started", "item-failed", "item-committed", "run-completed"], events);
     }
 
     [Fact]
@@ -62,7 +66,48 @@ public sealed class VoiceExportServiceTests
         Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.tmp", SearchOption.AllDirectories));
     }
 
-    private static VoiceRecord CreateRecord(string messageId) => new(
+    [Fact]
+    public async Task ExportAsync_can_add_decoded_artifact_when_original_is_already_verified()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payload = new byte[] { 0x31, 0x32, 0x33 };
+        var record = CreateRecord(
+            "voice-repeat",
+            Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant(),
+            payload.Length);
+        var exportRoot = temporary.GetPath("export");
+        var first = new VoiceExportService(new TestVoiceCatalog([(record, () => new MemoryStream(payload, writable: false))]), new FileSystemVoiceExportStore(exportRoot));
+        await first.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        var second = new VoiceExportService(new TestVoiceCatalog([(record, () => new MemoryStream(payload, writable: false))]), new FileSystemVoiceExportStore(exportRoot), new CopyingDecoder());
+        var manifest = await second.ExportAsync(new VoiceQuery(), new VoiceExportOptions { DecodeToWav = true, MaxDegreeOfParallelism = 1 });
+
+        var entry = Assert.Single(manifest.Entries);
+        Assert.NotNull(entry.DecodedPath);
+        Assert.False(entry.WasSkipped);
+        Assert.Empty(manifest.Failures);
+        Assert.True(File.Exists(Path.Combine(exportRoot, entry.DecodedPath!.Replace('/', Path.DirectorySeparatorChar))));
+    }
+
+    [Fact]
+    public async Task ExportAsync_rejects_payload_when_committed_hash_differs_from_adapter_expectation()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var record = CreateRecord("voice-mismatch", new string('a', 64), 4);
+        var exportRoot = temporary.GetPath("export");
+        var service = new VoiceExportService(
+            new TestVoiceCatalog([(record, () => new MemoryStream([1, 2, 3], writable: false))]),
+            new FileSystemVoiceExportStore(exportRoot));
+
+        var manifest = await service.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        Assert.Empty(manifest.Entries);
+        Assert.Contains(manifest.Failures, failure => failure.Stage == "source-content-mismatch");
+        Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.silk", SearchOption.AllDirectories));
+        Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.tmp", SearchOption.AllDirectories));
+    }
+
+    private static VoiceRecord CreateRecord(string messageId, string? payloadSha256 = null, long? payloadByteLength = null) => new(
         messageId,
         "contact@example",
         new DateTimeOffset(2026, 7, 31, 6, 0, 0, TimeSpan.Zero),
@@ -71,7 +116,12 @@ public sealed class VoiceExportServiceTests
         SnapshotId: "snapshot",
         AdapterId: "adapter",
         AccountId: "account",
-        ShardId: "0");
+        ShardId: "0",
+        DataSetId: "dataset",
+        AdapterVersion: "1",
+        DatabaseFingerprints: ["db-fingerprint"],
+        PayloadSha256: payloadSha256,
+        PayloadByteLength: payloadByteLength);
 
     private sealed class TestVoiceCatalog : IVoiceCatalog
     {
@@ -81,6 +131,8 @@ public sealed class VoiceExportServiceTests
         {
             _records = records;
         }
+
+        public VoiceCatalogContext Context { get; } = new("dataset", "adapter", "1", "account", ["db-fingerprint"], "snapshot");
 
         public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(
             ContactQuery query,
@@ -105,7 +157,7 @@ public sealed class VoiceExportServiceTests
         public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var match = _records.Single(item => item.Record.PayloadLocator.BlobKey == locator.BlobKey);
+            var match = _records.Single(item => item.Record.PayloadLocator?.BlobKey == locator.BlobKey);
             return ValueTask.FromResult(match.CreateStream());
         }
     }
@@ -114,6 +166,12 @@ public sealed class VoiceExportServiceTests
     {
         public Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken) =>
             Task.FromException(new InvalidOperationException("The test decoder deliberately failed."));
+    }
+
+    private sealed class CopyingDecoder : IVoiceDecoder
+    {
+        public Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken)
+            => input.CopyToAsync(output, cancellationToken);
     }
 
     private sealed class FaultingReadStream : Stream

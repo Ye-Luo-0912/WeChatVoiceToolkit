@@ -190,12 +190,17 @@ static Command CreateVoiceCommand()
             var query = BuildVoiceQuery(conversationId, contactUsername, directionText, fromText, toText);
             var manifest = await service.ExportAsync(query, new VoiceExportOptions { DecodeToWav = false }, cancellationToken).ConfigureAwait(false);
             WriteJson(manifest);
-            return 0;
+            return GetExportExitCode(manifest);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             Console.Error.WriteLine("Voice export was cancelled.");
             return 130;
+        }
+        catch (ArgumentException exception)
+        {
+            WriteError(exception);
+            return 2;
         }
         catch (Exception exception)
         {
@@ -238,12 +243,17 @@ static Command CreateVoiceCommand()
                 parseResult.GetValue(scanToOption));
             var report = await new VoiceScanService(catalog).ScanAsync(query, cancellationToken).ConfigureAwait(false);
             WriteJson(report);
-            return 0;
+            return report.MatchedVoiceCount == 0 ? 4 : 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             Console.Error.WriteLine("Voice scan was cancelled.");
             return 130;
+        }
+        catch (ArgumentException exception)
+        {
+            WriteError(exception);
+            return 2;
         }
         catch (Exception exception)
         {
@@ -700,6 +710,21 @@ static void WriteJson<T>(T value) =>
 
 static void WriteError(Exception exception) =>
     Console.Error.WriteLine($"{exception.GetType().Name}: {exception.Message}");
+
+static int GetExportExitCode(VoiceExportManifest manifest)
+{
+    if (manifest.Failures.Any(static failure => string.Equals(failure.Stage, "query", StringComparison.Ordinal)))
+    {
+        return 1;
+    }
+
+    if (manifest.Entries.Count == 0 && manifest.Failures.Count == 0)
+    {
+        return 4;
+    }
+
+    return manifest.Failures.Count == 0 ? 0 : 3;
+}
 
 internal sealed record DoctorReport(
     string Runtime,

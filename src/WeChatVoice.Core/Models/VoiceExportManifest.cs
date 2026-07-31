@@ -15,7 +15,10 @@ public sealed record VoiceExportManifest
         string? RunId = null,
         string? SnapshotId = null,
         string? AdapterId = null,
-        string? AccountId = null)
+        string? AccountId = null,
+        string? DatasetId = null,
+        string? AdapterVersion = null,
+        IReadOnlyList<string>? DatabaseFingerprints = null)
     {
         this.GeneratedAtUtc = GeneratedAtUtc.ToUniversalTime();
         this.Entries = Freeze(Entries);
@@ -24,6 +27,9 @@ public sealed record VoiceExportManifest
         this.SnapshotId = SnapshotId;
         this.AdapterId = AdapterId;
         this.AccountId = AccountId;
+        this.DatasetId = DatasetId;
+        this.AdapterVersion = AdapterVersion;
+        this.DatabaseFingerprints = Freeze(DatabaseFingerprints);
     }
 
     public DateTimeOffset GeneratedAtUtc { get; }
@@ -40,8 +46,35 @@ public sealed record VoiceExportManifest
 
     public string? AccountId { get; }
 
+    public string? DatasetId { get; }
+
+    public string? AdapterVersion { get; }
+
+    public IReadOnlyList<string> DatabaseFingerprints { get; }
+
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T>? values)
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());
+}
+
+public sealed record VoiceExportRunContext(
+    string RunId,
+    VoiceCatalogContext CatalogContext,
+    DateTimeOffset StartedAtUtc)
+{
+    public DateTimeOffset StartedAtUtc { get; init; } = StartedAtUtc.ToUniversalTime();
+}
+
+public sealed record VoiceExportJournalEvent(
+    string Event,
+    string RunId,
+    DateTimeOffset OccurredAtUtc,
+    string? MessageId = null,
+    VoiceExportEntry? Entry = null,
+    VoiceExportFailure? Failure = null,
+    VoiceCatalogContext? Context = null,
+    bool Cancelled = false)
+{
+    public DateTimeOffset OccurredAtUtc { get; init; } = OccurredAtUtc.ToUniversalTime();
 }
 
 /// <summary>
@@ -57,7 +90,7 @@ public sealed record VoiceExportEntry(
     long OriginalByteLength,
     string OriginalSha256,
     string? DecodedPath,
-    string? ExportKey = null,
+    string? SourceStableKey = null,
     bool WasSkipped = false,
     string? SourceDatabase = null,
     string? ShardId = null,

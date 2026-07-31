@@ -23,12 +23,15 @@ message, media, contact, and shard artifacts. `IWeChatDataSetAdapter` opens an
 from message metadata to a media database BLOB.
 
 `IVoiceExportStore.BeginItemAsync` returns an export lease. The lease owns path
-reservation, temporary files, commit, rollback, and final manifest persistence;
-the application only copies streams and coordinates the workflow. Export keys
-include snapshot, adapter, account, shard, conversation, and source message
-identity. Existing artifacts are reused only when their SHA-256 matches; run
-history is kept under `runs/` and `latest.manifest.json` is the only rolling
-pointer.
+reservation, temporary files, expected-content hash validation, atomic replace,
+commit, and rollback; the application only copies streams and coordinates the
+workflow. `SourceStableKey` excludes snapshot provenance and requires adapter
+family, account, conversation, message, and media identities. A separate
+catalog context records dataset, snapshot, adapter version, and database
+fingerprints for audit. Original and decoded artifacts have independent
+Missing/VerifiedExisting/Conflict states, so a later run can add a missing WAV
+without rewriting verified SILK. Run history is appended and flushed as JSONL
+events under `runs/`; `latest.manifest.json` is the only rolling pointer.
 
 `dataset probe` discovers database files, pairs message/media shards, records
 WAL/SHM completeness, hashes every DB/WAL/SHM member, and emits a deterministic

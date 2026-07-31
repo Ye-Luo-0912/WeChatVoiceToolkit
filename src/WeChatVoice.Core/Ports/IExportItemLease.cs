@@ -10,9 +10,13 @@ public interface IExportItemLease : IAsyncDisposable
 {
     VoiceRecord Record { get; }
 
-    bool IsSkipped { get; }
+    ExportArtifactState OriginalState { get; }
+
+    ExportArtifactState DecodedState { get; }
 
     ExportArtifact? ExistingOriginalArtifact { get; }
+
+    ExportArtifact? ExistingDecodedArtifact { get; }
 
     string OriginalManifestPath { get; }
 

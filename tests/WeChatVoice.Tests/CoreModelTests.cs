@@ -48,7 +48,8 @@ public sealed class CoreModelTests
             ShardId: "2",
             SourceMessageKey: "source-key");
 
-        Assert.Equal("snapshot|adapter|account|2|conversation|source-key", record.StableExportKey);
+        Assert.Equal("adapter|account|conversation|source-key|media:2:blob", record.SourceStableKey);
+        Assert.Equal("snapshot", record.Provenance.SnapshotId);
     }
 
     [Fact]
@@ -63,5 +64,27 @@ public sealed class CoreModelTests
 
         Assert.Equal(Path.GetFullPath(movedPath), snapshot.SnapshotDirectory);
         Assert.Equal(Path.GetFullPath(movedPath), snapshot.SnapshotDirectoryOverride);
+    }
+
+    [Fact]
+    public void VoiceRecord_requires_locator_only_when_media_is_linked()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => new VoiceRecord(
+            "message",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            null));
+        Assert.Equal("PayloadLocator", exception.ParamName);
+
+        var unassociated = new VoiceRecord(
+            "message",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            null,
+            MediaLinked: false);
+        Assert.Null(unassociated.PayloadLocator);
+        Assert.Null(unassociated.SourceStableKey);
     }
 }

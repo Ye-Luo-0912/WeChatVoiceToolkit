@@ -21,7 +21,8 @@ public sealed record SchemaSnapshot
         string? SQLiteProvider = null,
         string? SQLiteVersion = null,
         SchemaFileCompleteness? FileCompleteness = null,
-        string? LocalPath = null)
+        string? LocalPath = null,
+        InspectorEnvironment? InspectorEnvironment = null)
     {
         if (string.IsNullOrWhiteSpace(DatabasePath))
         {
@@ -41,6 +42,7 @@ public sealed record SchemaSnapshot
         this.SQLiteProvider = SQLiteProvider;
         this.SQLiteVersion = SQLiteVersion;
         this.FileCompleteness = FileCompleteness ?? new SchemaFileCompleteness();
+        this.InspectorEnvironment = InspectorEnvironment ?? new InspectorEnvironment(SQLiteProvider, SQLiteVersion);
     }
 
     public string DatabasePath { get; }
@@ -66,6 +68,8 @@ public sealed record SchemaSnapshot
     public string? SQLiteProvider { get; }
 
     public string? SQLiteVersion { get; }
+
+    public InspectorEnvironment InspectorEnvironment { get; }
 
     public SchemaFileCompleteness FileCompleteness { get; }
 
@@ -178,3 +182,5 @@ public sealed record SchemaFileCompleteness(
     bool ShmPresent = false,
     bool IsWalPairComplete = true,
     string? CompletenessIssue = null);
+
+public sealed record InspectorEnvironment(string? SQLiteProvider, string? SQLiteVersion);

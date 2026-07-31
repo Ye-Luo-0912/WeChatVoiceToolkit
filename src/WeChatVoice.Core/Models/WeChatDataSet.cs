@@ -238,7 +238,7 @@ public sealed record VoiceRecord
         string ConversationId,
         DateTimeOffset OccurredAtUtc,
         VoiceDirection Direction,
-        VoicePayloadLocator PayloadLocator,
+        VoicePayloadLocator? PayloadLocator,
         string? SourceDatabase = null,
         int? ShardNumber = null,
         string? ShardId = null,
@@ -250,7 +250,17 @@ public sealed record VoiceRecord
         long? PayloadByteLength = null,
         long? DurationMs = null,
         bool MediaLinked = true,
-        string? SpeakerId = null)
+        string? SpeakerId = null,
+        string? DataSetId = null,
+        string? AdapterVersion = null,
+        IReadOnlyList<string>? DatabaseFingerprints = null,
+        string? AdapterFamily = null,
+        string? AccountStableId = null,
+        string? ConversationStableId = null,
+        string? MessagePrimaryKey = null,
+        string? MediaPrimaryKey = null,
+        string? DecodedSha256 = null,
+        long? DecodedByteLength = null)
     {
         if (string.IsNullOrWhiteSpace(MessageId))
         {
@@ -262,7 +272,16 @@ public sealed record VoiceRecord
             throw new ArgumentException("A conversation identifier is required.", nameof(ConversationId));
         }
 
-        ArgumentNullException.ThrowIfNull(PayloadLocator);
+        if (MediaLinked && PayloadLocator is null)
+        {
+            throw new ArgumentException("A linked voice record must provide a payload locator.", nameof(PayloadLocator));
+        }
+
+        if (!MediaLinked && PayloadLocator is not null)
+        {
+            throw new ArgumentException("An unassociated voice record must not provide a payload locator.", nameof(PayloadLocator));
+        }
+
         this.MessageId = MessageId;
         this.ConversationId = ConversationId;
         this.OccurredAtUtc = OccurredAtUtc.ToUniversalTime();
@@ -280,6 +299,25 @@ public sealed record VoiceRecord
         this.DurationMs = DurationMs;
         this.MediaLinked = MediaLinked;
         this.SpeakerId = SpeakerId;
+        this.DataSetId = string.IsNullOrWhiteSpace(DataSetId) ? null : DataSetId;
+        this.AdapterVersion = string.IsNullOrWhiteSpace(AdapterVersion) ? null : AdapterVersion;
+        this.DatabaseFingerprints = new System.Collections.ObjectModel.ReadOnlyCollection<string>(
+            (DatabaseFingerprints ?? Array.Empty<string>())
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray());
+        this.AdapterFamily = string.IsNullOrWhiteSpace(AdapterFamily) ? AdapterId : AdapterFamily;
+        this.AccountStableId = string.IsNullOrWhiteSpace(AccountStableId) ? AccountId : AccountStableId;
+        this.ConversationStableId = string.IsNullOrWhiteSpace(ConversationStableId) ? ConversationId : ConversationStableId;
+        this.MessagePrimaryKey = string.IsNullOrWhiteSpace(MessagePrimaryKey) ? this.SourceMessageKey : MessagePrimaryKey;
+        this.MediaPrimaryKey = string.IsNullOrWhiteSpace(MediaPrimaryKey)
+            ? PayloadLocator is null
+                ? null
+                : string.Join(":", PayloadLocator.LogicalRole, PayloadLocator.ShardNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty, PayloadLocator.BlobKey)
+            : MediaPrimaryKey;
+        this.DecodedSha256 = string.IsNullOrWhiteSpace(DecodedSha256) ? null : DecodedSha256;
+        this.DecodedByteLength = DecodedByteLength;
     }
 
     public string MessageId { get; }
@@ -290,7 +328,7 @@ public sealed record VoiceRecord
 
     public VoiceDirection Direction { get; }
 
-    public VoicePayloadLocator PayloadLocator { get; }
+    public VoicePayloadLocator? PayloadLocator { get; }
 
     public string? SourceDatabase { get; }
 
@@ -316,6 +354,40 @@ public sealed record VoiceRecord
 
     public string? SpeakerId { get; }
 
-    public string StableExportKey
-        => string.Join("|", SnapshotId ?? "unknown-snapshot", AdapterId ?? "unknown-adapter", AccountId ?? "unknown-account", ShardId ?? "unknown-shard", ConversationId, SourceMessageKey);
+    public string? DataSetId { get; }
+
+    public string? AdapterVersion { get; }
+
+    public IReadOnlyList<string> DatabaseFingerprints { get; }
+
+    public string? AdapterFamily { get; }
+
+    public string? AccountStableId { get; }
+
+    public string? ConversationStableId { get; }
+
+    public string? MessagePrimaryKey { get; }
+
+    public string? MediaPrimaryKey { get; }
+
+    public string? DecodedSha256 { get; }
+
+    public long? DecodedByteLength { get; }
+
+    /// <summary>
+    /// Source identity used for de-duplication. Snapshot and database
+    /// provenance are intentionally excluded. A null result means the record
+    /// is not safe to reuse across runs.
+    /// </summary>
+    public string? SourceStableKey
+        => string.IsNullOrWhiteSpace(AdapterFamily)
+            || string.IsNullOrWhiteSpace(AccountStableId)
+            || string.IsNullOrWhiteSpace(ConversationStableId)
+            || string.IsNullOrWhiteSpace(MessagePrimaryKey)
+            || string.IsNullOrWhiteSpace(MediaPrimaryKey)
+            ? null
+            : string.Join("|", AdapterFamily, AccountStableId, ConversationStableId, MessagePrimaryKey, MediaPrimaryKey);
+
+    public VoiceProvenance Provenance
+        => new(SnapshotId, DataSetId, AdapterVersion, DatabaseFingerprints);
 }

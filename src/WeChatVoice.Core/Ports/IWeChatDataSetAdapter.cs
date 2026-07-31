@@ -19,6 +19,8 @@ public interface IWeChatDataSetAdapter
 
 public interface IVoiceCatalog
 {
+    VoiceCatalogContext Context { get; }
+
     IAsyncEnumerable<ContactRecord> QueryContactsAsync(
         ContactQuery query,
         CancellationToken cancellationToken);

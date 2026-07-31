@@ -5,6 +5,7 @@ using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Infrastructure.Serialization;
+using WeChatVoice.Infrastructure.Snapshots;
 
 namespace WeChatVoice.Infrastructure.Sqlite;
 
@@ -43,8 +44,8 @@ public sealed class DataSetProbeService
 
         var issues = new List<DataSetIssue>();
         var snapshotFiles = BuildSnapshotFileLookup(root, options.SnapshotManifest);
-        var files = Directory.EnumerateFiles(root, "*.db", SearchOption.AllDirectories)
-            .Where(static path => !IsInsideReparsePoint(path))
+        var files = SnapshotFileCopier.EnumerateRegularFiles(root)
+            .Where(static path => string.Equals(Path.GetExtension(path), ".db", StringComparison.OrdinalIgnoreCase))
             .Select(path => new DiscoveredDatabase(path, NormalizeRelativePath(root, path), Classify(Path.GetFileName(path))))
             .OrderBy(static item => item.RelativePath, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -64,9 +65,10 @@ public sealed class DataSetProbeService
                 issues.Add(new DataSetIssue("incomplete-wal-pair", "warning", completenessIssue, file.RelativePath));
             }
 
+            var metadata = await FileHashing.ComputeMetadataAsync(localPath, cancellationToken).ConfigureAwait(false);
             var mainRecord = snapshotFiles?.GetValueOrDefault(file.RelativePath);
-            var mainLength = mainRecord?.ByteLength ?? new FileInfo(localPath).Length;
-            var mainHash = mainRecord?.Sha256 ?? await FileHashing.ComputeSha256Async(localPath, cancellationToken).ConfigureAwait(false);
+            var mainLength = mainRecord?.ByteLength ?? metadata.ByteLength;
+            var mainHash = mainRecord?.Sha256 ?? metadata.Sha256;
             var walLength = walPresent ? (long?)new FileInfo(walPath).Length : null;
             var shmLength = shmPresent ? (long?)new FileInfo(shmPath).Length : null;
             var walRecord = snapshotFiles?.GetValueOrDefault(file.RelativePath + "-wal");
@@ -88,7 +90,7 @@ public sealed class DataSetProbeService
                 shmLength,
                 shmHash);
             SchemaSnapshot schema;
-            if (!await HasPlainSqliteHeaderAsync(localPath, cancellationToken).ConfigureAwait(false))
+            if (!metadata.HasPlainSqliteHeader)
             {
                 const string message = "The database does not have a plain SQLite header; it may be encrypted or use a proprietary container. No decryption is attempted.";
                 issues.Add(new DataSetIssue("encrypted-or-non-sqlite", "error", message, file.RelativePath));
@@ -100,7 +102,7 @@ public sealed class DataSetProbeService
                 {
                     schema = await _schemaInspector.InspectAsync(
                         localPath,
-                        new SchemaInspectionOptions(options.IncludeLocalPaths, walPath, shmPath),
+                        new SchemaInspectionOptions(options.IncludeLocalPaths, walPath, shmPath, mainHash, mainLength),
                         cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (exception is SqliteException or InvalidDataException or IOException)
@@ -228,32 +230,6 @@ public sealed class DataSetProbeService
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
-    private static async Task<bool> HasPlainSqliteHeaderAsync(string path, CancellationToken cancellationToken)
-    {
-        var header = new byte[16];
-        await using var stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete,
-            header.Length,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var read = 0;
-        while (read < header.Length)
-        {
-            var count = await stream.ReadAsync(header.AsMemory(read), cancellationToken).ConfigureAwait(false);
-            if (count == 0)
-            {
-                break;
-            }
-
-            read += count;
-        }
-
-        return read == header.Length
-            && header.AsSpan().SequenceEqual("SQLite format 3\0"u8);
-    }
-
     private static SchemaSnapshot CreateUnavailableSchema(
         string localPath,
         string hash,
@@ -314,22 +290,6 @@ public sealed class DataSetProbeService
         var stem = Path.GetFileNameWithoutExtension(fileName);
         var underscore = stem.LastIndexOf('_');
         return underscore >= 0 && int.TryParse(stem[(underscore + 1)..], out var shard) && shard >= 0 ? shard : null;
-    }
-
-    private static bool IsInsideReparsePoint(string path)
-    {
-        var current = new DirectoryInfo(Path.GetDirectoryName(path)!);
-        while (current is not null)
-        {
-            if ((current.Attributes & FileAttributes.ReparsePoint) != 0)
-            {
-                return true;
-            }
-
-            current = current.Parent;
-        }
-
-        return false;
     }
 
     private static string NormalizeRelativePath(string root, string path)
