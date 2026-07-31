@@ -21,7 +21,8 @@ internal sealed class KeyBrokerClient
         string outputRoot,
         string workspaceOutput,
         bool allowExperimentalProfile,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<KeyBrokerStage>? reportStage = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         var brokerPath = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe");
@@ -94,7 +95,9 @@ internal sealed class KeyBrokerClient
                     if (document.RootElement.TryGetProperty("stage", out _))
                     {
                         // Stage events contain only progress counters and are not
-                        // part of the final operation result.
+                        // part of the final operation result. Forward them to
+                        // the caller without exposing any broker-owned data.
+                        reportStage?.Invoke(ParseStage(document.RootElement));
                         continue;
                     }
 
@@ -117,6 +120,34 @@ internal sealed class KeyBrokerClient
             }
         }
     }
+
+    private static KeyBrokerStage ParseStage(JsonElement root)
+    {
+        var stage = root.GetProperty("stage").GetString();
+        if (string.IsNullOrWhiteSpace(stage))
+        {
+            throw new InvalidDataException("The Key Broker stage event did not contain a stage name.");
+        }
+
+        return new KeyBrokerStage(
+            stage,
+            TryGetInt64(root, "scannedBytes"),
+            TryGetInt32(root, "candidates"),
+            TryGetInt32(root, "completedGroups"),
+            TryGetInt32(root, "totalGroups"),
+            TryGetInt32(root, "completedDatabases"),
+            TryGetInt32(root, "totalDatabases"));
+    }
+
+    private static long? TryGetInt64(JsonElement root, string name)
+        => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var result)
+            ? result
+            : null;
+
+    private static int? TryGetInt32(JsonElement root, string name)
+        => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var result)
+            ? result
+            : null;
 
     private static void TryKill(Process process)
     {
@@ -141,6 +172,15 @@ internal sealed record KeyBrokerResult(
     KeyBrokerError? Error);
 
 internal sealed record KeyBrokerError(string Code, string Message);
+
+internal sealed record KeyBrokerStage(
+    string Stage,
+    long? ScannedBytes,
+    int? Candidates,
+    int? CompletedGroups,
+    int? TotalGroups,
+    int? CompletedDatabases,
+    int? TotalDatabases);
 
 internal sealed class KeyBrokerOperationException(string code, string message) : InvalidOperationException(message)
 {

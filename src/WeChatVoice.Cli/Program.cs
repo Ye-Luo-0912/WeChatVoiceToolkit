@@ -615,7 +615,8 @@ static Command CreateWorkspaceCommand()
                     Path.GetFullPath(output),
                     localWorkspacePath,
                     allowExperimentalProfile,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    ReportBrokerStage).ConfigureAwait(false);
                 if (!string.Equals(brokerResult.Status, "completed", StringComparison.Ordinal) ||
                     string.IsNullOrWhiteSpace(brokerResult.ProfileId) ||
                     string.IsNullOrWhiteSpace(brokerResult.MaterializationId))
@@ -887,6 +888,32 @@ static async Task<T> ReadJsonFileAsync<T>(string path, CancellationToken cancell
 
 static void WriteJson<T>(T value) =>
     Console.WriteLine(JsonSerializer.Serialize(value, CliJson.Options));
+
+static void ReportBrokerStage(KeyBrokerStage stage)
+{
+    var details = new List<string>(capacity: 3);
+    if (stage.ScannedBytes is { } scannedBytes)
+    {
+        details.Add($"scannedBytes={scannedBytes}");
+    }
+
+    if (stage.Candidates is { } candidates)
+    {
+        details.Add($"candidates={candidates}");
+    }
+
+    if (stage.CompletedGroups is { } completedGroups && stage.TotalGroups is { } totalGroups)
+    {
+        details.Add($"groups={completedGroups}/{totalGroups}");
+    }
+
+    if (stage.CompletedDatabases is { } completedDatabases && stage.TotalDatabases is { } totalDatabases)
+    {
+        details.Add($"databases={completedDatabases}/{totalDatabases}");
+    }
+
+    Console.Error.WriteLine($"broker-stage:{stage.Stage}{(details.Count == 0 ? string.Empty : " " + string.Join(' ', details))}");
+}
 
 static void WriteError(Exception exception) =>
     Console.Error.WriteLine($"{exception.GetType().Name}: {exception.Message}");
