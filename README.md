@@ -42,7 +42,9 @@ The built-in `weixin-windows-4` adapter identity is registered centrally but is
 non-matching until a verified schema mapping is supplied. Commands therefore
 fail clearly instead of guessing table mappings. `workspace materialize` is a
 fixed external decryptor boundary: it passes only `--input-root`, `--output-root`,
-and optional `--key-file`, then validates SQLite headers and `PRAGMA quick_check`.
+and optional `--key-file`; it first verifies the raw snapshot file set and
+hashes, then validates SQLite headers and `PRAGMA quick_check` on every output
+database.
 
 Export output is idempotent by `SourceStableKey` (adapter family, account,
 conversation, message primary key, and media primary key); snapshot and

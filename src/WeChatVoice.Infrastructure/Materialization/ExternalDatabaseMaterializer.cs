@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Serialization;
+using WeChatVoice.Infrastructure.Snapshots;
 using WeChatVoice.Infrastructure.Sqlite;
 
 namespace WeChatVoice.Infrastructure.Materialization;
@@ -43,6 +44,8 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         {
             throw new DirectoryNotFoundException($"The raw snapshot directory was not found: '{snapshot.SnapshotDirectory}'.");
         }
+
+        await ValidateRawSnapshotAsync(snapshot, cancellationToken).ConfigureAwait(false);
 
         if (Directory.Exists(options.OutputDirectory) && Directory.EnumerateFileSystemEntries(options.OutputDirectory).Any())
         {
@@ -177,6 +180,63 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         }
 
         return databases;
+    }
+
+    private static async Task ValidateRawSnapshotAsync(RawSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        var root = Path.GetFullPath(snapshot.SnapshotDirectory);
+        var expected = snapshot.Manifest.Files
+            .ToDictionary(static file => file.RelativePath.Replace('\\', '/'), StringComparer.OrdinalIgnoreCase);
+        if (expected.Count == 0)
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot manifest contains no files to verify.");
+        }
+
+        var actualPaths = SnapshotFileCopier.EnumerateRegularFiles(root)
+            .Where(path => !IsInternalMetadataPath(root, path))
+            .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/'))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!actualPaths.SetEquals(expected.Keys))
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot file set differs from its manifest; materialization was refused.");
+        }
+
+        foreach (var pair in expected)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = CombineUnderRoot(root, pair.Key);
+            var info = new FileInfo(path);
+            var hash = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            if (info.Length != pair.Value.ByteLength
+                || !string.Equals(hash, pair.Value.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DatabaseMaterializationException(null, null, null, $"The raw snapshot file failed manifest verification: '{pair.Key}'.");
+            }
+        }
+    }
+
+    private static bool IsInternalMetadataPath(string root, string path)
+    {
+        var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
+        return relative.Equals(".wechatvoice", StringComparison.OrdinalIgnoreCase)
+            || relative.StartsWith(".wechatvoice/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CombineUnderRoot(string root, string relativePath)
+    {
+        if (Path.IsPathRooted(relativePath))
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot manifest contains an absolute path.");
+        }
+
+        var candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot manifest contains a path outside its root.");
+        }
+
+        return candidate;
     }
 
     private static string ClassifyRole(string fileName, out int? shard)

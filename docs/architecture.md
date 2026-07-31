@@ -43,6 +43,7 @@ and must precede the raw SILK export path.
 
 Encrypted or proprietary database containers are reported as
 `encrypted-or-non-sqlite`. `IDatabaseMaterializer` is the only boundary allowed
-to turn a raw snapshot into ordinary SQLite; its first implementation uses a
-fixed external process protocol and validates SQLite headers plus
-`PRAGMA quick_check` before returning a workspace.
+to turn a raw snapshot into ordinary SQLite; its first implementation verifies
+the complete raw snapshot file set and hashes, uses a fixed external process
+protocol, and validates SQLite headers plus `PRAGMA quick_check` before
+returning a workspace.
