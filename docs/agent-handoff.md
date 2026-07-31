@@ -26,13 +26,18 @@ Route-two groundwork is recorded in `adr-0002-key-broker-boundary.md`.
 content-addressed Snapshot ID before returning `profile_unavailable`.
 The separate login `key_info.db` is ordinary SQLite, but only its schema and
 field-length distribution have been inspected; no field values were read and
-its 180-byte BLOB must not be treated as a key without validation. A live-source
-Snapshot exists only as local, ignored evidence and is marked potentially
-inconsistent. It is not suitable as a Profile fixture.
+its 180-byte BLOB must not be treated as a key without validation. Stable
+business and login snapshots now exist only as ignored local evidence. The 21
+business databases have 21 distinct first-page salts, so key results must be
+validated and bound per database group rather than assumed global.
+
+`WeixinWindows4SqlCipherKeyValidator` implements only constant-time first-page
+HMAC candidate validation and clears its derived buffers. Its synthetic vectors
+do not enable a Profile. Do not adopt the reviewed upstream scanner's whole-
+region reads or its key/PID/address logging.
 
 `DatabaseMaterializerTests` use a real fake child process and cover success,
 missing/extra/invalid/duplicate/unknown mappings, sensitive output redaction,
-binary hash mismatch, timeout, and cancellation. The next blocker is evidence,
-not another generic abstraction: after Weixin is fully closed, obtain a stable
-Snapshot and reproducible encryption fixtures for the observed signed Weixin
-4.1.11.55 build.
+binary hash mismatch, timeout, and cancellation. The next blocker is a bounded
+candidate-location fixture for signed Weixin 4.1.11.55, followed by multi-group
+validation, full DB/WAL materialization, and `PRAGMA quick_check`.

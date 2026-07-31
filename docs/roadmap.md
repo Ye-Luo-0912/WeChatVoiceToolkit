@@ -19,6 +19,10 @@
    raw Snapshot verification before Profile selection, registered
    materialization backends, bounded backend execution, and a real fake-process
    integration suite for output mapping and failure handling.
+6. Stable business/login snapshots for the observed build pass group-level
+   verification. A candidate-only first-page HMAC validator has fixed synthetic
+   vectors, zeroes temporary key material, and remains outside the Profile
+   registry.
 
 ## Current blocker and next step
 
@@ -28,19 +32,20 @@ login `key_info.db` is ordinary SQLite, but its BLOB semantics remain unverified
 Do not guess tables, BLOB formats, or keys. Message and media filename shards
 are also not one-to-one; only an Adapter with verified schema evidence may
 resolve their relationship.
-The next implementation step requires a verified version-specific key and
-database-encryption profile plus schema evidence for `message_N.db`,
-`media_N.db`, and the contact database. The privileged boundary is the
+The next implementation step requires a bounded candidate-location fixture for
+the exact signed build, then validation against the required `message_N.db`,
+`media_N.db`, and contact groups. The privileged boundary is the
 one-shot `WeChatVoice.KeyBroker.exe`; no plaintext key-file interface is
 supported. Until that profile exists, the broker and formal materialization
 backend fail closed. Then implement one isolated adapter for exact contact
 selection, incoming voice association, and raw SILK output.
 
-The currently observed signed Weixin build is 4.1.11.55. A local live-source
-copy is marked potentially inconsistent and is evidence only; no stable raw
-Snapshot or encryption fixture is present in the workspace. Process version or
-login-metadata evidence alone must not be promoted into a key-extraction
-Profile.
+The currently observed signed Weixin build is 4.1.11.55. Stable raw business and
+login snapshots exist only in the ignored local workspace; they must never be
+committed. The 21 business databases have distinct first-page salts. Process
+version, salt, or login-metadata evidence alone must not be promoted into a
+key-extraction Profile. The formal backend remains unavailable until a candidate
+also passes full DB/WAL materialization and `PRAGMA quick_check`.
 
 WAV decoding remains a derived, later phase and must not become a prerequisite
 for the first usable SILK chain.

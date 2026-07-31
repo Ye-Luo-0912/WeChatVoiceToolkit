@@ -51,8 +51,11 @@ This is process identity evidence only. It is not sufficient to infer memory
 layout, key location, KDF, page cipher, HMAC, WAL rules, or database schema, and
 therefore does not enable a Profile.
 
-Read-only inspection of a live-source copy from that build also established a
-small amount of format evidence without reading or recording field values:
+Read-only inspection first used a live-source copy, then repeated the inventory
+after Weixin fully exited. The stable business and login snapshots both passed
+the group-level inventory and content-hash checks on their first attempt with
+`potentiallyInconsistent = false`. They established a small amount of format
+evidence without reading or recording login field values:
 
 - the message, media, and contact database first pages are not ordinary SQLite
   headers, while their WAL files use the standard WAL magic and a 4096-byte
@@ -66,16 +69,33 @@ small amount of format evidence without reading or recording field values:
   `key_md5` field, and a 180-byte BLOB. No digest or BLOB value was read or
   logged.
 
-This evidence does not establish the BLOB encoding, prove that it contains
+The stable business snapshot contains 21 discovered `.db` files and 21 distinct
+first-page salts. Four observed `*.db-first.material` files begin with the same
+16 bytes as their corresponding database. This proves neither one key per salt
+nor one shared key; a future acquisition result must validate and bind each
+database group independently.
+
+This evidence does not establish the login BLOB encoding, prove that it contains
 database key material, or bind it to any database group. Code must not infer
-those semantics. The live-source copy is explicitly potentially inconsistent
-and is not a Profile fixture.
+those semantics.
+
+## Candidate-validation evidence
+
+The Apache-2.0 implementation in
+[`huohuoer/wechat-cli` at `a3789232`](https://github.com/huohuoer/wechat-cli/blob/a3789232d4f79bf0b30634d9dadbce71e4acd601/wechat_cli/keys/common.py)
+validates a 32-byte candidate against a 4096-byte encrypted first page with the
+page HMAC-SHA512 rather than a plaintext-header coincidence. Its scanner is not
+adopted: it reads whole memory regions and logs keys, PIDs, and addresses.
+
+`WeixinWindows4SqlCipherKeyValidator` implements only the non-logging validation
+primitive. It uses constant-time comparison, clears derived key and temporary
+page buffers, and has fixed synthetic positive, wrong-key, tamper, and shape
+vectors. It does not acquire a key, decrypt a page, register a build Profile, or
+change the broker's fail-closed behavior.
 
 ## Next evidence required
 
-The next route-two implementation needs a stable raw Snapshot made after
-Weixin exits, for the same account/build, plus reproducible encryption fixtures.
-Only then can a precise
-build-range Profile define process identity policy, bounded candidate location,
-candidate validation against the encrypted first page, full materialization,
-and `PRAGMA quick_check` acceptance.
+The next route-two implementation needs a bounded candidate-location fixture for
+the exact signed build. After a candidate validates independently against the
+required message, media, and contact groups, the Profile must still pass full
+DB/WAL materialization and `PRAGMA quick_check` before it can be registered.
