@@ -38,7 +38,7 @@ public sealed class VoiceExportServiceTests
         var journalLines = await File.ReadAllLinesAsync(Assert.Single(Directory.EnumerateFiles(Path.Combine(exportRoot, "runs"), "*.jsonl")));
         var events = journalLines.Select(line => JsonDocument.Parse(line).RootElement.GetProperty("event").GetString()!).ToArray();
         Assert.Equal(["run-started", "item-failed", "item-committed", "processing-completed", "manifest-committed"], events);
-        Assert.Equal(ExportRunStatus.Completed, manifest.RunStatus);
+        Assert.Equal(ExportRunStatus.CompletedWithFailures, manifest.RunStatus);
     }
 
     [Fact]

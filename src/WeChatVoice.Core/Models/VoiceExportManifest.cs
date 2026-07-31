@@ -67,6 +67,7 @@ public sealed record VoiceExportManifest
 public enum ExportRunStatus
 {
     Completed,
+    CompletedWithFailures,
     Cancelled,
     Failed,
 }
@@ -87,7 +88,8 @@ public sealed record VoiceExportJournalEvent(
     VoiceExportEntry? Entry = null,
     VoiceExportFailure? Failure = null,
     VoiceCatalogContext? Context = null,
-    bool Cancelled = false)
+    bool Cancelled = false,
+    string? ManifestSha256 = null)
 {
     public DateTimeOffset OccurredAtUtc { get; init; } = OccurredAtUtc.ToUniversalTime();
 }

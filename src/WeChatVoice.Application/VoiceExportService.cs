@@ -92,7 +92,9 @@ public sealed class VoiceExportService
             ? ExportRunStatus.Cancelled
             : runFailed
                 ? ExportRunStatus.Failed
-                : ExportRunStatus.Completed;
+                : failures.Count > 0
+                    ? ExportRunStatus.CompletedWithFailures
+                    : ExportRunStatus.Completed;
         var manifest = new VoiceExportManifest(
             DateTimeOffset.UtcNow,
             entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal),

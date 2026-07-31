@@ -23,8 +23,11 @@ dotnet run --project src/WeChatVoice.Cli -- voice scan --workspace .\.wechatvoic
 dotnet run --project src/WeChatVoice.Cli -- voice export --workspace .\.wechatvoice\local-workspace.json --contact-username wxid_xxx --direction incoming --format silk --output .\exports\peer
 dotnet run --project src/WeChatVoice.Cli -- voice export recover --journal .\exports\peer\runs\<run-id>.jsonl
 dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wechatvoice\local-workspace.json
-dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --external-decryptor .\tools\decryptor.exe --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json --key-file .\key.bin
+dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --backend weixin-windows-4 --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
+# Route two uses a separate one-shot, UAC-manifested broker. It currently
+# fails closed until a verified Weixin build profile is installed.
+echo '{"protocolVersion":1,"requestId":"1","nonce":"n","snapshotId":"snapshot-id","snapshotManifestPath":"C:\\snapshot\\.wechatvoice\\snapshot-manifest.json","operation":"acquire-and-materialize"}' | dotnet run --project src/WeChatVoice.KeyBroker
 ```
 
 Snapshots require recognized WeChat processes to be closed by default. The
@@ -45,12 +48,16 @@ length, hash, and database-group fingerprint before an adapter can open a
 workspace. The built-in `weixin-windows-4` adapter identity is registered
 centrally but is non-matching until a verified schema mapping is supplied.
 Commands therefore fail clearly instead of guessing table mappings.
-`workspace materialize` is a fixed external decryptor boundary: it passes only
-`--input-root`, `--output-root`, and optional `--key-file`; it first verifies the
-raw snapshot file set and hashes, requires every source database to be mapped,
-then validates SQLite headers and `PRAGMA quick_check` on every output database.
-It writes a materialization manifest and creates the local workspace JSON as one
-closed workflow.
+`workspace materialize` is a registered backend boundary. Formal mode uses the
+`weixin-windows-4` registry entry and currently fails closed until a verified
+profile is installed. A development-only external backend requires both
+`--external-decryptor` and `--allow-untrusted-backend`; it accepts only
+`--input-root`, `--output-root`, and an explicit source-to-output manifest. Key
+files are deliberately not accepted. The host verifies the raw snapshot file
+set and hashes, requires every source database to be mapped, then validates
+SQLite headers and `PRAGMA quick_check` on every output database. It writes a
+materialization manifest and creates the local workspace JSON as one closed
+workflow.
 
 Export output is idempotent by `SourceStableKey` (adapter family, account,
 conversation, message primary key, and media primary key); physical paths use

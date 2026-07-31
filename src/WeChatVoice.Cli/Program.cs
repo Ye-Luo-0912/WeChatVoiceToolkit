@@ -29,6 +29,8 @@ static Command CreateDoctorCommand()
     var command = new Command("doctor", "Report the local runtime and the deliberately limited capabilities.");
     command.SetAction(_ =>
     {
+        var adapters = BuiltInAdapters.Create();
+        var materializationBackends = BuiltInMaterializationBackends.Create();
         var report = new DoctorReport(
             System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
             Environment.OSVersion.VersionString,
@@ -36,10 +38,16 @@ static Command CreateDoctorCommand()
             WeChatProcessDiscovery.SupportedProcessNames,
             WeChatProcessDiscovery.ListRunning(),
             new SecurityBoundary(
-                HasSchemaAdapter: BuiltInAdapters.Create().Count > 0,
+                RegisteredAdapterCount: adapters.Count,
+                MatchingAdapterCount: 0,
+                HasUsableSchemaAdapter: false,
+                HasKeyAcquisitionProfile: false,
+                HasDatabaseEncryptionProfile: false,
+                HasMaterializationBackend: materializationBackends.Any(static backend => !string.Equals(backend.Version, "profile-unavailable", StringComparison.OrdinalIgnoreCase)),
                 AllowsKeyScanning: false,
                 AllowsDatabaseDecryption: false,
                 AllowsArbitraryProcessMemoryRead: false,
+                HasMaterializationBoundary: true,
                 HasUserInterface: false));
 
         WriteJson(report);
@@ -474,14 +482,18 @@ static Command CreateWorkspaceCommand()
     {
         Description = "Optional snapshot manifest; defaults to .wechatvoice/snapshot-manifest.json under the snapshot directory.",
     };
-    var decryptorOption = new Option<string>("--external-decryptor")
+    var backendOption = new Option<string>("--backend")
     {
-        Description = "Fixed external decryptor executable implementing --input-root/--output-root/--key-file.",
-        Required = true,
+        Description = "Registered materialization backend. Formal mode defaults to weixin-windows-4.",
+        DefaultValueFactory = _ => "weixin-windows-4",
     };
-    var keyFileOption = new Option<string?>("--key-file")
+    var decryptorOption = new Option<string?>("--external-decryptor")
     {
-        Description = "Optional key file passed as a fixed decryptor argument.",
+        Description = "Development-only external backend executable; requires --allow-untrusted-backend.",
+    };
+    var allowUntrustedBackendOption = new Option<bool>("--allow-untrusted-backend")
+    {
+        Description = "Explicitly allow the development-only external backend. It is never a formal backend pin.",
     };
     var materializedOutputOption = new Option<string>("--output")
     {
@@ -494,21 +506,35 @@ static Command CreateWorkspaceCommand()
     };
     materializeCommand.Options.Add(snapshotDirectoryOption);
     materializeCommand.Options.Add(snapshotManifestOption);
+    materializeCommand.Options.Add(backendOption);
     materializeCommand.Options.Add(decryptorOption);
-    materializeCommand.Options.Add(keyFileOption);
+    materializeCommand.Options.Add(allowUntrustedBackendOption);
     materializeCommand.Options.Add(materializedOutputOption);
     materializeCommand.Options.Add(workspaceOutputOption);
     materializeCommand.SetAction(async (parseResult, cancellationToken) =>
     {
         var snapshotDirectory = parseResult.GetValue(snapshotDirectoryOption);
         var snapshotManifest = parseResult.GetValue(snapshotManifestOption);
+        var backendId = parseResult.GetValue(backendOption);
         var decryptor = parseResult.GetValue(decryptorOption);
-        var keyFile = parseResult.GetValue(keyFileOption);
+        var allowUntrustedBackend = parseResult.GetValue(allowUntrustedBackendOption);
         var output = parseResult.GetValue(materializedOutputOption);
         var workspaceOutput = parseResult.GetValue(workspaceOutputOption);
-        if (snapshotDirectory is null || decryptor is null || output is null)
+        if (snapshotDirectory is null || backendId is null || output is null)
         {
-            Console.Error.WriteLine("--snapshot-directory, --external-decryptor, and --output are required.");
+            Console.Error.WriteLine("--snapshot-directory, --backend, and --output are required.");
+            return 2;
+        }
+
+        if (decryptor is not null && !allowUntrustedBackend)
+        {
+            Console.Error.WriteLine("--external-decryptor is development-only and requires --allow-untrusted-backend.");
+            return 2;
+        }
+
+        if (decryptor is null && allowUntrustedBackend)
+        {
+            Console.Error.WriteLine("--allow-untrusted-backend requires --external-decryptor.");
             return 2;
         }
 
@@ -519,9 +545,13 @@ static Command CreateWorkspaceCommand()
             var manifest = await ReadJsonFileAsync<SnapshotManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
             var rawSnapshot = new RawSnapshot(manifest, snapshotRoot);
             var verifiedSnapshot = await new RawSnapshotVerifier().VerifyAsync(rawSnapshot, cancellationToken).ConfigureAwait(false);
-            var materialization = await new ExternalDatabaseMaterializer(decryptor).MaterializeAsync(
+            IDatabaseMaterializationBackend backend = decryptor is not null
+                ? new ExternalDatabaseMaterializer(decryptor)
+                : BuiltInMaterializationBackends.Create().FirstOrDefault(item => string.Equals(item.Id, backendId, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new MaterializationBackendUnavailableException(backendId, $"Materialization backend '{backendId}' is not registered.");
+            var materialization = await backend.MaterializeAsync(
                 verifiedSnapshot,
-                new MaterializationOptions(Path.GetFullPath(output), keyFile is null ? null : Path.GetFullPath(keyFile)),
+                new MaterializationOptions(Path.GetFullPath(output)),
                 cancellationToken).ConfigureAwait(false);
             var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(output, ".wechatvoice", "local-workspace.json"));
             var localWorkspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);
@@ -798,10 +828,16 @@ internal sealed record DoctorReport(
     SecurityBoundary Security);
 
 internal sealed record SecurityBoundary(
-    bool HasSchemaAdapter,
+    int RegisteredAdapterCount,
+    int MatchingAdapterCount,
+    bool HasUsableSchemaAdapter,
+    bool HasKeyAcquisitionProfile,
+    bool HasDatabaseEncryptionProfile,
+    bool HasMaterializationBackend,
     bool AllowsKeyScanning,
     bool AllowsDatabaseDecryption,
     bool AllowsArbitraryProcessMemoryRead,
+    bool HasMaterializationBoundary,
     bool HasUserInterface);
 
 internal sealed record SchemaProbeResult(string OutputPath, int ObjectCount);

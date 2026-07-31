@@ -11,11 +11,15 @@ user-supplied, lawfully accessible WeChat data source.
 - Preserve original SILK media; decoded WAV files are derived artifacts and
   must never overwrite them.
 - The elevated helper may expose only `ping`, `capabilities`, and
-  `list-wechat-processes`. Never add arbitrary command execution, arbitrary
-  process-memory access, key export, or database decryption to its protocol.
-  The separate `IDatabaseMaterializer` boundary may invoke a configured,
-  fixed external decryptor protocol and validate ordinary SQLite output; it
-  must not accept arbitrary arguments or expose raw keys.
+  `list-wechat-processes`. Never add arbitrary command execution, process
+  memory access, key export, or database decryption to its protocol. Route two
+  uses the separate one-shot `WeChatVoice.KeyBroker.exe` boundary; it must be
+  launched explicitly with `runas`, accept only its fixed request schema, and
+  never return raw keys. Until a verified Weixin build profile and database
+  validation suite exist, the broker must fail closed with
+  `profile_unavailable` rather than scan memory. Development external
+  materializers require an explicit `--allow-untrusted-backend` flag and may
+  not accept a `--key-file`.
 - Treat snapshots, exports, logs, and manifests as potentially sensitive.
   Keep them out of source control.
 - A snapshot is valid only after group-level before/after inventory checks over

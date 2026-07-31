@@ -54,4 +54,16 @@ the complete raw snapshot file set and hashes, uses a fixed external process
 protocol, requires source-to-output database mappings, rejects reparse points
 and pre-existing output targets, writes `.wechatvoice/materialization-manifest.json`,
 and validates SQLite headers plus `PRAGMA quick_check` before the CLI creates a
-local workspace.
+local workspace. Formal backends are selected through
+`BuiltInMaterializationBackends`; the development-only external backend is
+available only behind `--allow-untrusted-backend` and requires
+`.wechatvoice/materialization-output.json` with explicit source-to-output
+database mappings.
+
+The diagnostic `ElevatedHelper` remains a low-privilege, metadata-only JSONL
+service. Route two's privileged boundary is the separate one-shot
+`WeChatVoice.KeyBroker.exe` (`runas`/UAC manifest). It accepts only a fixed
+`acquire-and-materialize` request and currently fails closed with
+`profile_unavailable` until a verified Weixin build profile and database
+encryption validator are installed. No plaintext key-file or arbitrary memory
+reader is part of the protocol.

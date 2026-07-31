@@ -160,10 +160,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var entries = new List<VoiceExportEntry>();
         var failures = new List<VoiceExportFailure>();
         VoiceCatalogContext? journalContext = null;
-        await using var stream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 128 * 1024, leaveOpen: false);
-        while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+        var runStatus = fallback.RunStatus;
+        await using var journalStream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var journalReader = new StreamReader(journalStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 128 * 1024, leaveOpen: false);
+        var journalText = await journalReader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        var journalLines = journalText.Split('\n');
+        for (var lineIndex = 0; lineIndex < journalLines.Length; lineIndex++)
         {
+            var line = journalLines[lineIndex].TrimEnd('\r');
             if (string.IsNullOrWhiteSpace(line))
             {
                 continue;
@@ -176,24 +180,49 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
             catch (JsonException)
             {
-                // A process crash can leave a truncated final JSONL line. The
-                // preceding flushed events remain authoritative.
+                // A process crash can leave a truncated final JSONL line. A
+                // malformed line in the middle is corruption and must not be
+                // silently skipped.
+                var isFinalTruncatedLine = lineIndex == journalLines.Length - 1 && !journalText.EndsWith('\n');
+                if (!isFinalTruncatedLine)
+                {
+                    throw new InvalidDataException("The export Journal contains a malformed non-final JSONL line.");
+                }
+
                 break;
             }
-            if (journalEvent?.Entry is { } entry && journalEvent.Event is "item-committed" or "item-skipped")
+            if (journalEvent is null)
+            {
+                throw new InvalidDataException("The export Journal contains a null event.");
+            }
+
+            if (!string.Equals(journalEvent.RunId, fallback.RunId, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"The export Journal event RunId '{journalEvent.RunId}' does not match '{fallback.RunId}'.");
+            }
+
+            if (journalEvent.Entry is { } entry && journalEvent.Event is "item-committed" or "item-skipped")
             {
                 entries.Add(entry);
             }
 
-            if (journalEvent?.Context is { } context)
+            if (journalEvent.Context is { } context)
             {
                 journalContext = context;
             }
 
-            if (journalEvent?.Failure is { } failure && journalEvent.Event == "item-failed")
+            if (journalEvent.Failure is { } failure && journalEvent.Event == "item-failed")
             {
                 failures.Add(failure);
             }
+
+            runStatus = journalEvent.Event switch
+            {
+                "run-cancelled" => ExportRunStatus.Cancelled,
+                "run-failed" => ExportRunStatus.Failed,
+                "processing-completed" => failures.Count > 0 ? ExportRunStatus.CompletedWithFailures : ExportRunStatus.Completed,
+                _ => runStatus,
+            };
         }
 
         return new VoiceExportManifest(
@@ -209,8 +238,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             journalContext?.DatasetId ?? fallback.DatasetId,
             journalContext?.AdapterVersion ?? fallback.AdapterVersion,
             journalContext?.DatabaseFingerprints ?? fallback.DatabaseFingerprints,
-            fallback.RunStatus,
-            fallback.Cancelled);
+            runStatus,
+            runStatus == ExportRunStatus.Cancelled);
     }
 
     private static ExportArtifact? ReadExistingArtifact(string path, string relativePath)
@@ -610,8 +639,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
                 var journalManifest = await ReadManifestFromJournalAsync(manifest, journalPath, cancellationToken).ConfigureAwait(false);
                 await AtomicFileWriter.WriteJsonAsync(manifestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(journalManifest, InfrastructureJson.Indented);
+                var manifestSha256 = Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant();
+                await AppendCoreAsync(new VoiceExportJournalEvent("manifest-committed", _runId, DateTimeOffset.UtcNow, Context: null, ManifestSha256: manifestSha256), cancellationToken).ConfigureAwait(false);
                 await AtomicFileWriter.WriteJsonAsync(latestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-                await AppendCoreAsync(new VoiceExportJournalEvent("manifest-committed", _runId, DateTimeOffset.UtcNow, Context: null), cancellationToken).ConfigureAwait(false);
             }
             finally
             {

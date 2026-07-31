@@ -15,4 +15,6 @@ recovery. Use `voice export recover --journal <runs/id.jsonl>` after a crash.
 Do not implement a schema adapter, UI, key scanning, key extraction, or
 decryption by inference. The real WeChat files observed so far are encrypted
 or proprietary. Continue only after the user provides verified schema data,
-version context, and either a key-file or fixed decryptor.
+version context, and a version-specific key/decryption profile. The old
+plaintext key-file placeholder is removed; development backends require an
+explicit untrusted flag and an explicit source-to-output manifest.

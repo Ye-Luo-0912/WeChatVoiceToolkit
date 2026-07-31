@@ -20,9 +20,12 @@
 
 The actual WeChat 4.x files observed on the development machine are encrypted
 or proprietary containers, not ordinary SQLite. Do not guess tables or keys.
-The next implementation step requires a user-provided key-file or a fixed,
-verified decryptor plus schema evidence for `message_N.db`, `media_N.db`, and
-the contact database. Then implement one isolated adapter for exact contact
+The next implementation step requires a verified version-specific key and
+database-encryption profile plus schema evidence for `message_N.db`,
+`media_N.db`, and the contact database. The privileged boundary is the
+one-shot `WeChatVoice.KeyBroker.exe`; no plaintext key-file interface is
+supported. Until that profile exists, the broker and formal materialization
+backend fail closed. Then implement one isolated adapter for exact contact
 selection, incoming voice association, and raw SILK output.
 
 WAV decoding remains a derived, later phase and must not become a prerequisite

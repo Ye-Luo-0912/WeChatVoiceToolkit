@@ -21,16 +21,24 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
     private const int OutputLimit = 64 * 1024;
     private readonly string _executablePath;
     private readonly string _backendVersion;
+    private readonly string _expectedBinarySha256;
 
-    public ExternalDatabaseMaterializer(string executablePath, string backendVersion = "1")
+    public ExternalDatabaseMaterializer(string executablePath, string backendVersion = "1", string? expectedBinarySha256 = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(backendVersion);
         _executablePath = Path.GetFullPath(executablePath);
         _backendVersion = backendVersion;
+        _expectedBinarySha256 = string.IsNullOrWhiteSpace(expectedBinarySha256)
+            ? "untrusted-development-backend"
+            : expectedBinarySha256.Trim().ToLowerInvariant();
     }
 
     public string Id => "external-decryptor-v1";
+
+    public string Version => _backendVersion;
+
+    public string ExpectedBinarySha256 => _expectedBinarySha256;
 
     public async Task<VerifiedMaterialization> MaterializeAsync(
         VerifiedRawSnapshot snapshot,
@@ -61,7 +69,28 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
             throw new DatabaseMaterializationException(null, null, null, "The raw snapshot contains no database artifacts to materialize.");
         }
 
+        var missingRequiredRoles = new[] { "message", "media", "contact" }
+            .Where(role => !sourceProbe.DataSet.Databases.Any(database => string.Equals(database.LogicalRole, role, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        if (missingRequiredRoles.Length > 0)
+        {
+            throw new DatabaseMaterializationException(null, null, null, $"The raw snapshot is missing required database roles: {string.Join(", ", missingRequiredRoles)}.");
+        }
+
+        var incompleteShards = sourceProbe.Issues
+            .Where(issue => issue.Code is "missing-media-shard" or "missing-message-shard" or "incomplete-wal-pair")
+            .ToArray();
+        if (incompleteShards.Length > 0)
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot contains an incomplete message/media/WAL database group and cannot be materialized for voice export.");
+        }
+
         var backendSha256 = await FileHashing.ComputeSha256Async(_executablePath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(_expectedBinarySha256, "untrusted-development-backend", StringComparison.Ordinal)
+            && !string.Equals(_expectedBinarySha256, backendSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The materialization backend binary hash does not match its registered expectation.");
+        }
 
         if (Directory.Exists(options.OutputDirectory) || File.Exists(options.OutputDirectory))
         {
@@ -76,7 +105,7 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         Exception? primaryFailure = null;
         try
         {
-            var result = await RunDecryptorAsync(sourceRoot, staging, options.KeyFile, cancellationToken).ConfigureAwait(false);
+            var result = await RunDecryptorAsync(sourceRoot, staging, cancellationToken).ConfigureAwait(false);
             if (result.ExitCode != 0)
             {
                 throw new DatabaseMaterializationException(result.ExitCode, result.StandardOutput, result.StandardError, "The external decryptor returned a non-zero exit code.");
@@ -144,7 +173,7 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         }
     }
 
-    private async Task<DecryptorResult> RunDecryptorAsync(string inputRoot, string outputRoot, string? keyFile, CancellationToken cancellationToken)
+    private async Task<DecryptorResult> RunDecryptorAsync(string inputRoot, string outputRoot, CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -158,12 +187,6 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         startInfo.ArgumentList.Add(inputRoot);
         startInfo.ArgumentList.Add("--output-root");
         startInfo.ArgumentList.Add(outputRoot);
-        if (keyFile is not null)
-        {
-            startInfo.ArgumentList.Add("--key-file");
-            startInfo.ArgumentList.Add(keyFile);
-        }
-
         using var process = new Process { StartInfo = startInfo };
         if (!process.Start())
         {
@@ -200,47 +223,89 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
             files.Add(new MaterializationFile(relative, await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false), info.Length));
         }
 
+        var outputManifestPath = CombineUnderRoot(outputRoot, ".wechatvoice/materialization-output.json");
+        if (!File.Exists(outputManifestPath))
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The materialization backend did not produce the required explicit output manifest.");
+        }
+
+        MaterializationOutputManifest outputManifest;
+        await using (var manifestStream = new FileStream(outputManifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            outputManifest = await JsonSerializer.DeserializeAsync<MaterializationOutputManifest>(manifestStream, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false)
+                ?? throw new DatabaseMaterializationException(null, null, null, "The materialization output manifest was empty.");
+        }
+
+        if (outputManifest.FormatVersion != MaterializationOutputManifest.CurrentFormatVersion)
+        {
+            throw new DatabaseMaterializationException(null, null, null, $"Unsupported materialization output manifest format: {outputManifest.FormatVersion}.");
+        }
+
+        var sourceByPath = sourceDatabases.ToDictionary(item => NormalizeRelative(item.DatabasePath), StringComparer.OrdinalIgnoreCase);
+        var mappedOutputPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var usedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var databases = new List<MaterializedDatabase>();
-        var outputDatabases = outputFiles
-            .Where(static path => string.Equals(Path.GetExtension(path), ".db", StringComparison.OrdinalIgnoreCase))
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        var usedSource = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in outputDatabases)
+        foreach (var mapping in outputManifest.Databases)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await ValidateSqliteAsync(path, cancellationToken).ConfigureAwait(false);
-            var relative = SnapshotFileCopier.NormalizeRelativePath(Path.GetRelativePath(outputRoot, path));
-            var (role, shard) = ClassifyRole(Path.GetFileName(path));
-            var source = sourceDatabases.FirstOrDefault(item =>
-                !usedSource.Contains(item.DatabasePath)
-                && string.Equals(item.DatabasePath, relative, StringComparison.OrdinalIgnoreCase))
-                ?? sourceDatabases.FirstOrDefault(item =>
-                    !usedSource.Contains(item.DatabasePath)
-                    && string.Equals(Path.GetFileName(item.DatabasePath), Path.GetFileName(path), StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(item.LogicalRole, role, StringComparison.OrdinalIgnoreCase)
-                    && item.ShardNumber == shard);
-            if (source is null)
+            var sourcePath = NormalizeRelative(mapping.SourceRelativePath);
+            if (!sourceByPath.TryGetValue(sourcePath, out var source))
             {
+                throw new DatabaseMaterializationException(null, null, null, $"The materialization output manifest references an unknown source database: '{mapping.SourceRelativePath}'.");
+            }
+
+            if (!usedSources.Add(sourcePath))
+            {
+                throw new DatabaseMaterializationException(null, null, null, $"The materialization output manifest maps a source database more than once: '{mapping.SourceRelativePath}'.");
+            }
+
+            var outputRelative = string.IsNullOrWhiteSpace(mapping.OutputRelativePath) ? string.Empty : NormalizeRelative(mapping.OutputRelativePath);
+            if (mapping.Status is MaterializationDatabaseStatus.IntentionallyIgnored or MaterializationDatabaseStatus.Failed)
+            {
+                databases.Add(new MaterializedDatabase(
+                    source.DatabasePath,
+                    source.DatabaseGroupFingerprint ?? string.Empty,
+                    outputRelative,
+                    source.LogicalRole,
+                    source.ShardNumber,
+                    string.Empty,
+                    0,
+                    string.Empty,
+                    mapping.Status,
+                    mapping.Error ?? "The backend did not materialize this source database."));
                 continue;
             }
 
-            usedSource.Add(source.DatabasePath);
-            var info = new FileInfo(path);
-            var hash = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
-            var schema = await new SqliteSchemaInspector().InspectAsync(path, new SchemaInspectionOptions(IncludeLocalPaths: false, PrecomputedSha256: hash, PrecomputedByteLength: info.Length), cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(outputRelative))
+            {
+                throw new DatabaseMaterializationException(null, null, null, $"The materialization output manifest has no output path for '{mapping.SourceRelativePath}'.");
+            }
+
+            var outputPath = CombineUnderRoot(outputRoot, outputRelative);
+            if (!File.Exists(outputPath))
+            {
+                throw new DatabaseMaterializationException(null, null, null, $"The mapped materialization output is missing: '{outputRelative}'.");
+            }
+
+            await ValidateSqliteAsync(outputPath, cancellationToken).ConfigureAwait(false);
+            mappedOutputPaths.Add(outputRelative);
+            var info = new FileInfo(outputPath);
+            var hash = await FileHashing.ComputeSha256Async(outputPath, cancellationToken).ConfigureAwait(false);
+            var schema = await new SqliteSchemaInspector().InspectAsync(outputPath, new SchemaInspectionOptions(IncludeLocalPaths: false, PrecomputedSha256: hash, PrecomputedByteLength: info.Length), cancellationToken).ConfigureAwait(false);
             databases.Add(new MaterializedDatabase(
                 source.DatabasePath,
                 source.DatabaseGroupFingerprint ?? string.Empty,
-                relative,
-                role,
-                shard,
+                outputRelative,
+                source.LogicalRole,
+                source.ShardNumber,
                 hash,
                 info.Length,
-                schema.SchemaFingerprint ?? string.Empty));
+                schema.SchemaFingerprint ?? string.Empty,
+                mapping.Status,
+                mapping.Error));
         }
 
-        foreach (var source in sourceDatabases.Where(item => !usedSource.Contains(item.DatabasePath)))
+        foreach (var source in sourceDatabases.Where(item => !usedSources.Contains(NormalizeRelative(item.DatabasePath))))
         {
             databases.Add(new MaterializedDatabase(
                 source.DatabasePath,
@@ -252,7 +317,16 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
                 0,
                 string.Empty,
                 MaterializationDatabaseStatus.Failed,
-                "The source database was not materialized."));
+                "The source database is absent from the backend output manifest."));
+        }
+
+        var actualOutputDatabases = outputFiles
+            .Where(static path => string.Equals(Path.GetExtension(path), ".db", StringComparison.OrdinalIgnoreCase))
+            .Select(path => NormalizeRelative(Path.GetRelativePath(outputRoot, path)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!actualOutputDatabases.SetEquals(mappedOutputPaths))
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The materialization output contains database files that are not covered by its explicit output manifest.");
         }
 
         var requiredRoles = sourceDatabases.Where(static item => item.LogicalRole is "message" or "media" or "contact")
@@ -351,20 +425,34 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         return "materialized-" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
-    private static (string Role, int? Shard) ClassifyRole(string fileName)
+    private static string NormalizeRelative(string path)
     {
-        var stem = Path.GetFileNameWithoutExtension(fileName);
-        foreach (var prefix in new[] { "message", "media" })
+        if (string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path))
         {
-            if (stem.StartsWith(prefix + "_", StringComparison.OrdinalIgnoreCase)
-                && int.TryParse(stem[(prefix.Length + 1)..], out var number)
-                && number >= 0)
-            {
-                return (prefix, number);
-            }
+            throw new DatabaseMaterializationException(null, null, null, "The materialization output manifest contains an invalid relative path.");
         }
 
-        return (fileName.Contains("contact", StringComparison.OrdinalIgnoreCase) ? "contact" : "unknown", null);
+        var normalized = SnapshotFileCopier.NormalizeRelativePath(path);
+        if (normalized.Equals(".", StringComparison.Ordinal) || normalized.StartsWith("../", StringComparison.Ordinal) || normalized.Contains("/../", StringComparison.Ordinal))
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The materialization output manifest contains a path outside its root.");
+        }
+
+        return normalized;
+    }
+
+    private static string CombineUnderRoot(string root, string relativePath)
+    {
+        var normalized = NormalizeRelative(relativePath);
+        var fullRoot = Path.GetFullPath(root);
+        var candidate = Path.GetFullPath(Path.Combine(fullRoot, normalized.Replace('/', Path.DirectorySeparatorChar)));
+        var prefix = fullRoot.EndsWith(Path.DirectorySeparatorChar) ? fullRoot : fullRoot + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DatabaseMaterializationException(null, null, null, "The materialization output manifest contains a path outside its root.");
+        }
+
+        return candidate;
     }
 
     private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken)
@@ -413,8 +501,8 @@ public sealed class DatabaseMaterializationException : IOException
         : base(message)
     {
         this.ExitCode = ExitCode;
-        this.StandardOutput = StandardOutput;
-        this.StandardError = StandardError;
+        this.StandardOutput = SensitiveOutputRedactor.Redact(StandardOutput);
+        this.StandardError = SensitiveOutputRedactor.Redact(StandardError);
     }
 
     public int? ExitCode { get; }

@@ -27,6 +27,7 @@
     <ProjectReference Include="..\..\src\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.Windows\WeChatVoice.Windows.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.ElevatedHelper\WeChatVoice.ElevatedHelper.csproj" />
+    <ProjectReference Include="..\..\src\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.Cli\WeChatVoice.Cli.csproj" />
   </ItemGroup>
 

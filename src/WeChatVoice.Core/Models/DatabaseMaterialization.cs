@@ -34,25 +34,17 @@ public sealed record RawSnapshot
 
 public sealed record MaterializationOptions
 {
-    public MaterializationOptions(string OutputDirectory, string? KeyFile = null)
+    public MaterializationOptions(string OutputDirectory)
     {
         if (string.IsNullOrWhiteSpace(OutputDirectory) || !Path.IsPathFullyQualified(OutputDirectory))
         {
             throw new ArgumentException("The materialization output directory must be absolute.", nameof(OutputDirectory));
         }
 
-        if (KeyFile is not null && (string.IsNullOrWhiteSpace(KeyFile) || !Path.IsPathFullyQualified(KeyFile)))
-        {
-            throw new ArgumentException("The optional key file must be an absolute path.", nameof(KeyFile));
-        }
-
         this.OutputDirectory = Path.GetFullPath(OutputDirectory);
-        this.KeyFile = KeyFile is null ? null : Path.GetFullPath(KeyFile);
     }
 
     public string OutputDirectory { get; }
-
-    public string? KeyFile { get; }
 }
 
 public enum MaterializationDatabaseStatus
@@ -88,6 +80,25 @@ public sealed record MaterializationManifest(
     string BackendSha256,
     IReadOnlyList<MaterializedDatabase> Databases,
     IReadOnlyList<MaterializationFile> Files);
+
+/// <summary>
+/// Fixed output contract emitted by a materialization backend. The backend,
+/// rather than the host, owns the source-to-output relationship. This avoids
+/// filename heuristics and makes ambiguous or silently missing databases a
+/// hard failure.
+/// </summary>
+public sealed record MaterializationOutputManifest(
+    int FormatVersion,
+    IReadOnlyList<MaterializationOutputDatabase> Databases)
+{
+    public const int CurrentFormatVersion = 1;
+}
+
+public sealed record MaterializationOutputDatabase(
+    string SourceRelativePath,
+    string OutputRelativePath,
+    MaterializationDatabaseStatus Status = MaterializationDatabaseStatus.Materialized,
+    string? Error = null);
 
 public sealed record MaterializationResult
 {
