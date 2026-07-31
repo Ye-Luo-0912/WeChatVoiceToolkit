@@ -35,6 +35,8 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
             throw new ArgumentException("A key-extraction Profile is required.", nameof(options));
         }
 
+        var budget = options.Budget;
+
         cancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows())
         {
@@ -86,6 +88,10 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
         }
 
         var match = matches[0];
+        if (match.Profile.Descriptor.Maturity == ProfileMaturity.ExperimentalLive && !options.AllowExperimentalProfile)
+        {
+            throw new InvalidDataException("The selected key-extraction Profile is experimental; explicit opt-in is required.");
+        }
         var policy = new WeixinProcessIdentityPolicy(
             match.Evidence.ProductVersion,
             match.Evidence.ImageSha256,
@@ -94,30 +100,29 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
             match.Evidence.Architecture);
         var verifiedProcess = new ProcessIdentityVerifier(identityReader).Verify(match.Process.ProcessId, policy);
         reportStage?.Invoke(new BrokerStageEvent("process-verified"));
-        var validated = await match.Profile.AcquireAsync(verifiedProcess, snapshot, cancellationToken).ConfigureAwait(false);
+        var validated = await match.Profile.AcquireAsync(verifiedProcess, snapshot, budget, cancellationToken).ConfigureAwait(false);
         try
         {
-            var targets = await DatabaseGroupTarget.LoadAsync(snapshot, cancellationToken).ConfigureAwait(false);
             reportStage?.Invoke(new BrokerStageEvent(
                 "keys-validated",
                 CompletedGroups: validated.Count,
-                TotalGroups: targets.Count));
-            var targetByFingerprint = targets.ToDictionary(static target => target.DatabaseGroupFingerprint, StringComparer.Ordinal);
+                TotalGroups: validated.Count));
             var bindings = new List<DatabaseKeyBinding>(validated.Count);
             foreach (var key in validated)
             {
-                if (!targetByFingerprint.TryGetValue(key.DatabaseGroupFingerprint, out var target))
+                if (string.IsNullOrWhiteSpace(key.SourceRelativePath))
                 {
-                    throw new InvalidDataException("A validated key was not bound to a verified database group.");
+                    throw new InvalidDataException("A validated key did not retain its verified database-group path.");
                 }
 
                 bindings.Add(new DatabaseKeyBinding(
                     snapshot.Snapshot.SnapshotId,
                     match.Evidence.OwnerSid,
-                    target.DatabaseGroupFingerprint,
-                    target.SourceRelativePath,
-                    target.ShardNumber,
+                    key.DatabaseGroupFingerprint,
+                    key.SourceRelativePath,
+                    key.ShardNumber,
                     match.Profile.Id,
+                    match.Profile.Descriptor.DatabaseEncryptionProfileId,
                     key.KeyMaterial));
             }
 

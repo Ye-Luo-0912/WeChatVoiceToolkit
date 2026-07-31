@@ -20,14 +20,24 @@ public interface IWeixinKeyExtractionProfile
     Task<IReadOnlyList<ValidatedDatabaseKey>> AcquireAsync(
         VerifiedWeixinProcess process,
         VerifiedRawSnapshot snapshot,
+        KeyAcquisitionBudget budget,
         CancellationToken cancellationToken);
+}
+
+public enum ProfileMaturity
+{
+    SyntheticOnly,
+    ExperimentalLive,
+    LiveValidated,
+    Certified,
 }
 
 public sealed record WeixinKeyExtractionProfileDescriptor(
     IReadOnlySet<string> ProductVersions,
     IReadOnlySet<string> ImageSha256,
     string DatabaseEncryptionProfileId,
-    string Architecture);
+    string Architecture,
+    ProfileMaturity Maturity = ProfileMaturity.SyntheticOnly);
 
 /// <summary>
 /// Extensible registry with exact evidence matching. Adding a reviewed Profile

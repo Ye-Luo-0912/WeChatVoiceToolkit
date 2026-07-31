@@ -11,11 +11,65 @@ public sealed record KeyAcquisitionRequest(
     string SnapshotId,
     string Operation = "acquire-and-materialize");
 
-public sealed record KeyAcquisitionOptions(
-    string ProfileId,
-    TimeSpan MaximumDuration,
-    long MaximumScanBytes = 64L * 1024 * 1024,
-    int MaximumCandidates = 256);
+public sealed record KeyAcquisitionOptions
+{
+    public KeyAcquisitionOptions(
+        string profileId,
+        TimeSpan maximumDuration,
+        long maximumScanBytes = 64L * 1024 * 1024,
+        int maximumCandidates = 256,
+        bool allowExperimentalProfile = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        if (maximumDuration <= TimeSpan.Zero || maximumDuration > TimeSpan.FromMinutes(30))
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumDuration), "The acquisition duration must be positive and no more than 30 minutes.");
+        }
+
+        if (maximumScanBytes is <= 0 or > 768L * 1024 * 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumScanBytes), "The acquisition scan budget must be positive and no more than 768 MiB.");
+        }
+
+        if (maximumCandidates is <= 0 or > 4096)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumCandidates), "The candidate budget must be between 1 and 4096.");
+        }
+
+        ProfileId = profileId;
+        MaximumDuration = maximumDuration;
+        MaximumScanBytes = maximumScanBytes;
+        MaximumCandidates = maximumCandidates;
+        AllowExperimentalProfile = allowExperimentalProfile;
+    }
+
+    public string ProfileId { get; }
+    public TimeSpan MaximumDuration { get; }
+    public long MaximumScanBytes { get; }
+    public int MaximumCandidates { get; }
+    public bool AllowExperimentalProfile { get; }
+
+    public KeyAcquisitionBudget Budget => new(MaximumDuration, MaximumScanBytes, MaximumCandidates);
+}
+
+public sealed record KeyAcquisitionBudget
+{
+    public KeyAcquisitionBudget(TimeSpan maximumDuration, long maximumScanBytes, int maximumCandidates)
+    {
+        if (maximumDuration <= TimeSpan.Zero || maximumScanBytes <= 0 || maximumCandidates <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumDuration), "Acquisition budgets must be positive.");
+        }
+
+        MaximumDuration = maximumDuration;
+        MaximumScanBytes = maximumScanBytes;
+        MaximumCandidates = maximumCandidates;
+    }
+
+    public TimeSpan MaximumDuration { get; }
+    public long MaximumScanBytes { get; }
+    public int MaximumCandidates { get; }
+}
 
 public sealed class VerifiedKeyAcquisition : IDisposable
 {
@@ -82,7 +136,8 @@ public sealed class VerifiedKeyAcquisition : IDisposable
         {
             ArgumentNullException.ThrowIfNull(binding);
             if (!string.Equals(binding.SnapshotId, SnapshotId, StringComparison.Ordinal)
-                || !string.Equals(binding.EncryptionProfileId, ProfileId, StringComparison.Ordinal)
+                || !string.Equals(binding.KeyExtractionProfileId, ProfileId, StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(binding.EncryptionProfileId)
                 || string.IsNullOrWhiteSpace(binding.DatabaseGroupFingerprint)
                 || !groups.Add(binding.DatabaseGroupFingerprint))
             {

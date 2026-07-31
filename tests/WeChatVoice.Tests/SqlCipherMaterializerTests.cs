@@ -35,14 +35,15 @@ public sealed class SqlCipherMaterializerTests
         using var acquisition = new VerifiedKeyAcquisition(
             "acquisition-test",
             verifiedSnapshot.Snapshot.SnapshotId,
-            "weixin-windows-4.1.11.55-sqlcipher4-page-hmac-v1",
+            "weixin-windows-4.1.11.55-wcdb-ascii-key-v1",
             [new DatabaseKeyBinding(
                 verifiedSnapshot.Snapshot.SnapshotId,
                 "S-1-5-21-test",
                 artifact.DatabaseGroupFingerprint ?? throw new InvalidDataException("The test artifact did not have a group fingerprint."),
                 artifact.DatabasePath,
                 artifact.ShardNumber,
-                "weixin-windows-4.1.11.55-sqlcipher4-page-hmac-v1",
+                "weixin-windows-4.1.11.55-wcdb-ascii-key-v1",
+                "weixin-windows-4.sqlcipher4-page-hmac-sha512-v1",
                 protectedKey)],
             DateTimeOffset.UtcNow);
 

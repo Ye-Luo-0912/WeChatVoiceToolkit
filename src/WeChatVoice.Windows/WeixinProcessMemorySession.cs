@@ -13,6 +13,24 @@ public readonly record struct ProcessMemoryScanResult(
     long ScannedBytes,
     bool ReachedLimit);
 
+internal readonly record struct ProcessMemoryScanBudget
+{
+    internal ProcessMemoryScanBudget(TimeSpan maximumDuration, long maximumTotalBytes)
+    {
+        if (maximumDuration <= TimeSpan.Zero || maximumTotalBytes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumDuration));
+        }
+
+        MaximumDuration = maximumDuration;
+        MaximumTotalBytes = maximumTotalBytes;
+    }
+
+    internal TimeSpan MaximumDuration { get; }
+
+    internal long MaximumTotalBytes { get; }
+}
+
 internal sealed record WeixinProcessMemoryIdentity(
     WeChatProcessInfo Process,
     string ImagePath,
@@ -30,11 +48,14 @@ internal sealed class WeixinProcessMemorySession : IDisposable
     internal const long MaximumRegionBytes = 128L * 1024 * 1024;
     internal const long MaximumTotalBytes = 768L * 1024 * 1024;
     internal const int MaximumRegions = 8192;
-    internal static readonly TimeSpan MaximumDuration = TimeSpan.FromSeconds(30);
+    internal static readonly TimeSpan MaximumDuration = TimeSpan.FromSeconds(60);
 
     private const uint MemCommit = 0x1000;
+    private const uint MemPrivate = 0x20000;
     private const uint PageNoAccess = 0x01;
     private const uint PageGuard = 0x100;
+    private const uint PageReadWrite = 0x04;
+    private const uint PageWriteCopy = 0x08;
     private const uint ProtectionBaseMask = 0xFF;
 
     private static readonly HashSet<uint> ReadableProtections =
@@ -84,20 +105,23 @@ internal sealed class WeixinProcessMemorySession : IDisposable
 
     internal ProcessMemoryScanResult ScanReadableMemory(
         ProcessMemoryChunkHandler handler,
+        ProcessMemoryScanBudget budget,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(handler);
         ObjectDisposedException.ThrowIf(disposed, this);
 
         var started = Stopwatch.StartNew();
+        var maximumDuration = budget.MaximumDuration <= MaximumDuration ? budget.MaximumDuration : MaximumDuration;
+        var maximumTotalBytes = Math.Min(budget.MaximumTotalBytes, MaximumTotalBytes);
         var buffer = ArrayPool<byte>.Shared.Rent(ChunkSize);
-        var regionCount = 0;
+        var regions = new List<MemoryBasicInformation>();
         long scannedBytes = 0;
         var reachedLimit = false;
         try
         {
             nuint address = 0;
-            while (regionCount < MaximumRegions && started.Elapsed < MaximumDuration)
+            while (regions.Count < MaximumRegions && started.Elapsed < maximumDuration)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var queried = NativeMethods.VirtualQueryEx(
@@ -119,30 +143,55 @@ internal sealed class WeixinProcessMemorySession : IDisposable
                 }
 
                 address = nextAddress;
-                if (!IsReadable(information) || regionSize == 0 || regionSize > (nuint)MaximumRegionBytes)
+                if (!IsReadable(information) || regionSize == 0)
                 {
                     continue;
                 }
 
-                regionCount++;
+                regions.Add(information);
+            }
+
+            // Heap/private writable pages are the most likely location for a
+            // short-lived ASCII key. Query the complete bounded region list
+            // first, then spend the caller's read budget on those regions
+            // before image/executable pages. This changes only ordering; all
+            // hard region, byte, duration, and cancellation limits remain.
+            regions.Sort(static (left, right) =>
+            {
+                var priority = IsPriority(right).CompareTo(IsPriority(left));
+                return priority != 0
+                    ? priority
+                    : left.BaseAddress.ToInt64().CompareTo(right.BaseAddress.ToInt64());
+            });
+
+            foreach (var information in regions)
+            {
+                if (started.Elapsed >= maximumDuration || scannedBytes >= maximumTotalBytes)
+                {
+                    reachedLimit = true;
+                    return new ProcessMemoryScanResult(regions.Count, scannedBytes, reachedLimit);
+                }
+
+                var baseAddress = unchecked((nuint)information.BaseAddress);
+                var regionSize = information.RegionSize;
                 nuint offset = 0;
                 var startsRegion = true;
                 while (offset < regionSize)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (started.Elapsed >= MaximumDuration || scannedBytes >= MaximumTotalBytes)
+                    if (started.Elapsed >= maximumDuration || scannedBytes >= maximumTotalBytes)
                     {
                         reachedLimit = true;
-                        return new ProcessMemoryScanResult(regionCount, scannedBytes, reachedLimit);
+                        return new ProcessMemoryScanResult(regions.Count, scannedBytes, reachedLimit);
                     }
 
                     var remainingRegion = regionSize - offset;
-                    var remainingBudget = checked((nuint)(MaximumTotalBytes - scannedBytes));
+                    var remainingBudget = checked((nuint)(maximumTotalBytes - scannedBytes));
                     var requested = Min((nuint)ChunkSize, remainingRegion, remainingBudget);
                     if (requested == 0)
                     {
                         reachedLimit = true;
-                        return new ProcessMemoryScanResult(regionCount, scannedBytes, reachedLimit);
+                        return new ProcessMemoryScanResult(regions.Count, scannedBytes, reachedLimit);
                     }
 
                     var readAddress = unchecked((nint)(baseAddress + offset));
@@ -152,7 +201,7 @@ internal sealed class WeixinProcessMemorySession : IDisposable
                         scannedBytes += count;
                         if (!handler(buffer.AsSpan(0, count), startsRegion))
                         {
-                            return new ProcessMemoryScanResult(regionCount, scannedBytes, reachedLimit);
+                            return new ProcessMemoryScanResult(regions.Count, scannedBytes, reachedLimit);
                         }
 
                         startsRegion = false;
@@ -162,8 +211,8 @@ internal sealed class WeixinProcessMemorySession : IDisposable
                 }
             }
 
-            reachedLimit = regionCount >= MaximumRegions || started.Elapsed >= MaximumDuration;
-            return new ProcessMemoryScanResult(regionCount, scannedBytes, reachedLimit);
+            reachedLimit = regions.Count >= MaximumRegions || started.Elapsed >= maximumDuration || scannedBytes >= maximumTotalBytes;
+            return new ProcessMemoryScanResult(regions.Count, scannedBytes, reachedLimit);
         }
         finally
         {
@@ -205,6 +254,12 @@ internal sealed class WeixinProcessMemorySession : IDisposable
         }
 
         return ReadableProtections.Contains(information.Protect & ProtectionBaseMask);
+    }
+
+    private static bool IsPriority(MemoryBasicInformation information)
+    {
+        var protection = information.Protect & ProtectionBaseMask;
+        return information.Type == MemPrivate && protection is PageReadWrite or PageWriteCopy;
     }
 
     private static nuint Min(nuint first, nuint second, nuint third) =>

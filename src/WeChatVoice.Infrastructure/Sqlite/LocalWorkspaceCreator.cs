@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Infrastructure.Serialization;
 
 namespace WeChatVoice.Infrastructure.Sqlite;
 
@@ -37,7 +38,35 @@ public sealed class LocalWorkspaceCreator
     public Task<LocalWorkspace> CreateAsync(VerifiedMaterialization materialization, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(materialization);
-        return CreateAsync(materialization.OutputRoot, cancellationToken);
+        return CreateFromMaterializationAsync(materialization, cancellationToken);
+    }
+
+    private async Task<LocalWorkspace> CreateFromMaterializationAsync(
+        VerifiedMaterialization materialization,
+        CancellationToken cancellationToken)
+    {
+        var probe = await _probeService.ProbeAsync(
+            materialization.OutputRoot,
+            new DataSetProbeOptions(IncludeLocalPaths: true),
+            cancellationToken).ConfigureAwait(false);
+        var sourceRoot = probe.SourceRoot
+            ?? throw new InvalidDataException("The materialized workspace probe did not retain its source root.");
+        var manifestHash = await FileHashing.ComputeSha256Async(materialization.Result.ManifestPath, cancellationToken).ConfigureAwait(false);
+        var provenance = new MaterializationProvenance(
+            materialization.Result.SourceSnapshotId,
+            materialization.Result.WorkspaceId,
+            materialization.Result.BackendId,
+            materialization.Result.BackendVersion,
+            materialization.Result.BackendSha256,
+            manifestHash);
+        return new LocalWorkspace(
+            ComputeWorkspaceId(sourceRoot, probe.DataSet.DataSetId),
+            sourceRoot,
+            probe.DataSet,
+            DateTimeOffset.UtcNow,
+            probe.Issues,
+            probe.AdapterCandidates,
+            provenance);
     }
 
     private static string ComputeWorkspaceId(string sourceRoot, string dataSetId)

@@ -25,11 +25,25 @@ internal struct MemoryBasicInformation
 
 internal static partial class NativeMethods
 {
+    internal const uint ToolhelpSnapshotProcess = 0x00000002;
+    internal static readonly nint InvalidHandleValue = new nint(-1);
+
     [LibraryImport("kernel32.dll", SetLastError = true)]
     internal static partial nint OpenProcess(
         ProcessAccessRights desiredAccess,
         [MarshalAs(UnmanagedType.Bool)] bool inheritHandle,
         uint processId);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial nint CreateToolhelp32Snapshot(uint flags, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool Process32First(nint snapshot, ref ProcessEntry32 entry);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool Process32Next(nint snapshot, ref ProcessEntry32 entry);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -70,6 +84,36 @@ internal static partial class NativeMethods
 
     [LibraryImport("wintrust.dll", EntryPoint = "WinVerifyTrust")]
     internal static partial int WinVerifyTrust(nint windowHandle, ref Guid actionId, ref WinTrustData data);
+}
+
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+internal struct ProcessEntry32
+{
+    internal ProcessEntry32(uint size)
+    {
+        Size = size;
+        Usage = 0;
+        ProcessId = 0;
+        HeapId = 0;
+        ModuleId = 0;
+        Threads = 0;
+        ParentProcessId = 0;
+        Priority = 0;
+        Flags = 0;
+        ExeFile = string.Empty;
+    }
+
+    internal uint Size;
+    internal uint Usage;
+    internal uint ProcessId;
+    internal nuint HeapId;
+    internal uint ModuleId;
+    internal uint Threads;
+    internal uint ParentProcessId;
+    internal int Priority;
+    internal uint Flags;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+    internal string ExeFile;
 }
 
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

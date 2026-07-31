@@ -15,7 +15,8 @@ public sealed record LocalWorkspace
         WeChatDataSet DataSet,
         DateTimeOffset CreatedAtUtc,
         IReadOnlyList<DataSetIssue>? Issues = null,
-        IReadOnlyList<AdapterCandidate>? AdapterCandidates = null)
+        IReadOnlyList<AdapterCandidate>? AdapterCandidates = null,
+        MaterializationProvenance? Provenance = null)
     {
         if (string.IsNullOrWhiteSpace(WorkspaceId))
         {
@@ -39,6 +40,7 @@ public sealed record LocalWorkspace
         this.CreatedAtUtc = CreatedAtUtc.ToUniversalTime();
         this.Issues = Freeze(Issues);
         this.AdapterCandidates = Freeze(AdapterCandidates);
+        this.Provenance = Provenance;
     }
 
     public string WorkspaceId { get; }
@@ -53,6 +55,16 @@ public sealed record LocalWorkspace
 
     public IReadOnlyList<AdapterCandidate> AdapterCandidates { get; }
 
+    public MaterializationProvenance? Provenance { get; }
+
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T>? values)
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());
 }
+
+public sealed record MaterializationProvenance(
+    string SourceSnapshotId,
+    string MaterializationId,
+    string BackendId,
+    string BackendVersion,
+    string BackendBundleSha256,
+    string MaterializationManifestSha256);

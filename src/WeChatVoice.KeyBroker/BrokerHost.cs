@@ -26,7 +26,7 @@ internal static class BrokerHost
         TextWriter output,
         string snapshotManifestPath,
         CancellationToken cancellationToken)
-        => await RunAsync(input, output, snapshotManifestPath, null, null, cancellationToken, null).ConfigureAwait(false);
+        => await RunAsync(input, output, snapshotManifestPath, null, null, cancellationToken, false, null).ConfigureAwait(false);
 
     internal static async Task<int> RunAsync(
         TextReader input,
@@ -35,6 +35,7 @@ internal static class BrokerHost
         string? outputRoot,
         string? workspaceOutput,
         CancellationToken cancellationToken,
+        bool allowExperimentalProfile = false,
         Action<BrokerStageEvent>? reportStage = null)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -59,6 +60,7 @@ internal static class BrokerHost
 
         BrokerRequest? request = null;
         var snapshotVerified = false;
+        var snapshotStaged = false;
         try
         {
             request = BrokerProtocol.Parse(line);
@@ -75,6 +77,13 @@ internal static class BrokerHost
                 return 3;
             }
 
+            await using var stagedSnapshot = await BrokerSnapshotStager.StageAsync(
+                verifiedSnapshot,
+                Path.GetDirectoryName(Path.GetFullPath(outputRoot))
+                    ?? throw new InvalidDataException("The materialization output has no staging parent."),
+                cancellationToken).ConfigureAwait(false);
+            verifiedSnapshot = stagedSnapshot.Snapshot;
+            snapshotStaged = true;
             var profile = GuardedKeyExtractionProfiles.Create(
                 scan => reportStage?.Invoke(new BrokerStageEvent("memory-scan", ScannedBytes: scan.ScannedBytes))).Single();
             var materializer = new SqlCipherEphemeralDatabaseMaterializer(
@@ -91,7 +100,7 @@ internal static class BrokerHost
                 materializer);
             var materialization = await service.ExecuteAsync(
                 verifiedSnapshot,
-                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60)),
+                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60), 64L * 1024 * 1024, 256, allowExperimentalProfile),
                 new MaterializationOptions(Path.GetFullPath(outputRoot)),
                 cancellationToken).ConfigureAwait(false);
             var workspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);
@@ -129,7 +138,7 @@ internal static class BrokerHost
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
         {
             var noProfile = exception is InvalidDataException;
-            if (!snapshotVerified)
+            if (!snapshotVerified || !snapshotStaged)
             {
                 BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_invalid", "The snapshot could not be verified."));
                 return 4;

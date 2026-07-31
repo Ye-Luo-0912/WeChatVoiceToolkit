@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted for route two groundwork. No key-extraction or database-encryption
-profile is enabled yet.
+Accepted for route two. The observed 4.1.11.55 extraction Profile is
+`ExperimentalLive` and requires explicit CLI opt-in; no Profile is certified.
 
 ## Decision
 
@@ -30,9 +30,11 @@ future Profile selection, the broker rebinds the manifest to its containing
 snapshot directory and verifies its complete file set, lengths, hashes, and
 Snapshot ID. Errors are structured and contain no free-form backend output.
 
-Until a version-specific key-extraction Profile and database-encryption Profile
-have passed fixture tests, the broker returns `profile_unavailable`. It never
-returns raw keys and the CLI has no plaintext `--key-file` option.
+The Broker currently composes the version-specific 4.1.11.55 extraction Profile
+with the SQLCipher database-encryption backend only when
+`--allow-experimental-profile` is present. It never returns raw keys and the CLI
+has no plaintext `--key-file` option. The chain remains experimental until it
+has been validated against the user's real encrypted database groups.
 
 Formal materialization backends are registry entries with version and expected
 binary identity. The external backend is development-only and requires an
@@ -57,8 +59,9 @@ observed:
   (Shenzhen) Company Limited.
 
 This is process identity evidence only. It is not sufficient to infer memory
-layout, key location, KDF, page cipher, HMAC, WAL rules, or database schema, and
-therefore does not enable a Profile.
+layout, key location, KDF, page cipher, HMAC, WAL rules, or database schema. It
+binds the experimental Profile's process descriptor but does not certify the
+Profile's database assumptions.
 
 Read-only inspection first used a live-source copy, then repeated the inventory
 after Weixin fully exited. The stable business and login snapshots both passed
@@ -96,11 +99,12 @@ validates a 32-byte candidate against a 4096-byte encrypted first page with the
 page HMAC-SHA512 rather than a plaintext-header coincidence. Its scanner is not
 adopted: it reads whole memory regions and logs keys, PIDs, and addresses.
 
-`WeixinWindows4SqlCipherKeyValidator` implements only the non-logging validation
+`WeixinWindows4SqlCipherKeyValidator` implements the non-logging validation
 primitive. It uses constant-time comparison, clears derived key and temporary
 page buffers, and has fixed synthetic positive, wrong-key, tamper, and shape
-vectors. It does not acquire a key, decrypt a page, register a build Profile, or
-change the broker's fail-closed behavior.
+vectors. The experimental Profile combines it with the bounded scanner and
+group-bound acquisition service; it still does not imply that the observed
+Weixin databases use the same cipher parameters.
 
 ## Next evidence required
 

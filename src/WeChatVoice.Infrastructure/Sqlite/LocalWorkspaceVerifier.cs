@@ -1,5 +1,7 @@
+using System.Text.Json;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Infrastructure.Serialization;
 
 namespace WeChatVoice.Infrastructure.Sqlite;
 
@@ -83,7 +85,79 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
             }
         }
 
+        await VerifyMaterializationProvenanceAsync(workspace, sourceRoot, cancellationToken).ConfigureAwait(false);
+
         return new VerifiedLocalWorkspace(workspace, DateTimeOffset.UtcNow);
+    }
+
+    private static async Task VerifyMaterializationProvenanceAsync(
+        LocalWorkspace workspace,
+        string sourceRoot,
+        CancellationToken cancellationToken)
+    {
+        if (workspace.Provenance is null)
+        {
+            return;
+        }
+
+        var manifestPath = CombineUnderRoot(sourceRoot, ".wechatvoice/materialization-manifest.json");
+        if (!File.Exists(manifestPath))
+        {
+            throw new WorkspaceVerificationException("The materialization manifest referenced by the workspace is missing.");
+        }
+
+        EnsureNoReparsePointsOnPath(sourceRoot, manifestPath);
+
+        var manifestHash = await FileHashing.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(manifestHash, workspace.Provenance.MaterializationManifestSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkspaceVerificationException("The materialization manifest hash no longer matches workspace provenance.");
+        }
+
+        await using var stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var manifest = await JsonSerializer.DeserializeAsync<MaterializationManifest>(stream, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false)
+            ?? throw new WorkspaceVerificationException("The materialization manifest is empty.");
+        var provenance = workspace.Provenance;
+        if (!string.Equals(manifest.WorkspaceId, provenance.MaterializationId, StringComparison.Ordinal)
+            || !string.Equals(manifest.SourceSnapshotId, provenance.SourceSnapshotId, StringComparison.Ordinal)
+            || !string.Equals(manifest.BackendId, provenance.BackendId, StringComparison.Ordinal)
+            || !string.Equals(manifest.BackendVersion, provenance.BackendVersion, StringComparison.Ordinal)
+            || !string.Equals(manifest.BackendSha256, provenance.BackendBundleSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkspaceVerificationException("The materialization manifest provenance does not match the workspace.");
+        }
+
+        var verifiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in manifest.Files)
+        {
+            var outputPath = CombineUnderRoot(sourceRoot, file.OutputRelativePath);
+            EnsureNoReparsePointsOnPath(sourceRoot, outputPath);
+            if (!File.Exists(outputPath))
+            {
+                throw new WorkspaceVerificationException($"A materialization output file is missing: '{file.OutputRelativePath}'.");
+            }
+
+            var info = new FileInfo(outputPath);
+            var hash = await FileHashing.ComputeSha256Async(outputPath, cancellationToken).ConfigureAwait(false);
+            if (info.Length != file.ByteLength || !string.Equals(hash, file.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkspaceVerificationException($"A materialization output file changed: '{file.OutputRelativePath}'.");
+            }
+
+            if (!verifiedFiles.Add(file.OutputRelativePath.Replace('\\', '/')))
+            {
+                throw new WorkspaceVerificationException($"The materialization manifest contains a duplicate output file: '{file.OutputRelativePath}'.");
+            }
+        }
+
+        foreach (var database in manifest.Databases.Where(static item => item.Status is MaterializationDatabaseStatus.Materialized or MaterializationDatabaseStatus.CopiedAsPlaintext))
+        {
+            var outputPath = CombineUnderRoot(sourceRoot, database.OutputRelativePath);
+            if (!verifiedFiles.Contains(database.OutputRelativePath.Replace('\\', '/')))
+            {
+                throw new WorkspaceVerificationException($"The materialization manifest does not cover database output '{database.OutputRelativePath}'.");
+            }
+        }
     }
 
     private static void EnsureNoReparsePoints(string root)
@@ -135,6 +209,11 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
 
     private static string CombineUnderRoot(string root, string relativePath)
     {
+        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
+        {
+            throw new WorkspaceVerificationException($"Workspace output path is not relative: '{relativePath}'.");
+        }
+
         var candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
         var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
         if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))

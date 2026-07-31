@@ -24,10 +24,9 @@ public sealed class EphemeralAcquireAndMaterializeService(
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(acquisitionOptions);
         ArgumentNullException.ThrowIfNull(materializationOptions);
-
-        if (!string.Equals(acquisitionOptions.ProfileId, materializer.EncryptionProfileId, StringComparison.Ordinal))
+        if (snapshot.Snapshot.Manifest.PotentiallyInconsistent)
         {
-            throw new InvalidDataException("The requested encryption Profile is not accepted by the materializer.");
+            throw new InvalidDataException("Potentially inconsistent snapshots cannot enter the acquire-and-materialize path.");
         }
 
         using var acquisition = await acquisitionService.AcquireAsync(
@@ -38,6 +37,11 @@ public sealed class EphemeralAcquireAndMaterializeService(
         if (!string.Equals(acquisition.SnapshotId, snapshot.Snapshot.SnapshotId, StringComparison.Ordinal))
         {
             throw new InvalidDataException("The acquired keys are not bound to the verified SnapshotId.");
+        }
+
+        if (acquisition.Bindings.Any(binding => !string.Equals(binding.EncryptionProfileId, materializer.EncryptionProfileId, StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("The acquired keys are bound to an encryption Profile the materializer does not support.");
         }
 
         var materialization = await materializer.MaterializeAsync(

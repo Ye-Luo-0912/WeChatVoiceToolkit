@@ -50,11 +50,18 @@ public sealed class HexKeyCandidateScannerTests
     [Fact]
     public void Scanner_stops_after_the_fixed_candidate_limit()
     {
-        var pattern = Encoding.ASCII.GetBytes($"x'{new string('0', 64)}'");
-        var data = new byte[pattern.Length * (HexKeyCandidateScanner.MaximumCandidates + 1)];
+        var patterns = Enumerable.Range(0, HexKeyCandidateScanner.MaximumCandidates + 1)
+            .Select(index =>
+            {
+                var key = new byte[32];
+                BitConverter.TryWriteBytes(key, index);
+                return Encoding.ASCII.GetBytes($"x'{Convert.ToHexString(key)}'");
+            })
+            .ToArray();
+        var data = new byte[patterns[0].Length * patterns.Length];
         for (var index = 0; index < HexKeyCandidateScanner.MaximumCandidates + 1; index++)
         {
-            pattern.CopyTo(data, index * pattern.Length);
+            patterns[index].CopyTo(data, index * patterns[index].Length);
         }
 
         using var scanner = new HexKeyCandidateScanner((_, _) => true);

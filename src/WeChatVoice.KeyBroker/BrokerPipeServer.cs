@@ -14,7 +14,8 @@ internal static class BrokerPipeServer
         string snapshotManifestPath,
         string outputRoot,
         string workspaceOutput,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowExperimentalProfile = false)
     {
         ValidatePipeToken(pipeToken);
         ArgumentException.ThrowIfNullOrWhiteSpace(snapshotManifestPath);
@@ -53,6 +54,7 @@ internal static class BrokerPipeServer
             outputRoot,
             workspaceOutput,
             operationTimeout.Token,
+            allowExperimentalProfile,
             stage => BrokerProtocol.Write(writer, stage)).ConfigureAwait(false);
     }
 

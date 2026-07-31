@@ -20,6 +20,7 @@ internal sealed class KeyBrokerClient
         string snapshotManifestPath,
         string outputRoot,
         string workspaceOutput,
+        bool allowExperimentalProfile,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -46,6 +47,10 @@ internal sealed class KeyBrokerClient
         startInfo.ArgumentList.Add(Path.GetFullPath(outputRoot));
         startInfo.ArgumentList.Add("--workspace-output");
         startInfo.ArgumentList.Add(Path.GetFullPath(workspaceOutput));
+        if (allowExperimentalProfile)
+        {
+            startInfo.ArgumentList.Add("--allow-experimental-profile");
+        }
 
         Process process;
         try
@@ -66,6 +71,7 @@ internal sealed class KeyBrokerClient
                 using var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 connectionTimeout.CancelAfter(ConnectionTimeout);
                 await pipe.ConnectAsync(connectionTimeout.Token).ConfigureAwait(false);
+                NamedPipeIdentityVerifier.VerifyServerProcess(pipe.SafePipeHandle, process.Id);
                 using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 operationTimeout.CancelAfter(OperationTimeout);
                 await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };

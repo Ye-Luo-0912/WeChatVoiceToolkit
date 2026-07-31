@@ -18,8 +18,10 @@
 5. Route two now has a separate one-shot UAC Key Broker, fixed request protocol,
    raw Snapshot verification before Profile selection, registered
    materialization backends, bounded backend execution, a guarded
-   Profile-driven key acquisition service, and a fixed SQLCipher Worker that
-   completes synthetic encrypted-fixture materialization into a Local Workspace.
+   experimental Profile-driven key acquisition service, and a fixed SQLCipher
+   Worker that completes synthetic encrypted-fixture materialization into a
+   Local Workspace. The Broker enforces launched-PID binding, private Snapshot
+   staging, caller budgets, and explicit experimental-profile opt-in.
 6. Stable business/login snapshots for the observed build pass group-level
    verification. A candidate-only first-page HMAC validator has fixed synthetic
    vectors, zeroes temporary key material, and remains outside the Profile
@@ -37,7 +39,7 @@ login `key_info.db` is ordinary SQLite, but its BLOB semantics remain unverified
 Do not guess tables, BLOB formats, or keys. Message and media filename shards
 are also not one-to-one; only an Adapter with verified schema evidence may
 resolve their relationship.
-The next implementation step is validating the guarded Profile and Worker
+The next implementation step is validating the experimental Profile and Worker
 against the user's exact signed build and real `message_N.db`, `media_N.db`,
 and contact groups. The Worker is currently proven only with synthetic
 SQLCipher fixtures; it must not be treated as a Weixin decryptor until page
@@ -50,8 +52,9 @@ The currently observed signed Weixin build is 4.1.11.55. Stable raw business and
 login snapshots exist only in the ignored local workspace; they must never be
 committed. The 21 business databases have distinct first-page salts. Process
 version, salt, or login-metadata evidence alone must not be promoted into a
-key-extraction Profile. The formal backend remains unavailable until a candidate
-also passes full DB/WAL materialization and `PRAGMA quick_check`.
+key-extraction Profile. The formal backend remains experimental until a candidate
+also passes full DB/WAL materialization and `PRAGMA quick_check` against the
+real signed build.
 
 WAV decoding remains a derived, later phase and must not become a prerequisite
 for the first usable SILK chain.

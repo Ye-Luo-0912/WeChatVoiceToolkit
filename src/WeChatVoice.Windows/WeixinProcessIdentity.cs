@@ -33,33 +33,88 @@ public sealed class WeixinProcessLocator
         var candidates = WeChatProcessDiscovery.ListRunning()
             .Where(process => string.Equals(process.ProcessName, "Weixin", StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        if (candidates.Length <= 1 || !OperatingSystem.IsWindows())
+        if (candidates.Length == 0 || !OperatingSystem.IsWindows())
         {
             return candidates;
         }
 
-        // Weixin launches sandboxed --type child processes with the same image
-        // and product identity. The fixed primary process is the earliest
-        // surviving Weixin process in the current session; selecting it here
-        // prevents the Broker from treating ordinary renderer/utility children
-        // as separate user sessions without accepting a caller-supplied PID.
-        var primary = candidates
-            .Select(process =>
+        var currentSession = Process.GetCurrentProcess().SessionId;
+        var sessionCandidates = candidates.Where(candidate =>
+        {
+            try
             {
-                try
+                using var process = Process.GetProcessById(candidate.ProcessId);
+                return process.SessionId == currentSession;
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+            {
+                return false;
+            }
+        }).ToArray();
+        var candidateIds = sessionCandidates.Select(static candidate => candidate.ProcessId).ToHashSet();
+        var roots = sessionCandidates
+            .Where(candidate => TryGetParentProcessId(candidate.ProcessId) is not int parentId || !candidateIds.Contains(parentId))
+            .Where(HasTopLevelWindow)
+            .ToArray();
+        if (roots.Length == 1)
+        {
+            return roots;
+        }
+
+        // Some Weixin builds host their top-level UI in a sibling process and
+        // expose no MainWindowHandle on the root executable. If the current
+        // Session still has exactly one root Weixin process, parentage remains
+        // a stronger signal than the former earliest-started heuristic.
+        var rootCandidates = sessionCandidates
+            .Where(candidate => TryGetParentProcessId(candidate.ProcessId) is not int parentId || !candidateIds.Contains(parentId))
+            .ToArray();
+        return rootCandidates.Length == 1 ? rootCandidates : Array.Empty<WeChatProcessInfo>();
+    }
+
+    private static bool HasTopLevelWindow(WeChatProcessInfo candidate)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(candidate.ProcessId);
+            return process.MainWindowHandle != nint.Zero;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    private static int? TryGetParentProcessId(int processId)
+    {
+        var snapshot = NativeMethods.CreateToolhelp32Snapshot(NativeMethods.ToolhelpSnapshotProcess, 0);
+        if (snapshot == NativeMethods.InvalidHandleValue)
+        {
+            return null;
+        }
+
+        try
+        {
+            var entry = new ProcessEntry32((uint)Marshal.SizeOf<ProcessEntry32>());
+            if (!NativeMethods.Process32First(snapshot, ref entry))
+            {
+                return null;
+            }
+
+            do
+            {
+                if (entry.ProcessId == processId)
                 {
-                    using var live = Process.GetProcessById(process.ProcessId);
-                    return (Process: process, StartedAtUtc: live.StartTime.ToUniversalTime());
+                    return checked((int)entry.ParentProcessId);
                 }
-                catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
-                {
-                    return (Process: process, StartedAtUtc: DateTime.MaxValue);
-                }
-            })
-            .OrderBy(static item => item.StartedAtUtc)
-            .ThenBy(static item => item.Process.ProcessId)
-            .First().Process;
-        return [primary];
+            }
+            while (NativeMethods.Process32Next(snapshot, ref entry));
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(snapshot);
+        }
+
+        return null;
     }
 }
 

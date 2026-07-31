@@ -12,10 +12,14 @@ public sealed record DatabaseKeyBinding(
     string DatabaseGroupFingerprint,
     string RelativeDatabasePath,
     int? ShardNumber,
+    string KeyExtractionProfileId,
     string EncryptionProfileId,
     SensitiveBuffer ProtectedKeyMaterial);
 
 public sealed record ValidatedDatabaseKey(
     string DatabaseGroupFingerprint,
     string ProfileId,
-    SensitiveBuffer KeyMaterial);
+    SensitiveBuffer KeyMaterial,
+    string? SourceRelativePath = null,
+    string? LogicalRole = null,
+    int? ShardNumber = null);

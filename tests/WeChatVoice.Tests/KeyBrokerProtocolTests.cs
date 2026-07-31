@@ -71,6 +71,34 @@ public sealed class KeyBrokerProtocolTests
     }
 
     [Fact]
+    public async Task Broker_snapshot_staging_rejects_live_source_and_isolates_verified_content()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var snapshotRoot = temporary.CreateDirectory("snapshot");
+        var sourcePath = temporary.WriteFile(Path.Combine("snapshot", "evidence.bin"), [1, 2, 3]);
+        var original = await File.ReadAllBytesAsync(sourcePath);
+        var record = new SnapshotFileRecord(
+            "evidence.bin",
+            original.LongLength,
+            Convert.ToHexString(SHA256.HashData(original)).ToLowerInvariant(),
+            File.GetLastWriteTimeUtc(sourcePath));
+        var manifest = new SnapshotManifest(snapshotRoot, snapshotRoot, DateTimeOffset.UtcNow, [record]);
+        var verified = new VerifiedRawSnapshot(new RawSnapshot(manifest, snapshotRoot), DateTimeOffset.UtcNow);
+
+        await using (var staged = await BrokerSnapshotStager.StageAsync(verified, temporary.GetPath("staging"), CancellationToken.None))
+        {
+            await File.WriteAllBytesAsync(sourcePath, [9, 9, 9]);
+            Assert.Equal(original, await File.ReadAllBytesAsync(Path.Combine(staged.Snapshot.Snapshot.SnapshotDirectory, "evidence.bin")));
+        }
+
+        var liveManifest = new SnapshotManifest(snapshotRoot, snapshotRoot, DateTimeOffset.UtcNow, [record], PotentiallyInconsistent: true);
+        await Assert.ThrowsAsync<InvalidDataException>(() => BrokerSnapshotStager.StageAsync(
+            new VerifiedRawSnapshot(new RawSnapshot(liveManifest, snapshotRoot), DateTimeOffset.UtcNow),
+            temporary.GetPath("staging-live"),
+            CancellationToken.None));
+    }
+
+    [Fact]
     public async Task One_shot_pipe_uses_random_transport_token_and_returns_no_key_material()
     {
         using var temporary = new TestTemporaryDirectory();

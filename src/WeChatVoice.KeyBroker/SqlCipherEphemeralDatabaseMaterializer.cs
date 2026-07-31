@@ -38,7 +38,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
 
     public string BackendId => "sqlcipher-e_sqlcipher-worker";
 
-    public string EncryptionProfileId => "weixin-windows-4.1.11.55-sqlcipher4-page-hmac-v1";
+    public string EncryptionProfileId => "weixin-windows-4.sqlcipher4-page-hmac-sha512-v1";
 
     public async Task<VerifiedMaterialization> MaterializeAsync(
         VerifiedRawSnapshot snapshot,
@@ -49,11 +49,6 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(acquisition);
         ArgumentNullException.ThrowIfNull(options);
-        if (!string.Equals(acquisition.ProfileId, EncryptionProfileId, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("The SQLCipher worker received an unexpected key-extraction Profile.");
-        }
-
         if (!File.Exists(workerPath))
         {
             throw new FileNotFoundException("The bundled SQLCipher worker was not found.", workerPath);

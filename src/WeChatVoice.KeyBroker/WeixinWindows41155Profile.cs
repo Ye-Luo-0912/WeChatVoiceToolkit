@@ -25,21 +25,27 @@ internal sealed class WeixinWindows41155Profile(
     private readonly IWeixinProcessMemorySourceFactory memorySourceFactory = memorySourceFactory ?? throw new ArgumentNullException(nameof(memorySourceFactory));
     private readonly Action<ProcessMemoryScanResult>? scanProgress = progress;
 
-    public string Id => "weixin-windows-4.1.11.55-sqlcipher4-page-hmac-v1";
+    // This identifier describes how a key is located and validated in the
+    // signed Weixin build. The database cipher is a separate descriptor value
+    // so another Weixin build can reuse the same SQLCipher materializer.
+    public string Id => "weixin-windows-4.1.11.55-wcdb-ascii-key-v1";
 
     public WeixinKeyExtractionProfileDescriptor Descriptor { get; } = new(
         new HashSet<string>(StringComparer.Ordinal) { SupportedVersion },
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { SupportedImageSha256 },
         "weixin-windows-4.sqlcipher4-page-hmac-sha512-v1",
-        "x64");
+        "x64",
+        ProfileMaturity.ExperimentalLive);
 
     public async Task<IReadOnlyList<ValidatedDatabaseKey>> AcquireAsync(
         VerifiedWeixinProcess process,
         VerifiedRawSnapshot snapshot,
+        KeyAcquisitionBudget budget,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(process);
         ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(budget);
         cancellationToken.ThrowIfCancellationRequested();
         if (!Descriptor.ProductVersions.Contains(process.ProductVersion)
             || !Descriptor.ImageSha256.Contains(process.ImageSha256)
@@ -72,13 +78,19 @@ internal sealed class WeixinWindows41155Profile(
 
                 var key = new SensitiveBuffer(candidate.Length);
                 key.CopyFrom(candidate);
-                validated.Add(target.DatabaseGroupFingerprint, new ValidatedDatabaseKey(target.DatabaseGroupFingerprint, Id, key));
+                validated.Add(target.DatabaseGroupFingerprint, new ValidatedDatabaseKey(
+                    target.DatabaseGroupFingerprint,
+                    Id,
+                    key,
+                    target.SourceRelativePath,
+                    target.LogicalRole,
+                    target.ShardNumber));
             }
 
             return validated.Count != targets.Count;
-        });
+        }, budget.MaximumCandidates);
 
-        var scan = source.Scan(scanner.ProcessChunk, cancellationToken);
+        var scan = source.Scan(scanner.ProcessChunk, budget, cancellationToken);
         scanProgress?.Invoke(scan);
         if (validated.Count != targets.Count)
         {
@@ -101,7 +113,7 @@ internal interface IWeixinProcessMemorySourceFactory
 
 internal interface IWeixinProcessMemorySource : IDisposable
 {
-    ProcessMemoryScanResult Scan(ProcessMemoryChunkHandler handler, CancellationToken cancellationToken);
+    ProcessMemoryScanResult Scan(ProcessMemoryChunkHandler handler, KeyAcquisitionBudget budget, CancellationToken cancellationToken);
 }
 
 internal sealed class WindowsWeixinProcessMemorySourceFactory : IWeixinProcessMemorySourceFactory
@@ -124,8 +136,11 @@ internal sealed class WindowsWeixinProcessMemorySource(WeixinProcessMemorySessio
 {
     private readonly WeixinProcessMemorySession session = session ?? throw new ArgumentNullException(nameof(session));
 
-    public ProcessMemoryScanResult Scan(ProcessMemoryChunkHandler handler, CancellationToken cancellationToken) =>
-        session.ScanReadableMemory(handler, cancellationToken);
+    public ProcessMemoryScanResult Scan(ProcessMemoryChunkHandler handler, KeyAcquisitionBudget budget, CancellationToken cancellationToken) =>
+        session.ScanReadableMemory(
+            handler,
+            new ProcessMemoryScanBudget(budget.MaximumDuration, budget.MaximumScanBytes),
+            cancellationToken);
 
     public void Dispose() => session.Dispose();
 }

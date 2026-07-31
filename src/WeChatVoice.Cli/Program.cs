@@ -545,6 +545,10 @@ static Command CreateWorkspaceCommand()
     {
         Description = "Explicitly allow the development-only external backend. It is never a formal backend pin.",
     };
+    var allowExperimentalProfileOption = new Option<bool>("--allow-experimental-profile")
+    {
+        Description = "Explicitly allow the ExperimentalLive Weixin key profile for controlled validation.",
+    };
     var materializedOutputOption = new Option<string>("--output")
     {
         Description = "New ordinary SQLite output directory.",
@@ -559,6 +563,7 @@ static Command CreateWorkspaceCommand()
     materializeCommand.Options.Add(backendOption);
     materializeCommand.Options.Add(decryptorOption);
     materializeCommand.Options.Add(allowUntrustedBackendOption);
+    materializeCommand.Options.Add(allowExperimentalProfileOption);
     materializeCommand.Options.Add(materializedOutputOption);
     materializeCommand.Options.Add(workspaceOutputOption);
     materializeCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -568,6 +573,7 @@ static Command CreateWorkspaceCommand()
         var backendId = parseResult.GetValue(backendOption);
         var decryptor = parseResult.GetValue(decryptorOption);
         var allowUntrustedBackend = parseResult.GetValue(allowUntrustedBackendOption);
+        var allowExperimentalProfile = parseResult.GetValue(allowExperimentalProfileOption);
         var output = parseResult.GetValue(materializedOutputOption);
         var workspaceOutput = parseResult.GetValue(workspaceOutputOption);
         if (snapshotDirectory is null || backendId is null || output is null)
@@ -608,6 +614,7 @@ static Command CreateWorkspaceCommand()
                     manifestPath,
                     Path.GetFullPath(output),
                     localWorkspacePath,
+                    allowExperimentalProfile,
                     cancellationToken).ConfigureAwait(false);
                 if (!string.Equals(brokerResult.Status, "completed", StringComparison.Ordinal) ||
                     string.IsNullOrWhiteSpace(brokerResult.ProfileId) ||

@@ -80,7 +80,7 @@ public sealed class EphemeralAcquireAndMaterializeTests
             "acquisition",
             new string('a', 64),
             "profile-a",
-            [new DatabaseKeyBinding(new string('a', 64), "account", "group", "message.db", 0, "profile-b", key)],
+            [new DatabaseKeyBinding(new string('a', 64), "account", "group", "message.db", 0, "profile-b", "encryption-a", key)],
             DateTimeOffset.UtcNow));
 
         Assert.Throws<ObjectDisposedException>(() => key.CopyTo(new byte[4]));
@@ -117,7 +117,7 @@ public sealed class EphemeralAcquireAndMaterializeTests
             "fake-acquisition",
             snapshotId,
             "fake-profile",
-            [new DatabaseKeyBinding(snapshotId, "account", "group", "message/message_0.db", 0, "fake-profile", key)],
+            [new DatabaseKeyBinding(snapshotId, "account", "group", "message/message_0.db", 0, "fake-profile", "fake-profile", key)],
             DateTimeOffset.UtcNow);
 
     private sealed class FakeAcquisitionService(VerifiedKeyAcquisition acquisition) : IKeyAcquisitionService

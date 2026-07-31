@@ -12,9 +12,10 @@ for untyped existing decoded artifacts, and a Run Lease. Journal events are
 and `manifest-committed`; a truncated final JSONL line is ignored during
 recovery. Use `voice export recover --journal <runs/id.jsonl>` after a crash.
 
-Do not implement a schema adapter, UI, key extraction, or decryption by
-inference. Extend exact Profiles through the registry while preserving the
-no-arbitrary-process/no-write/no-key-output floor. The real databases have
+Do not implement a schema adapter, UI, or decryption by inference. The guarded
+4.1.11.55 Profile is experimental and must remain behind explicit opt-in until
+real database validation is complete. Extend exact Profiles through the
+registry while preserving the no-arbitrary-process/no-write/no-key-output floor. The real databases have
 non-SQLite first pages. Their message/media filename numbers are not one-to-one,
 so Probe reports topology differences as informational and leaves association
 to a verified Adapter. Continue only after stable evidence supports a
@@ -25,11 +26,12 @@ explicit untrusted flag and an explicit source-to-output manifest.
 Route-two groundwork is recorded in `adr-0002-key-broker-boundary.md`.
 ADR 0003 records the ephemeral flow and ADR 0004 records the fixed SQLCipher
 Worker boundary. The CLI creates the random one-time pipe and launches the
-installed Broker; the Broker verifies the reserved Snapshot Manifest and
-content-addressed Snapshot ID, then composes the guarded Profile,
-group-bound acquisition service, SQLCipher Worker, and Local Workspace
-creation. It still returns `profile_unavailable` when no exact live process or
-database evidence matches.
+installed Broker; the Broker binds the pipe to the launched server PID, stages
+the verified Snapshot privately, then composes the guarded experimental
+Profile, group-bound acquisition service, SQLCipher Worker, and Local
+Workspace creation. It still returns `profile_unavailable` when no exact live
+process or database evidence matches, and refuses the Profile without explicit
+experimental opt-in.
 The separate login `key_info.db` is ordinary SQLite, but only its schema and
 field-length distribution have been inspected; no field values were read and
 its 180-byte BLOB must not be treated as a key without validation. Stable
@@ -37,8 +39,8 @@ business and login snapshots now exist only as ignored local evidence. The 21
 business databases have 21 distinct first-page salts, so key results must be
 validated and bound per database group rather than assumed global.
 
-`WeixinWindows4SqlCipherKeyValidator` implements only constant-time first-page
-HMAC candidate validation and clears its derived buffers. The non-registered
+`WeixinWindows4SqlCipherKeyValidator` implements constant-time first-page HMAC
+candidate validation and clears its derived buffers. The experimental
 `WeixinWindows41155Profile` now combines that validator with the bounded
 candidate scanner and requires every verified database group to authenticate;
 its Fake tests cover success and partial-group failure. The Profile is wired
