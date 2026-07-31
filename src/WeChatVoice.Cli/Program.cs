@@ -33,18 +33,19 @@ static Command CreateDoctorCommand()
         var adapters = BuiltInAdapters.Create();
         var materializationBackends = BuiltInMaterializationBackends.Create();
         var keyProfiles = GuardedKeyExtractionProfiles.Create();
+        var runningProcesses = WeChatProcessDiscovery.ListRunning();
         var report = new DoctorReport(
             System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
             Environment.OSVersion.VersionString,
             OperatingSystem.IsWindows(),
             WeChatProcessDiscovery.SupportedProcessNames,
-            WeChatProcessDiscovery.ListRunning(),
+            runningProcesses,
             new SecurityBoundary(
                 RegisteredAdapterCount: adapters.Count,
                 MatchingAdapterCount: 0,
                 HasUsableSchemaAdapter: false,
                 RegisteredKeyAcquisitionProfileCount: keyProfiles.Count,
-                MatchingKeyAcquisitionProfileCount: 0,
+                MatchingKeyAcquisitionProfileCount: CountMatchingKeyProfiles(keyProfiles),
                 HasDatabaseEncryptionProfile: keyProfiles.Any(static profile => !string.IsNullOrWhiteSpace(profile.Descriptor.DatabaseEncryptionProfileId)),
                 HasMaterializationBackend: materializationBackends.Any(static backend => !string.Equals(backend.Version, "profile-unavailable", StringComparison.OrdinalIgnoreCase))
                     || File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.dll")),
@@ -58,6 +59,51 @@ static Command CreateDoctorCommand()
         return 0;
     });
     return command;
+}
+
+static int CountMatchingKeyProfiles(IReadOnlyList<WeChatVoice.KeyAcquisition.Ports.IWeixinKeyExtractionProfile> profiles)
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        return 0;
+    }
+
+    var currentSid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
+    if (string.IsNullOrWhiteSpace(currentSid))
+    {
+        return 0;
+    }
+
+    var reader = new WindowsWeixinProcessIdentityReader();
+    var matches = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var process in new WeixinProcessLocator().Locate())
+    {
+        WeixinProcessIdentityEvidence evidence;
+        try
+        {
+            evidence = reader.Read(process.ProcessId);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            continue;
+        }
+
+        foreach (var profile in profiles)
+        {
+            var descriptor = profile.Descriptor;
+            if (string.Equals(evidence.OwnerSid, currentSid, StringComparison.Ordinal)
+                && evidence.HasTrustedSignature
+                && evidence.SignerSubject.Contains("Tencent", StringComparison.OrdinalIgnoreCase)
+                && descriptor.ProductVersions.Contains(evidence.ProductVersion)
+                && descriptor.ImageSha256.Contains(evidence.ImageSha256, StringComparer.OrdinalIgnoreCase)
+                && string.Equals(descriptor.Architecture, evidence.Architecture, StringComparison.OrdinalIgnoreCase))
+            {
+                matches.Add(profile.Id);
+            }
+        }
+    }
+
+    return matches.Count;
 }
 
 static Command CreateSnapshotCommand()

@@ -28,10 +28,39 @@ public interface IWeixinProcessIdentityReader
 /// <summary>Locates only the fixed Weixin desktop executable.</summary>
 public sealed class WeixinProcessLocator
 {
-    public IReadOnlyList<WeChatProcessInfo> Locate() =>
-        WeChatProcessDiscovery.ListRunning()
+    public IReadOnlyList<WeChatProcessInfo> Locate()
+    {
+        var candidates = WeChatProcessDiscovery.ListRunning()
             .Where(process => string.Equals(process.ProcessName, "Weixin", StringComparison.OrdinalIgnoreCase))
             .ToArray();
+        if (candidates.Length <= 1 || !OperatingSystem.IsWindows())
+        {
+            return candidates;
+        }
+
+        // Weixin launches sandboxed --type child processes with the same image
+        // and product identity. The fixed primary process is the earliest
+        // surviving Weixin process in the current session; selecting it here
+        // prevents the Broker from treating ordinary renderer/utility children
+        // as separate user sessions without accepting a caller-supplied PID.
+        var primary = candidates
+            .Select(process =>
+            {
+                try
+                {
+                    using var live = Process.GetProcessById(process.ProcessId);
+                    return (Process: process, StartedAtUtc: live.StartTime.ToUniversalTime());
+                }
+                catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+                {
+                    return (Process: process, StartedAtUtc: DateTime.MaxValue);
+                }
+            })
+            .OrderBy(static item => item.StartedAtUtc)
+            .ThenBy(static item => item.Process.ProcessId)
+            .First().Process;
+        return [primary];
+    }
 }
 
 /// <summary>
