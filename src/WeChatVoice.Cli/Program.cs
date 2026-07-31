@@ -11,7 +11,7 @@ using WeChatVoice.Infrastructure.Export;
 using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Snapshots;
 using WeChatVoice.Infrastructure.Sqlite;
-using WeChatVoice.KeyBroker;
+using WeChatVoice.KeyProfileMetadata;
 using WeChatVoice.Windows;
 
 var rootCommand = new RootCommand("Safe, schema-agnostic WeChat voice toolkit foundation.");
@@ -32,7 +32,7 @@ static Command CreateDoctorCommand()
     {
         var adapters = BuiltInAdapters.Create();
         var materializationBackends = BuiltInMaterializationBackends.Create();
-        var keyProfiles = GuardedKeyExtractionProfiles.Create();
+        var keyProfiles = BuiltInKeyProfileMetadata.Create();
         var runningProcesses = WeChatProcessDiscovery.ListRunning();
         var report = new DoctorReport(
             System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
@@ -46,9 +46,9 @@ static Command CreateDoctorCommand()
                 HasUsableSchemaAdapter: false,
                 RegisteredKeyAcquisitionProfileCount: keyProfiles.Count,
                 MatchingKeyAcquisitionProfileCount: CountMatchingKeyProfiles(keyProfiles),
-                HasDatabaseEncryptionProfile: keyProfiles.Any(static profile => !string.IsNullOrWhiteSpace(profile.Descriptor.DatabaseEncryptionProfileId)),
+                HasDatabaseEncryptionProfile: keyProfiles.Any(static profile => !string.IsNullOrWhiteSpace(profile.DatabaseEncryptionProfileId)),
                 HasMaterializationBackend: materializationBackends.Any(static backend => !string.Equals(backend.Version, "profile-unavailable", StringComparison.OrdinalIgnoreCase))
-                    || File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.dll")),
+                    || File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.exe")),
                 AllowsKeyScanning: false,
                 AllowsDatabaseDecryption: false,
                 AllowsArbitraryProcessMemoryRead: false,
@@ -61,7 +61,7 @@ static Command CreateDoctorCommand()
     return command;
 }
 
-static int CountMatchingKeyProfiles(IReadOnlyList<WeChatVoice.KeyAcquisition.Ports.IWeixinKeyExtractionProfile> profiles)
+static int CountMatchingKeyProfiles(IReadOnlyList<KeyProfileMetadata> profiles)
 {
     if (!OperatingSystem.IsWindows())
     {
@@ -90,7 +90,7 @@ static int CountMatchingKeyProfiles(IReadOnlyList<WeChatVoice.KeyAcquisition.Por
 
         foreach (var profile in profiles)
         {
-            var descriptor = profile.Descriptor;
+            var descriptor = profile;
             if (string.Equals(evidence.OwnerSid, currentSid, StringComparison.Ordinal)
                 && evidence.HasTrustedSignature
                 && evidence.SignerSubject.Contains("Tencent", StringComparison.OrdinalIgnoreCase)

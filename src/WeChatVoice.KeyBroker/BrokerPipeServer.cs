@@ -7,6 +7,7 @@ internal static class BrokerPipeServer
 {
     internal const string PipePrefix = "WeChatVoice.KeyBroker.";
     internal static readonly TimeSpan ConnectionTimeout = TimeSpan.FromSeconds(30);
+    internal static readonly TimeSpan OperationTimeout = TimeSpan.FromMinutes(20);
 
     internal static async Task<int> RunAsync(
         string pipeToken,
@@ -25,8 +26,6 @@ internal static class BrokerPipeServer
         ValidateOutputPath(outputRoot, nameof(outputRoot));
         ValidateOutputPath(workspaceOutput, nameof(workspaceOutput));
 
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(ConnectionTimeout);
         await using var pipe = new NamedPipeServerStream(
             PipePrefix + pipeToken.ToLowerInvariant(),
             PipeDirection.InOut,
@@ -35,10 +34,26 @@ internal static class BrokerPipeServer
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly,
             BrokerProtocol.MaximumRequestLength,
             BrokerProtocol.MaximumRequestLength);
-        await pipe.WaitForConnectionAsync(timeout.Token).ConfigureAwait(false);
+        using (var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            connectionTimeout.CancelAfter(ConnectionTimeout);
+            await pipe.WaitForConnectionAsync(connectionTimeout.Token).ConfigureAwait(false);
+        }
+
+        // The UAC/pipe connection budget is deliberately not reused for the
+        // expensive memory scan and materialization operation.
+        using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        operationTimeout.CancelAfter(OperationTimeout);
         using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false, 4096, leaveOpen: true);
         await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
-        return await BrokerHost.RunAsync(reader, writer, snapshotManifestPath, outputRoot, workspaceOutput, timeout.Token).ConfigureAwait(false);
+        return await BrokerHost.RunAsync(
+            reader,
+            writer,
+            snapshotManifestPath,
+            outputRoot,
+            workspaceOutput,
+            operationTimeout.Token,
+            stage => BrokerProtocol.Write(writer, stage)).ConfigureAwait(false);
     }
 
     private static void ValidateOutputPath(string path, string parameterName)

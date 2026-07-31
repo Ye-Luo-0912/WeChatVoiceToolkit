@@ -5,13 +5,15 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Core.Protocol;
 
 namespace WeChatVoice.Cli.Services;
 
 internal sealed class KeyBrokerClient
 {
     private const string PipePrefix = "WeChatVoice.KeyBroker.";
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan ConnectionTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan OperationTimeout = TimeSpan.FromMinutes(20);
 
     internal async Task<KeyBrokerResult> AcquireAndMaterializeAsync(
         VerifiedRawSnapshot snapshot,
@@ -45,8 +47,6 @@ internal sealed class KeyBrokerClient
         startInfo.ArgumentList.Add("--workspace-output");
         startInfo.ArgumentList.Add(Path.GetFullPath(workspaceOutput));
 
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(Timeout);
         Process process;
         try
         {
@@ -58,35 +58,71 @@ internal sealed class KeyBrokerClient
         }
 
         using (process)
-        await using (var pipe = new NamedPipeClientStream(
-            ".", PipePrefix + token, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly))
         {
-            await pipe.ConnectAsync(timeout.Token).ConfigureAwait(false);
-            await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
-            using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, leaveOpen: true);
-            await writer.WriteLineAsync(JsonSerializer.Serialize(new
+            try
             {
-                protocolVersion = 1,
-                requestId,
-                snapshotId = snapshot.SnapshotId,
-                operation = "acquire-and-materialize",
-            })).ConfigureAwait(false);
-            var responseLine = await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false)
-                ?? throw new InvalidDataException("The Key Broker closed without a response.");
-            if (responseLine.Length > 16 * 1024)
-            {
-                throw new InvalidDataException("The Key Broker response exceeded its fixed limit.");
-            }
+                await using var pipe = new NamedPipeClientStream(
+                    ".", PipePrefix + token, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                using var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                connectionTimeout.CancelAfter(ConnectionTimeout);
+                await pipe.ConnectAsync(connectionTimeout.Token).ConfigureAwait(false);
+                using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                operationTimeout.CancelAfter(OperationTimeout);
+                await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
+                using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, leaveOpen: true);
+                var requestJson = JsonSerializer.Serialize(new
+                {
+                    protocolVersion = 1,
+                    requestId,
+                    snapshotId = snapshot.SnapshotId,
+                    operation = "acquire-and-materialize",
+                }) + Environment.NewLine;
+                await writer.WriteAsync(requestJson.AsMemory(), operationTimeout.Token).ConfigureAwait(false);
 
-            var response = JsonSerializer.Deserialize<KeyBrokerResult>(responseLine, new JsonSerializerOptions(JsonSerializerDefaults.Web))
-                ?? throw new InvalidDataException("The Key Broker response was empty.");
-            if (!string.Equals(response.RequestId, requestId, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("The Key Broker response RequestId did not match.");
-            }
+                KeyBrokerResult? response = null;
+                while (response is null)
+                {
+                    var responseLine = await BoundedLineReader.ReadAsync(reader, 16 * 1024, operationTimeout.Token).ConfigureAwait(false)
+                        ?? throw new InvalidDataException("The Key Broker closed without a response.");
+                    using var document = JsonDocument.Parse(responseLine);
+                    if (document.RootElement.TryGetProperty("stage", out _))
+                    {
+                        // Stage events contain only progress counters and are not
+                        // part of the final operation result.
+                        continue;
+                    }
 
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            return response;
+                    response = JsonSerializer.Deserialize<KeyBrokerResult>(responseLine, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                        ?? throw new InvalidDataException("The Key Broker response was empty.");
+                }
+
+                if (!string.Equals(response.RequestId, requestId, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The Key Broker response RequestId did not match.");
+                }
+
+                await process.WaitForExitAsync(operationTimeout.Token).ConfigureAwait(false);
+                return response;
+            }
+            catch
+            {
+                TryKill(process);
+                throw;
+            }
+        }
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 }

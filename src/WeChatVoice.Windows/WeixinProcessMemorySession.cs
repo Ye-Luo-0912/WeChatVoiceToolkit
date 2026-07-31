@@ -8,7 +8,7 @@ namespace WeChatVoice.Windows;
 
 internal delegate bool ProcessMemoryChunkHandler(ReadOnlySpan<byte> chunk, bool startsRegion);
 
-internal readonly record struct ProcessMemoryScanResult(
+public readonly record struct ProcessMemoryScanResult(
     int RegionCount,
     long ScannedBytes,
     bool ReachedLimit);

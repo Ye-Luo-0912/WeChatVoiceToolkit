@@ -1,5 +1,6 @@
 using WeChatVoice.KeyAcquisition.Ports;
 using WeChatVoice.KeyAcquisition.Validation;
+using WeChatVoice.Windows;
 
 namespace WeChatVoice.KeyBroker;
 
@@ -10,10 +11,11 @@ namespace WeChatVoice.KeyBroker;
 /// </summary>
 public static class GuardedKeyExtractionProfiles
 {
-    public static IReadOnlyList<IWeixinKeyExtractionProfile> Create() =>
+    internal static IReadOnlyList<IWeixinKeyExtractionProfile> Create(Action<ProcessMemoryScanResult>? scanProgress = null) =>
     [
         new WeixinWindows41155Profile(
             new WeixinWindows4SqlCipherKeyValidator(),
-            new WindowsWeixinProcessMemorySourceFactory()),
+            new WindowsWeixinProcessMemorySourceFactory(),
+            scanProgress),
     ];
 }

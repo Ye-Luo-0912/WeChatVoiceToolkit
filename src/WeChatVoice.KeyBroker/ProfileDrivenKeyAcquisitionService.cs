@@ -15,11 +15,13 @@ namespace WeChatVoice.KeyBroker;
 internal sealed class ProfileDrivenKeyAcquisitionService(
     WeixinProcessLocator processLocator,
     IWeixinProcessIdentityReader identityReader,
-    IEnumerable<IWeixinKeyExtractionProfile> profiles) : IKeyAcquisitionService
+    IEnumerable<IWeixinKeyExtractionProfile> profiles,
+    Action<BrokerStageEvent>? stageReporter = null) : IKeyAcquisitionService
 {
     private readonly WeixinProcessLocator processLocator = processLocator ?? throw new ArgumentNullException(nameof(processLocator));
     private readonly IWeixinProcessIdentityReader identityReader = identityReader ?? throw new ArgumentNullException(nameof(identityReader));
     private readonly IReadOnlyList<IWeixinKeyExtractionProfile> profiles = (profiles ?? throw new ArgumentNullException(nameof(profiles))).ToArray();
+    private readonly Action<BrokerStageEvent>? reportStage = stageReporter;
 
     public async Task<VerifiedKeyAcquisition> AcquireAsync(
         VerifiedRawSnapshot snapshot,
@@ -91,10 +93,15 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
             match.Evidence.SessionId,
             match.Evidence.Architecture);
         var verifiedProcess = new ProcessIdentityVerifier(identityReader).Verify(match.Process.ProcessId, policy);
+        reportStage?.Invoke(new BrokerStageEvent("process-verified"));
         var validated = await match.Profile.AcquireAsync(verifiedProcess, snapshot, cancellationToken).ConfigureAwait(false);
         try
         {
             var targets = await DatabaseGroupTarget.LoadAsync(snapshot, cancellationToken).ConfigureAwait(false);
+            reportStage?.Invoke(new BrokerStageEvent(
+                "keys-validated",
+                CompletedGroups: validated.Count,
+                TotalGroups: targets.Count));
             var targetByFingerprint = targets.ToDictionary(static target => target.DatabaseGroupFingerprint, StringComparer.Ordinal);
             var bindings = new List<DatabaseKeyBinding>(validated.Count);
             foreach (var key in validated)

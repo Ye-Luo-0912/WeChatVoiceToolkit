@@ -16,15 +16,25 @@
     <ProjectReference Include="..\WeChatVoice.Core\WeChatVoice.Core.csproj" />
     <ProjectReference Include="..\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />
     <ProjectReference Include="..\WeChatVoice.KeyAcquisition\WeChatVoice.KeyAcquisition.csproj" />
+    <ProjectReference Include="..\WeChatVoice.KeyProfileMetadata\WeChatVoice.KeyProfileMetadata.csproj" />
     <ProjectReference Include="..\WeChatVoice.Windows\WeChatVoice.Windows.csproj" />
-    <ProjectReference Include="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" />
   </ItemGroup>
+
+  <Target Name="BuildKeyBroker" BeforeTargets="CopyKeyBroker">
+    <MSBuild Projects="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" Targets="Build" Properties="Configuration=$(Configuration)" />
+  </Target>
 
   <Target Name="CopyKeyBroker" AfterTargets="Build">
     <ItemGroup>
       <KeyBrokerFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\WeChatVoice.KeyBroker*" />
+      <SqlCipherWorkerFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\WeChatVoice.SqlCipherWorker*" />
+      <SqlCipherProviderFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\SQLitePCLRaw.provider.e_sqlcipher.dll" />
+      <SqlCipherNativeFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\runtimes\win-x64\native\e_sqlcipher.dll" />
     </ItemGroup>
     <Copy SourceFiles="@(KeyBrokerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(SqlCipherWorkerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(SqlCipherProviderFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(SqlCipherNativeFiles)" DestinationFolder="$(OutDir)runtimes\win-x64\native" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

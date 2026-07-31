@@ -17,12 +17,24 @@ namespace WeChatVoice.KeyBroker;
 /// group. The key crosses only the private child-process stdin pipe and is
 /// cleared from the envelope as soon as it has been written.
 /// </summary>
-internal sealed class SqlCipherEphemeralDatabaseMaterializer(string? workerPath = null) : IEphemeralDatabaseMaterializer
+internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabaseMaterializer
 {
     private const int WorkerKeySize = 32;
     private const int ProtocolHeaderSize = 5;
     private const int OutputLimit = 64 * 1024;
-    private readonly string workerPath = Path.GetFullPath(workerPath ?? Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.dll"));
+    private readonly string workerPath;
+    private readonly bool allowDevelopmentWorker;
+    private readonly Action<int, int>? progress;
+
+    internal SqlCipherEphemeralDatabaseMaterializer(
+        string? workerPath = null,
+        bool allowDevelopmentWorker = false,
+        Action<int, int>? progress = null)
+    {
+        this.workerPath = Path.GetFullPath(workerPath ?? Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.exe"));
+        this.allowDevelopmentWorker = allowDevelopmentWorker || (workerPath is not null && Path.GetExtension(workerPath).Equals(".dll", StringComparison.OrdinalIgnoreCase));
+        this.progress = progress;
+    }
 
     public string BackendId => "sqlcipher-e_sqlcipher-worker";
 
@@ -47,12 +59,13 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer(string? workerPath 
             throw new FileNotFoundException("The bundled SQLCipher worker was not found.", workerPath);
         }
 
+        var backendSha256 = await VerifyWorkerBundleAsync(cancellationToken).ConfigureAwait(false);
+
         if (Directory.Exists(options.OutputDirectory) || File.Exists(options.OutputDirectory))
         {
             throw new IOException("The materialization output target must not already exist.");
         }
 
-        var backendSha256 = await FileHashing.ComputeSha256Async(workerPath, cancellationToken).ConfigureAwait(false);
         var sourceRoot = Path.GetFullPath(snapshot.Snapshot.SnapshotDirectory);
         var parent = Path.GetDirectoryName(options.OutputDirectory)
             ?? throw new ArgumentException("The materialization output directory must have a parent.", nameof(options));
@@ -66,6 +79,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer(string? workerPath 
                 .Where(static file => file.RelativePath.EndsWith(".db", StringComparison.OrdinalIgnoreCase))
                 .ToDictionary(static file => NormalizeRelative(file.RelativePath), StringComparer.OrdinalIgnoreCase);
             var materialized = new List<MaterializedDatabase>(acquisition.Bindings.Count);
+            var completed = 0;
             foreach (var binding in acquisition.Bindings)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -102,6 +116,8 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer(string? workerPath 
                     hash,
                     info.Length,
                     schema.SchemaFingerprint ?? string.Empty));
+                completed++;
+                progress?.Invoke(completed, acquisition.Bindings.Count);
             }
 
             var files = await EnumerateFilesAsync(staging, cancellationToken).ConfigureAwait(false);
@@ -170,14 +186,17 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer(string? workerPath 
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = "dotnet",
+            FileName = allowDevelopmentWorker ? "dotnet" : workerPath,
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        startInfo.ArgumentList.Add(workerPath);
+        if (allowDevelopmentWorker)
+        {
+            startInfo.ArgumentList.Add(workerPath);
+        }
         startInfo.ArgumentList.Add("--input");
         startInfo.ArgumentList.Add(inputPath);
         startInfo.ArgumentList.Add("--output");
@@ -209,6 +228,77 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer(string? workerPath 
         finally
         {
             CryptographicOperations.ZeroMemory(envelope);
+        }
+    }
+
+    private async Task<string> VerifyWorkerBundleAsync(CancellationToken cancellationToken)
+    {
+        var workerHash = await FileHashing.ComputeSha256Async(workerPath, cancellationToken).ConfigureAwait(false);
+        if (allowDevelopmentWorker)
+        {
+            return workerHash;
+        }
+
+        if (!workerPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(Path.GetDirectoryName(workerPath), Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The production SQLCipher worker must be an adjacent absolute EXE.");
+        }
+
+        if ((File.GetAttributes(workerPath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidDataException("The production SQLCipher worker cannot be a reparse point.");
+        }
+
+        var manifestPath = Path.Combine(Path.GetDirectoryName(workerPath)!, "WeChatVoice.SqlCipherWorker.bundle.json");
+        if (!File.Exists(manifestPath))
+        {
+            throw new FileNotFoundException("The SQLCipher worker bundle manifest was not installed.", manifestPath);
+        }
+
+        if ((File.GetAttributes(manifestPath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidDataException("The SQLCipher worker bundle manifest cannot be a reparse point.");
+        }
+
+        await using var stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var manifest = await JsonSerializer.DeserializeAsync<WorkerBundleManifest>(stream, cancellationToken: cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The SQLCipher worker bundle manifest was empty.");
+        if (!string.Equals(manifest.WorkerExeSha256, workerHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The SQLCipher worker EXE hash did not match its bundle manifest.");
+        }
+
+        await VerifyBundleFileAsync(manifest.DepsFile, manifest.DepsSha256, cancellationToken).ConfigureAwait(false);
+        await VerifyBundleFileAsync(manifest.RuntimeConfigFile, manifest.RuntimeConfigSha256, cancellationToken).ConfigureAwait(false);
+        await VerifyBundleFileAsync(manifest.NativeSqlCipherFile, manifest.NativeSqlCipherSha256, cancellationToken).ConfigureAwait(false);
+        await VerifyBundleFileAsync(manifest.ProviderFile, manifest.ProviderSha256, cancellationToken).ConfigureAwait(false);
+        return workerHash;
+    }
+
+    private static async Task VerifyBundleFileAsync(string? relativePath, string? expectedHash, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) && string.IsNullOrWhiteSpace(expectedHash))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(relativePath) || string.IsNullOrWhiteSpace(expectedHash) || Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidDataException("The SQLCipher worker bundle contains an invalid file entry.");
+        }
+
+        var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, relativePath));
+        var prefix = Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+        {
+            throw new InvalidDataException("The SQLCipher worker bundle references a missing file.");
+        }
+
+        var actual = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(actual, expectedHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("A SQLCipher worker bundle file hash did not match.");
         }
     }
 
@@ -390,3 +480,14 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer(string? workerPath 
         return candidate;
     }
 }
+
+internal sealed record WorkerBundleManifest(
+    string WorkerExeSha256,
+    string? DepsFile,
+    string? DepsSha256,
+    string? RuntimeConfigFile,
+    string? RuntimeConfigSha256,
+    string? NativeSqlCipherFile,
+    string? NativeSqlCipherSha256,
+    string? ProviderFile,
+    string? ProviderSha256);

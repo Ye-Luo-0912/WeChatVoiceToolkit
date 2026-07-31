@@ -12,6 +12,7 @@ namespace WeChatVoice.KeyBroker;
 internal static class BrokerProtocol
 {
     internal const int MaximumRequestLength = 16 * 1024;
+    internal const int MaximumResponseLength = 16 * 1024;
     private const int SupportedProtocolVersion = 1;
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
@@ -69,6 +70,12 @@ internal static class BrokerProtocol
         output.Flush();
     }
 
+    internal static void Write(TextWriter output, BrokerStageEvent stage)
+    {
+        output.WriteLine(JsonSerializer.Serialize(stage, SerializerOptions));
+        output.Flush();
+    }
+
     private static string Required(IReadOnlyDictionary<string, string?> values, string name)
         => !values.TryGetValue(name, out var value) || string.IsNullOrWhiteSpace(value)
             ? throw new BrokerProtocolException("malformed_request", $"The broker field '{name}' is required.", values.GetValueOrDefault("requestId"))
@@ -85,6 +92,14 @@ internal sealed record BrokerResponse(
     BrokerError? Error);
 
 internal sealed record BrokerError(string Code, string Message);
+
+internal sealed record BrokerStageEvent(
+    string Stage,
+    long? ScannedBytes = null,
+    int? CompletedGroups = null,
+    int? TotalGroups = null,
+    int? CompletedDatabases = null,
+    int? TotalDatabases = null);
 
 internal sealed class BrokerProtocolException(string code, string message, string? requestId = null) : Exception(message)
 {

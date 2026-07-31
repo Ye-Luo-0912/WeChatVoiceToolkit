@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Core.Protocol;
 using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Sqlite;
 using WeChatVoice.KeyAcquisition;
@@ -25,7 +26,7 @@ internal static class BrokerHost
         TextWriter output,
         string snapshotManifestPath,
         CancellationToken cancellationToken)
-        => await RunAsync(input, output, snapshotManifestPath, null, null, cancellationToken).ConfigureAwait(false);
+        => await RunAsync(input, output, snapshotManifestPath, null, null, cancellationToken, null).ConfigureAwait(false);
 
     internal static async Task<int> RunAsync(
         TextReader input,
@@ -33,13 +34,24 @@ internal static class BrokerHost
         string snapshotManifestPath,
         string? outputRoot,
         string? workspaceOutput,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<BrokerStageEvent>? reportStage = null)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
 
-        var line = input.ReadLine();
-        if (line is null || line.Length > BrokerProtocol.MaximumRequestLength)
+        string? line;
+        try
+        {
+            line = await BoundedLineReader.ReadAsync(input, BrokerProtocol.MaximumRequestLength, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidDataException)
+        {
+            BrokerProtocol.Write(output, Failed(null, "request_too_large", "The one-shot broker request is missing or too large."));
+            return 2;
+        }
+
+        if (line is null)
         {
             BrokerProtocol.Write(output, Failed(null, "request_too_large", "The one-shot broker request is missing or too large."));
             return 2;
@@ -63,17 +75,23 @@ internal static class BrokerHost
                 return 3;
             }
 
-            var profile = GuardedKeyExtractionProfiles.Create().Single();
-            var materializer = new SqlCipherEphemeralDatabaseMaterializer();
+            var profile = GuardedKeyExtractionProfiles.Create(
+                scan => reportStage?.Invoke(new BrokerStageEvent("memory-scan", ScannedBytes: scan.ScannedBytes))).Single();
+            var materializer = new SqlCipherEphemeralDatabaseMaterializer(
+                progress: (completed, total) => reportStage?.Invoke(new BrokerStageEvent(
+                    "materializing",
+                    CompletedDatabases: completed,
+                    TotalDatabases: total)));
             var service = new EphemeralAcquireAndMaterializeService(
                 new ProfileDrivenKeyAcquisitionService(
                     new WeixinProcessLocator(),
                     new WindowsWeixinProcessIdentityReader(),
-                    [profile]),
+                    [profile],
+                    reportStage),
                 materializer);
             var materialization = await service.ExecuteAsync(
                 verifiedSnapshot,
-                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(30)),
+                new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60)),
                 new MaterializationOptions(Path.GetFullPath(outputRoot)),
                 cancellationToken).ConfigureAwait(false);
             var workspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);

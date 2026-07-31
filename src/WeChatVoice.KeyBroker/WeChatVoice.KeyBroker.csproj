@@ -16,4 +16,8 @@
     <ProjectReference Include="..\WeChatVoice.SqlCipherWorker\WeChatVoice.SqlCipherWorker.csproj" />
   </ItemGroup>
 
+  <Target Name="GenerateSqlCipherWorkerBundleManifest" AfterTargets="Build">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\build\GenerateWorkerBundleManifest.ps1&quot; -Directory &quot;$(TargetDir)&quot;" />
+  </Target>
+
 </Project>

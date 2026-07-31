@@ -15,13 +15,15 @@ namespace WeChatVoice.KeyBroker;
 /// </summary>
 internal sealed class WeixinWindows41155Profile(
     IDatabaseKeyValidator validator,
-    IWeixinProcessMemorySourceFactory memorySourceFactory) : IWeixinKeyExtractionProfile
+    IWeixinProcessMemorySourceFactory memorySourceFactory,
+    Action<ProcessMemoryScanResult>? progress = null) : IWeixinKeyExtractionProfile
 {
     internal const string SupportedVersion = "4.1.11.55";
     internal const string SupportedImageSha256 = "ac599744a7ce7b65640ebe18c939c0d4e4a06cd039d89cddee7f1e9afc56875d";
 
     private readonly IDatabaseKeyValidator validator = validator ?? throw new ArgumentNullException(nameof(validator));
     private readonly IWeixinProcessMemorySourceFactory memorySourceFactory = memorySourceFactory ?? throw new ArgumentNullException(nameof(memorySourceFactory));
+    private readonly Action<ProcessMemoryScanResult>? scanProgress = progress;
 
     public string Id => "weixin-windows-4.1.11.55-sqlcipher4-page-hmac-v1";
 
@@ -76,7 +78,8 @@ internal sealed class WeixinWindows41155Profile(
             return validated.Count != targets.Count;
         });
 
-        source.Scan(scanner.ProcessChunk, cancellationToken);
+        var scan = source.Scan(scanner.ProcessChunk, cancellationToken);
+        scanProgress?.Invoke(scan);
         if (validated.Count != targets.Count)
         {
             foreach (var item in validated.Values)
@@ -98,7 +101,7 @@ internal interface IWeixinProcessMemorySourceFactory
 
 internal interface IWeixinProcessMemorySource : IDisposable
 {
-    void Scan(ProcessMemoryChunkHandler handler, CancellationToken cancellationToken);
+    ProcessMemoryScanResult Scan(ProcessMemoryChunkHandler handler, CancellationToken cancellationToken);
 }
 
 internal sealed class WindowsWeixinProcessMemorySourceFactory : IWeixinProcessMemorySourceFactory
@@ -121,8 +124,8 @@ internal sealed class WindowsWeixinProcessMemorySource(WeixinProcessMemorySessio
 {
     private readonly WeixinProcessMemorySession session = session ?? throw new ArgumentNullException(nameof(session));
 
-    public void Scan(ProcessMemoryChunkHandler handler, CancellationToken cancellationToken) =>
-        _ = session.ScanReadableMemory(handler, cancellationToken);
+    public ProcessMemoryScanResult Scan(ProcessMemoryChunkHandler handler, CancellationToken cancellationToken) =>
+        session.ScanReadableMemory(handler, cancellationToken);
 
     public void Dispose() => session.Dispose();
 }
