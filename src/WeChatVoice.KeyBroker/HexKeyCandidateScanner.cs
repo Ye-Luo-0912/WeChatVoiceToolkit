@@ -5,14 +5,17 @@ namespace WeChatVoice.KeyBroker;
 internal delegate bool HexKeyCandidateHandler(ReadOnlySpan<byte> key, ReadOnlySpan<byte> salt);
 
 /// <summary>
-/// Recognizes only WCDB-style ASCII x'&lt;64 hex&gt;' and
-/// x'&lt;64 hex key&gt;&lt;32 hex salt&gt;' values. It never returns addresses or
-/// retains decoded key bytes after the synchronous callback.
+/// Recognizes WCDB-style ASCII x'&lt;64 hex&gt;' and x'&lt;64 hex key&gt;&lt;32 hex
+/// salt&gt;' values, plus longer even-length WCDB key-spec strings where the
+/// first 64 hex characters are the key and the final 32 are the page salt.
+/// It never returns addresses or retains decoded key bytes after the
+/// synchronous callback.
 /// </summary>
 internal sealed class HexKeyCandidateScanner : IDisposable
 {
     internal const int MaximumCandidates = 4096;
-    private const int MaximumPatternBytes = 2 + 96 + 1;
+    private const int MaximumHexCharacters = 192;
+    private const int MaximumPatternBytes = 2 + MaximumHexCharacters + 1;
     private readonly byte[] tail = new byte[MaximumPatternBytes - 1];
     private readonly HexKeyCandidateHandler handler;
     private readonly int maximumCandidates;
@@ -89,12 +92,15 @@ internal sealed class HexKeyCandidateScanner : IDisposable
 
                 var hex = data[(start + 2)..];
                 var hexLength = 0;
-                while (hexLength < 96 && hexLength < hex.Length && IsHex(hex[hexLength]))
+                while (hexLength < MaximumHexCharacters && hexLength < hex.Length && IsHex(hex[hexLength]))
                 {
                     hexLength++;
                 }
 
-                if (hexLength is not (64 or 96) || hexLength >= hex.Length || hex[hexLength] != (byte)'\'')
+                var hasRecognizedLength = hexLength == 64
+                    || hexLength == 96
+                    || hexLength > 96 && (hexLength & 1) == 0;
+                if (!hasRecognizedLength || hexLength >= hex.Length || hex[hexLength] != (byte)'\'')
                 {
                     continue;
                 }
@@ -102,18 +108,18 @@ internal sealed class HexKeyCandidateScanner : IDisposable
                 CryptographicOperations.ZeroMemory(key);
                 CryptographicOperations.ZeroMemory(salt);
                 DecodeHex(hex[..64], key);
-                if (hexLength == 96)
+                if (hexLength >= 96)
                 {
-                    DecodeHex(hex.Slice(64, 32), salt);
+                    DecodeHex(hex.Slice(hexLength - 32, 32), salt);
                 }
 
                 key.CopyTo(candidateMaterial);
-                if (hexLength == 96)
+                if (hexLength >= 96)
                 {
                     salt.CopyTo(candidateMaterial[32..]);
                 }
 
-                SHA256.HashData(candidateMaterial[..(hexLength == 96 ? 48 : 32)], candidateFingerprint);
+                SHA256.HashData(candidateMaterial[..(hexLength >= 96 ? 48 : 32)], candidateFingerprint);
                 var fingerprint = Convert.ToHexString(candidateFingerprint);
                 CryptographicOperations.ZeroMemory(candidateMaterial);
                 CryptographicOperations.ZeroMemory(candidateFingerprint);
@@ -128,7 +134,7 @@ internal sealed class HexKeyCandidateScanner : IDisposable
                     return false;
                 }
 
-                if (!handler(key, hexLength == 96 ? salt : ReadOnlySpan<byte>.Empty))
+                if (!handler(key, hexLength >= 96 ? salt : ReadOnlySpan<byte>.Empty))
                 {
                     return false;
                 }

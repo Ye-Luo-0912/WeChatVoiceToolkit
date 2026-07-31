@@ -61,8 +61,9 @@ binary hash mismatch, timeout, and cancellation. The first controlled live
 attempt on 2026-08-01 verified the unique current-session Weixin root and its
 four same-image descendants, then verified the stable 21-database Snapshot.
 The Broker pipe, identity check, private staging, and bounded process-tree scan
-all completed, but the experimental ASCII candidate scanner
-found zero candidates and therefore stopped before any Worker output. This is
+all completed, but the experimental bounded ASCII key-spec scanner (including
+longer even-length forms) found zero candidates and therefore stopped before
+any Worker output. This is
 evidence that the current Profile assumptions do not match the live format; do
 not weaken validation or guess a new key format. The next blocker is an
 evidence-backed Profile update, followed by the first schema adapter and

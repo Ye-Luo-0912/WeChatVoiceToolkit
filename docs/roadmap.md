@@ -44,8 +44,9 @@ resolve their relationship.
 The first controlled live attempt verified the unique current-session Weixin
 root and its same-image descendants, staged the stable 21-database Snapshot,
 scanned the bounded process-tree budget, and found zero candidates in the
-current ASCII key form. Materialization stopped before Worker output. The next step is
-evidence-backed analysis of the exact page/key format; do not weaken validation
+current WCDB ASCII key-spec forms (including bounded longer even-length forms).
+Materialization stopped before Worker output. The next step is evidence-backed
+analysis of the exact page/key format; do not weaken validation
 or guess a new format. The Worker is currently proven only with synthetic
 SQLCipher fixtures and must not be treated as a Weixin decryptor until page
 format, KDF/HMAC, and WAL behavior match. After that evidence, implement one

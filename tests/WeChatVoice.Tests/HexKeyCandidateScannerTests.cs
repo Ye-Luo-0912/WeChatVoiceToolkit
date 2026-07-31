@@ -48,6 +48,28 @@ public sealed class HexKeyCandidateScannerTests
     }
 
     [Fact]
+    public void Scanner_accepts_long_even_key_spec_and_uses_final_salt()
+    {
+        var expectedKey = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        var expectedSalt = Enumerable.Range(160, 16).Select(static value => (byte)value).ToArray();
+        var middle = new string('b', 32);
+        var pattern = Encoding.ASCII.GetBytes($"x'{Convert.ToHexString(expectedKey)}{middle}{Convert.ToHexString(expectedSalt)}'");
+        byte[]? observedKey = null;
+        byte[]? observedSalt = null;
+        using var scanner = new HexKeyCandidateScanner((key, salt) =>
+        {
+            observedKey = key.ToArray();
+            observedSalt = salt.ToArray();
+            return true;
+        });
+
+        Assert.True(scanner.ProcessChunk(pattern, startsRegion: true));
+        Assert.Equal(1, scanner.CandidateCount);
+        Assert.Equal(expectedKey, observedKey);
+        Assert.Equal(expectedSalt, observedSalt);
+    }
+
+    [Fact]
     public void Scanner_stops_after_the_fixed_candidate_limit()
     {
         var patterns = Enumerable.Range(0, HexKeyCandidateScanner.MaximumCandidates + 1)
