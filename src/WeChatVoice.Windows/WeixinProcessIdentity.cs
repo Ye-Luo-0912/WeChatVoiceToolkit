@@ -71,6 +71,65 @@ public sealed class WeixinProcessLocator
         return rootCandidates.Length == 1 ? rootCandidates : Array.Empty<WeChatProcessInfo>();
     }
 
+    /// <summary>
+    /// Returns the single verified-root candidate followed by its same-session
+    /// Weixin descendants. This is still a fixed application scope: callers
+    /// cannot provide a PID, process name, or arbitrary process tree.
+    /// </summary>
+    public IReadOnlyList<WeChatProcessInfo> LocateTrustedProcessTree()
+    {
+        var roots = Locate();
+        if (roots.Count != 1)
+        {
+            return Array.Empty<WeChatProcessInfo>();
+        }
+
+        var root = roots[0];
+        var currentSession = Process.GetCurrentProcess().SessionId;
+        var candidates = WeChatProcessDiscovery.ListRunning()
+            .Where(candidate => string.Equals(candidate.ProcessName, "Weixin", StringComparison.OrdinalIgnoreCase))
+            .Where(candidate => candidate.ProcessId == root.ProcessId || HasSession(candidate.ProcessId, currentSession))
+            .ToArray();
+        var parents = candidates.ToDictionary(static candidate => candidate.ProcessId, static candidate => TryGetParentProcessId(candidate.ProcessId));
+        var trusted = new HashSet<int> { root.ProcessId };
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var candidate in candidates)
+            {
+                if (trusted.Contains(candidate.ProcessId)
+                    || parents[candidate.ProcessId] is not int parentId
+                    || !trusted.Contains(parentId))
+                {
+                    continue;
+                }
+
+                trusted.Add(candidate.ProcessId);
+                changed = true;
+            }
+        }
+
+        return candidates
+            .Where(candidate => trusted.Contains(candidate.ProcessId))
+            .OrderBy(candidate => candidate.ProcessId == root.ProcessId ? 0 : 1)
+            .ThenBy(candidate => candidate.ProcessId)
+            .ToArray();
+    }
+
+    private static bool HasSession(int processId, int sessionId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.SessionId == sessionId;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return false;
+        }
+    }
+
     private static bool HasTopLevelWindow(WeChatProcessInfo candidate)
     {
         try

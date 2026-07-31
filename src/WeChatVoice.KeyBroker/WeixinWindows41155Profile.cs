@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using WeChatVoice.Core.Models;
 using WeChatVoice.KeyAcquisition.Models;
@@ -16,7 +17,7 @@ namespace WeChatVoice.KeyBroker;
 internal sealed class WeixinWindows41155Profile(
     IDatabaseKeyValidator validator,
     IWeixinProcessMemorySourceFactory memorySourceFactory,
-    Action<ProcessMemoryScanResult>? progress = null) : IWeixinKeyExtractionProfile
+    Action<ProcessMemoryScanResult>? progress = null) : IWeixinProcessTreeKeyExtractionProfile
 {
     internal const string SupportedVersion = "4.1.11.55";
     internal const string SupportedImageSha256 = "ac599744a7ce7b65640ebe18c939c0d4e4a06cd039d89cddee7f1e9afc56875d";
@@ -41,17 +42,28 @@ internal sealed class WeixinWindows41155Profile(
         VerifiedWeixinProcess process,
         VerifiedRawSnapshot snapshot,
         KeyAcquisitionBudget budget,
+        CancellationToken cancellationToken) => await AcquireAsync([process], snapshot, budget, cancellationToken).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<ValidatedDatabaseKey>> AcquireAsync(
+        IReadOnlyList<VerifiedWeixinProcess> processes,
+        VerifiedRawSnapshot snapshot,
+        KeyAcquisitionBudget budget,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(process);
+        ArgumentNullException.ThrowIfNull(processes);
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(budget);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!Descriptor.ProductVersions.Contains(process.ProductVersion)
-            || !Descriptor.ImageSha256.Contains(process.ImageSha256)
-            || !string.Equals(process.Architecture, Descriptor.Architecture, StringComparison.OrdinalIgnoreCase))
+        if (processes.Count == 0)
         {
-            throw new InvalidDataException("The verified process does not match the 4.1.11.55 Profile.");
+            throw new ArgumentException("At least one verified Weixin process is required.", nameof(processes));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (processes.Any(process => !Descriptor.ProductVersions.Contains(process.ProductVersion)
+            || !Descriptor.ImageSha256.Contains(process.ImageSha256)
+            || !string.Equals(process.Architecture, Descriptor.Architecture, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidDataException("A verified process does not match the 4.1.11.55 Profile.");
         }
 
         var targets = await DatabaseGroupTarget.LoadAsync(snapshot, cancellationToken).ConfigureAwait(false);
@@ -61,7 +73,6 @@ internal sealed class WeixinWindows41155Profile(
         }
 
         var validated = new Dictionary<string, ValidatedDatabaseKey>(StringComparer.Ordinal);
-        using var source = memorySourceFactory.Open(process);
         using var scanner = new HexKeyCandidateScanner((candidate, _) =>
         {
             foreach (var target in targets)
@@ -90,8 +101,47 @@ internal sealed class WeixinWindows41155Profile(
             return validated.Count != targets.Count;
         }, budget.MaximumCandidates);
 
-        var scan = source.Scan(scanner.ProcessChunk, budget, cancellationToken);
-        scanProgress?.Invoke(scan with { CandidateCount = scanner.CandidateCount });
+        var started = Stopwatch.StartNew();
+        long scannedBytes = 0;
+        var reachedLimit = false;
+        foreach (var process in processes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var remainingDuration = budget.MaximumDuration - started.Elapsed;
+            var remainingBytes = budget.MaximumScanBytes - scannedBytes;
+            if (remainingDuration <= TimeSpan.Zero || remainingBytes <= 0)
+            {
+                reachedLimit = true;
+                break;
+            }
+
+            try
+            {
+                using var source = memorySourceFactory.Open(process);
+                var scan = source.Scan(
+                    scanner.ProcessChunk,
+                    new KeyAcquisitionBudget(remainingDuration, remainingBytes, budget.MaximumCandidates),
+                    cancellationToken);
+                scannedBytes = checked(scannedBytes + scan.ScannedBytes);
+                reachedLimit |= scan.ReachedLimit;
+                scanProgress?.Invoke(new ProcessMemoryScanResult(
+                    scan.RegionCount,
+                    scannedBytes,
+                    reachedLimit,
+                    scanner.CandidateCount));
+            }
+            catch (UnauthorizedAccessException) when (validated.Count < targets.Count)
+            {
+                // A same-image child can exit between identity verification and
+                // opening its read-only handle. Continue within the fixed tree.
+            }
+
+            if (validated.Count == targets.Count)
+            {
+                break;
+            }
+        }
+
         if (validated.Count != targets.Count)
         {
             foreach (var item in validated.Values)

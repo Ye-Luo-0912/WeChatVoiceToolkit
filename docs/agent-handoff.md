@@ -58,9 +58,10 @@ do not wire it to the encrypted business databases.
 `DatabaseMaterializerTests` use a real fake child process and cover success,
 missing/extra/invalid/duplicate/unknown mappings, sensitive output redaction,
 binary hash mismatch, timeout, and cancellation. The first controlled live
-attempt on 2026-08-01 found one matching signed Weixin process and verified the
-stable 21-database Snapshot. The Broker pipe, identity check, private staging,
-and 768 MiB scan all completed, but the experimental ASCII candidate scanner
+attempt on 2026-08-01 verified the unique current-session Weixin root and its
+four same-image descendants, then verified the stable 21-database Snapshot.
+The Broker pipe, identity check, private staging, and bounded process-tree scan
+all completed, but the experimental ASCII candidate scanner
 found zero candidates and therefore stopped before any Worker output. This is
 evidence that the current Profile assumptions do not match the live format; do
 not weaken validation or guess a new key format. The next blocker is an

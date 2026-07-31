@@ -113,6 +113,42 @@ public sealed class WeixinWindows41155ProfileTests
     }
 
     [Fact]
+    public async Task Profile_scans_verified_same_image_process_tree_under_one_budget()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("snapshot");
+        var page = new byte[4096];
+        var path = temporary.WriteFile(Path.Combine("snapshot", "message_0.db"), page);
+        var file = new SnapshotFileRecord("message_0.db", page.LongLength, Hash(page), File.GetLastWriteTimeUtc(path));
+        var manifest = new SnapshotManifest(root, root, DateTimeOffset.UtcNow, [file]);
+        var verified = new VerifiedRawSnapshot(new RawSnapshot(manifest, root), DateTimeOffset.UtcNow);
+        var key = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        var first = new VerifiedWeixinProcess(42, DateTimeOffset.UnixEpoch, "C:\\Weixin.exe", WeixinWindows41155Profile.SupportedImageSha256, WeixinWindows41155Profile.SupportedVersion, "S-1-5-21-test", 1, "x64");
+        var second = first with { ProcessId = 43 };
+        var profile = new WeixinWindows41155Profile(
+            new FakeValidator(),
+            new MappingMemorySourceFactory(new Dictionary<int, byte[]>
+            {
+                [42] = Encoding.ASCII.GetBytes("no candidate in the root"),
+                [43] = Encoding.ASCII.GetBytes($"x'{Convert.ToHexString(key)}'"),
+            }));
+
+        var result = await profile.AcquireAsync(
+            new[] { first, second },
+            verified,
+            new KeyAcquisitionBudget(TimeSpan.FromSeconds(30), 64 * 1024 * 1024, 256),
+            CancellationToken.None);
+
+        var item = Assert.Single(result);
+        using (item.KeyMaterial)
+        {
+            var observed = new byte[item.KeyMaterial.Length];
+            item.KeyMaterial.CopyTo(observed);
+            Assert.Equal(key, observed);
+        }
+    }
+
+    [Fact]
     public async Task Profile_rejects_partial_group_validation_and_clears_partial_keys()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -199,6 +235,12 @@ public sealed class WeixinWindows41155ProfileTests
     private sealed class FakeMemorySourceFactory(byte[] memory) : IWeixinProcessMemorySourceFactory
     {
         public IWeixinProcessMemorySource Open(VerifiedWeixinProcess process) => new FakeMemorySource(memory);
+    }
+
+    private sealed class MappingMemorySourceFactory(IReadOnlyDictionary<int, byte[]> memoryByProcess) : IWeixinProcessMemorySourceFactory
+    {
+        public IWeixinProcessMemorySource Open(VerifiedWeixinProcess process) =>
+            new FakeMemorySource(memoryByProcess[process.ProcessId]);
     }
 
     private sealed class FakeMemorySource(byte[] memory) : IWeixinProcessMemorySource

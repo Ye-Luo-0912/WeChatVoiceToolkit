@@ -108,9 +108,10 @@ Weixin databases use the same cipher parameters.
 
 ## Next evidence required
 
-The first controlled live attempt on 2026-08-01 matched one signed process and
-scanned 768 MiB with zero candidates in the experimental ASCII form. No Worker
-was invoked and no key material was emitted. The next route-two implementation
+The first controlled live attempt on 2026-08-01 verified the unique
+current-session root and its same-image descendants, then scanned the bounded
+process tree with zero candidates in the experimental ASCII form. No Worker was
+invoked and no key material was emitted. The next route-two implementation
 needs an evidence-backed candidate-location fixture and page-format analysis for
 the exact signed build. After a candidate validates independently against the
 required message, media, and contact groups, the Profile must still pass full

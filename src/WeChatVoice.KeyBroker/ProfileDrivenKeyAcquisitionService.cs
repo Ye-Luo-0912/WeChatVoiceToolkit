@@ -46,7 +46,7 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
         var currentSid = WindowsIdentity.GetCurrent().User?.Value
             ?? throw new UnauthorizedAccessException("The current Windows user SID was unavailable.");
         var matches = new List<(IWeixinKeyExtractionProfile Profile, WeChatProcessInfo Process, WeixinProcessIdentityEvidence Evidence)>();
-        foreach (var process in processLocator.Locate())
+        foreach (var process in processLocator.LocateTrustedProcessTree())
         {
             cancellationToken.ThrowIfCancellationRequested();
             WeixinProcessIdentityEvidence evidence;
@@ -82,25 +82,35 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
             throw new InvalidDataException("No running Weixin process matched the requested exact key-extraction Profile.");
         }
 
-        if (matches.Count != 1)
+        var profileGroups = matches.GroupBy(static match => match.Profile.Id, StringComparer.Ordinal).ToArray();
+        if (profileGroups.Length != 1)
         {
-            throw new InvalidDataException("More than one running Weixin process matched the requested Profile.");
+            throw new InvalidDataException("More than one key-extraction Profile matched the verified Weixin process tree.");
         }
 
-        var match = matches[0];
+        var profileMatches = profileGroups[0].ToArray();
+        var match = profileMatches[0];
         if (match.Profile.Descriptor.Maturity == ProfileMaturity.ExperimentalLive && !options.AllowExperimentalProfile)
         {
             throw new InvalidDataException("The selected key-extraction Profile is experimental; explicit opt-in is required.");
         }
-        var policy = new WeixinProcessIdentityPolicy(
-            match.Evidence.ProductVersion,
-            match.Evidence.ImageSha256,
-            match.Evidence.OwnerSid,
-            match.Evidence.SessionId,
-            match.Evidence.Architecture);
-        var verifiedProcess = new ProcessIdentityVerifier(identityReader).Verify(match.Process.ProcessId, policy);
+        var verifier = new ProcessIdentityVerifier(identityReader);
+        var verifiedProcesses = new List<VerifiedWeixinProcess>(profileMatches.Length);
+        foreach (var processMatch in profileMatches)
+        {
+            var policy = new WeixinProcessIdentityPolicy(
+                processMatch.Evidence.ProductVersion,
+                processMatch.Evidence.ImageSha256,
+                processMatch.Evidence.OwnerSid,
+                processMatch.Evidence.SessionId,
+                processMatch.Evidence.Architecture);
+            verifiedProcesses.Add(verifier.Verify(processMatch.Process.ProcessId, policy));
+        }
+
         reportStage?.Invoke(new BrokerStageEvent("process-verified"));
-        var validated = await match.Profile.AcquireAsync(verifiedProcess, snapshot, budget, cancellationToken).ConfigureAwait(false);
+        var validated = match.Profile is IWeixinProcessTreeKeyExtractionProfile treeProfile
+            ? await treeProfile.AcquireAsync(verifiedProcesses, snapshot, budget, cancellationToken).ConfigureAwait(false)
+            : await match.Profile.AcquireAsync(verifiedProcesses[0], snapshot, budget, cancellationToken).ConfigureAwait(false);
         try
         {
             reportStage?.Invoke(new BrokerStageEvent(

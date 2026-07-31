@@ -21,7 +21,9 @@
    experimental Profile-driven key acquisition service, and a fixed SQLCipher
    Worker that completes synthetic encrypted-fixture materialization into a
    Local Workspace. The Broker enforces launched-PID binding, private Snapshot
-   staging, caller budgets, and explicit experimental-profile opt-in.
+   staging, caller budgets, and explicit experimental-profile opt-in. It
+   identifies the unique current-session Weixin root and may inspect only its
+   same-image descendants under the same exact identity policy.
 6. Stable business/login snapshots for the observed build pass group-level
    verification. A candidate-only first-page HMAC validator has fixed synthetic
    vectors, zeroes temporary key material, and remains outside the Profile
@@ -39,9 +41,10 @@ login `key_info.db` is ordinary SQLite, but its BLOB semantics remain unverified
 Do not guess tables, BLOB formats, or keys. Message and media filename shards
 are also not one-to-one; only an Adapter with verified schema evidence may
 resolve their relationship.
-The first controlled live attempt matched one signed process, staged the stable
-21-database Snapshot, scanned 768 MiB, and found zero candidates in the current
-ASCII key form. Materialization stopped before Worker output. The next step is
+The first controlled live attempt verified the unique current-session Weixin
+root and its same-image descendants, staged the stable 21-database Snapshot,
+scanned the bounded process-tree budget, and found zero candidates in the
+current ASCII key form. Materialization stopped before Worker output. The next step is
 evidence-backed analysis of the exact page/key format; do not weaken validation
 or guess a new format. The Worker is currently proven only with synthetic
 SQLCipher fixtures and must not be treated as a Weixin decryptor until page

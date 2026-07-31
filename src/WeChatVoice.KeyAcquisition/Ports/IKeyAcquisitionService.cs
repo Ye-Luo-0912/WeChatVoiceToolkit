@@ -24,6 +24,21 @@ public interface IWeixinKeyExtractionProfile
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// A profile that can inspect the fixed, identity-verified Weixin process tree
+/// under one shared acquisition budget. Modern Weixin builds split sensitive
+/// state between the UI root and same-image utility children; the broker still
+/// supplies only processes that passed the exact profile identity policy.
+/// </summary>
+public interface IWeixinProcessTreeKeyExtractionProfile : IWeixinKeyExtractionProfile
+{
+    Task<IReadOnlyList<ValidatedDatabaseKey>> AcquireAsync(
+        IReadOnlyList<VerifiedWeixinProcess> processes,
+        VerifiedRawSnapshot snapshot,
+        KeyAcquisitionBudget budget,
+        CancellationToken cancellationToken);
+}
+
 public enum ProfileMaturity
 {
     SyntheticOnly,
