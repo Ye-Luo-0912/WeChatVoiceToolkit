@@ -130,7 +130,7 @@ public sealed class DataSetProbeService
                 groupFingerprint));
         }
 
-        AddPairingIssues(artifacts, issues);
+        AddTopologyIssues(artifacts, issues);
         if (artifacts.Count == 0)
         {
             issues.Add(new DataSetIssue("no-databases", "error", "No .db files were found under the supplied root."));
@@ -166,20 +166,28 @@ public sealed class DataSetProbeService
         return ProbeAsync(snapshot.Snapshot.SnapshotDirectory, options, cancellationToken);
     }
 
-    private static void AddPairingIssues(IReadOnlyList<DatabaseArtifact> artifacts, ICollection<DataSetIssue> issues)
+    private static void AddTopologyIssues(IReadOnlyList<DatabaseArtifact> artifacts, ICollection<DataSetIssue> issues)
     {
-        var messageShards = artifacts.Where(static item => string.Equals(item.LogicalRole, "message", StringComparison.OrdinalIgnoreCase))
-            .Select(static item => item.ShardNumber ?? 0).ToHashSet();
-        var mediaShards = artifacts.Where(static item => string.Equals(item.LogicalRole, "media", StringComparison.OrdinalIgnoreCase))
-            .Select(static item => item.ShardNumber ?? 0).ToHashSet();
-        foreach (var shard in messageShards.Except(mediaShards).Order())
+        var messageArtifacts = artifacts.Where(static item => string.Equals(item.LogicalRole, "message", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var mediaArtifacts = artifacts.Where(static item => string.Equals(item.LogicalRole, "media", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (messageArtifacts.Length == 0)
         {
-            issues.Add(new DataSetIssue("missing-media-shard", "warning", $"message_{shard}.db has no matching media shard.", $"message_{shard}.db"));
+            issues.Add(new DataSetIssue("missing-message-database", "error", "No message database matched the conservative message filename patterns."));
         }
 
-        foreach (var shard in mediaShards.Except(messageShards).Order())
+        if (mediaArtifacts.Length == 0)
         {
-            issues.Add(new DataSetIssue("missing-message-shard", "warning", $"media_{shard}.db has no matching message shard.", $"media_{shard}.db"));
+            issues.Add(new DataSetIssue("missing-media-database", "error", "No media database matched the conservative media filename patterns."));
+        }
+
+        var messageShards = messageArtifacts.Select(static item => item.ShardNumber).Where(static shard => shard.HasValue).ToHashSet();
+        var mediaShards = mediaArtifacts.Select(static item => item.ShardNumber).Where(static shard => shard.HasValue).ToHashSet();
+        if (messageShards.Count > 0 && mediaShards.Count > 0 && !messageShards.SetEquals(mediaShards))
+        {
+            issues.Add(new DataSetIssue(
+                "unverified-shard-topology",
+                "info",
+                "Message and media shard numbers differ. Filename parity is not treated as a missing database; a verified schema adapter must resolve their relationship."));
         }
 
         if (!artifacts.Any(static item => string.Equals(item.LogicalRole, "contact", StringComparison.OrdinalIgnoreCase)))

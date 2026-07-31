@@ -51,10 +51,31 @@ This is process identity evidence only. It is not sufficient to infer memory
 layout, key location, KDF, page cipher, HMAC, WAL rules, or database schema, and
 therefore does not enable a Profile.
 
+Read-only inspection of a live-source copy from that build also established a
+small amount of format evidence without reading or recording field values:
+
+- the message, media, and contact database first pages are not ordinary SQLite
+  headers, while their WAL files use the standard WAL magic and a 4096-byte
+  page size;
+- the observed bundle has multiple message files but only one numbered media
+  file, so filename shard parity is not a valid completeness rule;
+- the separate login `key_info.db` is ordinary SQLite with a single
+  `LoginKeyInfoTable` containing `user_name_md5`, `key_md5`, `key_info_md5`, and
+  `key_info_data` columns;
+- all 52 observed rows had 32-character username/info digest fields, an empty
+  `key_md5` field, and a 180-byte BLOB. No digest or BLOB value was read or
+  logged.
+
+This evidence does not establish the BLOB encoding, prove that it contains
+database key material, or bind it to any database group. Code must not infer
+those semantics. The live-source copy is explicitly potentially inconsistent
+and is not a Profile fixture.
+
 ## Next evidence required
 
-The next route-two implementation needs a verified raw Snapshot for the same
-account/build plus reproducible encryption fixtures. Only then can a precise
+The next route-two implementation needs a stable raw Snapshot made after
+Weixin exits, for the same account/build, plus reproducible encryption fixtures.
+Only then can a precise
 build-range Profile define process identity policy, bounded candidate location,
 candidate validation against the encrypted first page, full materialization,
 and `PRAGMA quick_check` acceptance.

@@ -22,8 +22,12 @@
 
 ## Current blocker and next step
 
-The actual WeChat 4.x files observed on the development machine are encrypted
-or proprietary containers, not ordinary SQLite. Do not guess tables or keys.
+The actual WeChat 4.x business database first pages observed on the development
+machine are encrypted or proprietary rather than ordinary SQLite. The separate
+login `key_info.db` is ordinary SQLite, but its BLOB semantics remain unverified.
+Do not guess tables, BLOB formats, or keys. Message and media filename shards
+are also not one-to-one; only an Adapter with verified schema evidence may
+resolve their relationship.
 The next implementation step requires a verified version-specific key and
 database-encryption profile plus schema evidence for `message_N.db`,
 `media_N.db`, and the contact database. The privileged boundary is the
@@ -32,9 +36,11 @@ supported. Until that profile exists, the broker and formal materialization
 backend fail closed. Then implement one isolated adapter for exact contact
 selection, incoming voice association, and raw SILK output.
 
-The currently observed signed Weixin build is 4.1.11.55, but no verified raw
-Snapshot or encryption fixture is present in the workspace. Process version
-evidence alone must not be promoted into a key-extraction Profile.
+The currently observed signed Weixin build is 4.1.11.55. A local live-source
+copy is marked potentially inconsistent and is evidence only; no stable raw
+Snapshot or encryption fixture is present in the workspace. Process version or
+login-metadata evidence alone must not be promoted into a key-extraction
+Profile.
 
 WAV decoding remains a derived, later phase and must not become a prerequisite
 for the first usable SILK chain.

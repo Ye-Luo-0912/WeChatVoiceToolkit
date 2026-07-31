@@ -77,12 +77,12 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
             throw new DatabaseMaterializationException(null, null, null, $"The raw snapshot is missing required database roles: {string.Join(", ", missingRequiredRoles)}.");
         }
 
-        var incompleteShards = sourceProbe.Issues
-            .Where(issue => issue.Code is "missing-media-shard" or "missing-message-shard" or "incomplete-wal-pair")
+        var incompleteGroups = sourceProbe.Issues
+            .Where(issue => issue.Code is "missing-media-database" or "missing-message-database" or "incomplete-wal-pair")
             .ToArray();
-        if (incompleteShards.Length > 0)
+        if (incompleteGroups.Length > 0)
         {
-            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot contains an incomplete message/media/WAL database group and cannot be materialized for voice export.");
+            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot is missing a required message/media database role or has an incomplete WAL group and cannot be materialized for voice export.");
         }
 
         var backendSha256 = await FileHashing.ComputeSha256Async(_executablePath, cancellationToken).ConfigureAwait(false);

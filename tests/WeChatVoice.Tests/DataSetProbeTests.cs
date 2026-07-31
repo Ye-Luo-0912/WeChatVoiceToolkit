@@ -8,7 +8,7 @@ namespace WeChatVoice.Tests;
 public sealed class DataSetProbeTests
 {
     [Fact]
-    public async Task ProbeAsync_discovers_shards_pairs_and_redacts_local_paths_by_default()
+    public async Task ProbeAsync_discovers_shards_without_assuming_message_media_filename_parity()
     {
         using var temporary = new TestTemporaryDirectory();
         var root = temporary.CreateDirectory("decrypted-db");
@@ -21,7 +21,8 @@ public sealed class DataSetProbeTests
         Assert.Equal(3, probe.DataSet.Databases.Count);
         Assert.Contains(probe.DataSet.Databases, artifact => artifact.LogicalRole == "message" && artifact.ShardNumber == 0);
         Assert.Contains(probe.DataSet.Databases, artifact => artifact.LogicalRole == "media" && artifact.ShardNumber == 0);
-        Assert.Contains(probe.Issues, issue => issue.Code == "missing-media-shard");
+        Assert.Contains(probe.Issues, issue => issue.Code == "unverified-shard-topology" && issue.Severity == "info");
+        Assert.DoesNotContain(probe.Issues, issue => issue.Code is "missing-media-database" or "missing-message-database");
         Assert.All(probe.DataSet.Databases, artifact => Assert.False(Path.IsPathRooted(artifact.DatabasePath)));
         Assert.All(probe.DataSet.Databases, artifact => Assert.Null(artifact.LocalPath));
         Assert.All(probe.DataSet.Databases, artifact => Assert.False(string.IsNullOrWhiteSpace(artifact.Schema.SchemaFingerprint)));
@@ -39,6 +40,21 @@ public sealed class DataSetProbeTests
         var roundTrip = JsonSerializer.Deserialize<DataSetProbe>(json);
         Assert.NotNull(roundTrip);
         Assert.Equal(probe.DataSet.DataSetId, roundTrip!.DataSet.DataSetId);
+    }
+
+    [Theory]
+    [InlineData("message_0.db", "missing-media-database")]
+    [InlineData("media_0.db", "missing-message-database")]
+    public async Task ProbeAsync_requires_message_and_media_roles_without_guessing_shard_pairs(string databaseName, string expectedIssue)
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("decrypted-db");
+        await SqliteSchemaInspectorTests.CreateSampleDatabaseAsync(Path.Combine(root, databaseName));
+
+        var probe = await new DataSetProbeService().ProbeAsync(root, new DataSetProbeOptions(), CancellationToken.None);
+
+        Assert.Contains(probe.Issues, issue => issue.Code == expectedIssue && issue.Severity == "error");
+        Assert.DoesNotContain(probe.Issues, issue => issue.Code == "unverified-shard-topology");
     }
 
     [Fact]

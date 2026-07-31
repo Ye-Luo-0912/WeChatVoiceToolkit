@@ -22,6 +22,19 @@ public sealed class DatabaseMaterializerTests
         Assert.All(result.Result.Databases, database => Assert.True(File.Exists(Path.Combine(output, database.OutputRelativePath))));
     }
 
+    [Fact]
+    public async Task MaterializeAsync_accepts_non_parity_message_media_filenames_when_manifest_mapping_is_complete()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var snapshot = await CreateVerifiedSnapshotAsync(temporary, "success", includeSecondMessageDatabase: true);
+        var output = temporary.GetPath("materialized");
+
+        var result = await CreateMaterializer().MaterializeAsync(snapshot, new MaterializationOptions(output), CancellationToken.None);
+
+        Assert.Equal(4, result.Result.Databases.Count);
+        Assert.Contains(result.Result.Databases, database => database.SourceRelativePath == "message_1.db");
+    }
+
     [Theory]
     [InlineData("missing", "missing one or more required")]
     [InlineData("extra", "not covered by its explicit output manifest")]
@@ -132,12 +145,20 @@ public sealed class DatabaseMaterializerTests
         return new ExternalDatabaseMaterializer(executablePath, expectedBinarySha256: expectedBinarySha256);
     }
 
-    private static async Task<VerifiedRawSnapshot> CreateVerifiedSnapshotAsync(TestTemporaryDirectory temporary, string mode)
+    private static async Task<VerifiedRawSnapshot> CreateVerifiedSnapshotAsync(
+        TestTemporaryDirectory temporary,
+        string mode,
+        bool includeSecondMessageDatabase = false)
     {
         var snapshotRoot = temporary.CreateDirectory("snapshot");
         await SqliteSchemaInspectorTests.CreateSampleDatabaseAsync(Path.Combine(snapshotRoot, "message_0.db"));
         await SqliteSchemaInspectorTests.CreateSampleDatabaseAsync(Path.Combine(snapshotRoot, "media_0.db"));
         await SqliteSchemaInspectorTests.CreateSampleDatabaseAsync(Path.Combine(snapshotRoot, "contact.db"));
+        if (includeSecondMessageDatabase)
+        {
+            await SqliteSchemaInspectorTests.CreateSampleDatabaseAsync(Path.Combine(snapshotRoot, "message_1.db"));
+        }
+
         await File.WriteAllTextAsync(Path.Combine(snapshotRoot, ".fake-materializer-mode"), mode);
 
         var records = new List<SnapshotFileRecord>();
