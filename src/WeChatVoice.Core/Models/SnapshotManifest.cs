@@ -58,10 +58,10 @@ public sealed record SnapshotManifest
         string SourceDirectory,
         string SnapshotDirectory,
         DateTimeOffset CreatedAtUtc,
-        IEnumerable<SnapshotFileRecord>? Files = null,
+        IReadOnlyList<SnapshotFileRecord>? Files = null,
         bool PotentiallyInconsistent = false,
         int AttemptCount = 1,
-        IEnumerable<string>? SourceProcessNames = null,
+        IReadOnlyList<string>? SourceProcessNames = null,
         string? SnapshotId = null,
         string? DisplayName = null)
     {

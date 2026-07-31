@@ -34,7 +34,7 @@ public sealed record RawSnapshot
 
 public sealed record MaterializationOptions
 {
-    public MaterializationOptions(string OutputDirectory)
+    public MaterializationOptions(string OutputDirectory, TimeSpan? BackendTimeout = null)
     {
         if (string.IsNullOrWhiteSpace(OutputDirectory) || !Path.IsPathFullyQualified(OutputDirectory))
         {
@@ -42,9 +42,16 @@ public sealed record MaterializationOptions
         }
 
         this.OutputDirectory = Path.GetFullPath(OutputDirectory);
+        this.BackendTimeout = BackendTimeout ?? TimeSpan.FromMinutes(5);
+        if (this.BackendTimeout <= TimeSpan.Zero || this.BackendTimeout > TimeSpan.FromHours(1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(BackendTimeout), "The backend timeout must be greater than zero and no more than one hour.");
+        }
     }
 
     public string OutputDirectory { get; }
+
+    public TimeSpan BackendTimeout { get; }
 }
 
 public enum MaterializationDatabaseStatus

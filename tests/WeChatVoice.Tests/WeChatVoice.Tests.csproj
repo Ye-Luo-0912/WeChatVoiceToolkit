@@ -22,6 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\WeChatVoice.FakeMaterializer\WeChatVoice.FakeMaterializer.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.Application\WeChatVoice.Application.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.Core\WeChatVoice.Core.csproj" />
     <ProjectReference Include="..\..\src\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />

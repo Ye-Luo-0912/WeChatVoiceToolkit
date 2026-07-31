@@ -10,6 +10,7 @@
     <Project Path="src/WeChatVoice.Windows/WeChatVoice.Windows.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/WeChatVoice.FakeMaterializer/WeChatVoice.FakeMaterializer.csproj" />
     <Project Path="tests/WeChatVoice.Tests/WeChatVoice.Tests.csproj" />
   </Folder>
 </Solution>

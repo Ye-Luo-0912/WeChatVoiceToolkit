@@ -76,7 +76,7 @@ public sealed class CoreModelTests
             new SnapshotFileRecord("a.db", 1, "aa", DateTimeOffset.UtcNow),
         };
         var first = new SnapshotManifest("C:\\source", "C:\\snapshot", DateTimeOffset.UtcNow, files);
-        var reordered = new SnapshotManifest("D:\\other", "D:\\moved", DateTimeOffset.UtcNow, files.Reverse());
+        var reordered = new SnapshotManifest("D:\\other", "D:\\moved", DateTimeOffset.UtcNow, files.Reverse().ToArray());
 
         Assert.Equal(first.SnapshotId, reordered.SnapshotId);
         Assert.Throws<ArgumentException>(() => new SnapshotManifest(

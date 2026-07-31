@@ -134,7 +134,7 @@ public sealed class SnapshotCreator : ISnapshotCreator
                     files,
                     PotentiallyInconsistent: request.AllowLiveSource,
                     AttemptCount: attempt,
-                    SourceProcessNames: processNames,
+                    SourceProcessNames: processNames.ToArray(),
                     DisplayName: Path.GetFileName(outputDirectory));
 
                 await AtomicFileWriter.WriteJsonAsync(

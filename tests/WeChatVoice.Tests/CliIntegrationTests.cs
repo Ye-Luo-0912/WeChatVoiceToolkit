@@ -62,4 +62,24 @@ public sealed class CliIntegrationTests
         Assert.Equal(Path.GetFullPath(outputPath), resultDocument.RootElement.GetProperty("outputPath").GetString());
         Assert.Equal(2, resultDocument.RootElement.GetProperty("objectCount").GetInt32());
     }
+
+    [Fact]
+    public async Task Workspace_materialize_rejects_external_backend_without_explicit_untrusted_opt_in()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var result = await ManagedProcessTestHarness.RunAssemblyAsync(
+            "WeChatVoice.Cli.dll",
+            standardInput: null,
+            "workspace",
+            "materialize",
+            "--snapshot-directory",
+            temporary.GetPath("snapshot"),
+            "--external-decryptor",
+            temporary.GetPath("backend.exe"),
+            "--output",
+            temporary.GetPath("materialized"));
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains("requires --allow-untrusted-backend", result.StandardError, StringComparison.Ordinal);
+    }
 }

@@ -15,6 +15,10 @@
    Journals use a Run Lease with processing/failure/cancellation and manifest
    commit events. `voice export recover --journal` rebuilds a manifest after a
    crash.
+5. Route two now has a separate one-shot UAC Key Broker, fixed request protocol,
+   raw Snapshot verification before Profile selection, registered
+   materialization backends, bounded backend execution, and a real fake-process
+   integration suite for output mapping and failure handling.
 
 ## Current blocker and next step
 
@@ -27,6 +31,10 @@ one-shot `WeChatVoice.KeyBroker.exe`; no plaintext key-file interface is
 supported. Until that profile exists, the broker and formal materialization
 backend fail closed. Then implement one isolated adapter for exact contact
 selection, incoming voice association, and raw SILK output.
+
+The currently observed signed Weixin build is 4.1.11.55, but no verified raw
+Snapshot or encryption fixture is present in the workspace. Process version
+evidence alone must not be promoted into a key-extraction Profile.
 
 WAV decoding remains a derived, later phase and must not become a prerequisite
 for the first usable SILK chain.

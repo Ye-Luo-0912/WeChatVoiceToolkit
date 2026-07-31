@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WeChatVoice.Core\WeChatVoice.Core.csproj" />
+    <ProjectReference Include="..\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />
     <ProjectReference Include="..\WeChatVoice.KeyAcquisition\WeChatVoice.KeyAcquisition.csproj" />
     <ProjectReference Include="..\WeChatVoice.Windows\WeChatVoice.Windows.csproj" />
   </ItemGroup>

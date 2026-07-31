@@ -105,7 +105,19 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         Exception? primaryFailure = null;
         try
         {
-            var result = await RunDecryptorAsync(sourceRoot, staging, cancellationToken).ConfigureAwait(false);
+            DecryptorResult result;
+            using (var backendTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                backendTimeout.CancelAfter(options.BackendTimeout);
+                try
+                {
+                    result = await RunDecryptorAsync(sourceRoot, staging, backendTimeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && backendTimeout.IsCancellationRequested)
+                {
+                    throw new DatabaseMaterializationException(null, null, null, $"The materialization backend exceeded its {options.BackendTimeout} time limit.");
+                }
+            }
             if (result.ExitCode != 0)
             {
                 throw new DatabaseMaterializationException(result.ExitCode, result.StandardOutput, result.StandardError, "The external decryptor returned a non-zero exit code.");
@@ -332,7 +344,7 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         var requiredRoles = sourceDatabases.Where(static item => item.LogicalRole is "message" or "media" or "contact")
             .Select(static item => (item.LogicalRole, item.ShardNumber))
             .ToHashSet();
-        var materializedRoles = databases.Where(static item => item.Status == MaterializationDatabaseStatus.Materialized)
+        var materializedRoles = databases.Where(static item => item.Status is MaterializationDatabaseStatus.Materialized or MaterializationDatabaseStatus.CopiedAsPlaintext)
             .Select(static item => (item.LogicalRole, item.ShardNumber))
             .ToHashSet();
         if (requiredRoles.Except(materializedRoles).Any())

@@ -18,3 +18,12 @@ or proprietary. Continue only after the user provides verified schema data,
 version context, and a version-specific key/decryption profile. The old
 plaintext key-file placeholder is removed; development backends require an
 explicit untrusted flag and an explicit source-to-output manifest.
+
+Route-two groundwork is recorded in `adr-0002-key-broker-boundary.md`.
+`WeChatVoice.KeyBroker` now verifies the reserved Snapshot Manifest and
+content-addressed Snapshot ID before returning `profile_unavailable`.
+`DatabaseMaterializerTests` use a real fake child process and cover success,
+missing/extra/invalid/duplicate/unknown mappings, sensitive output redaction,
+binary hash mismatch, timeout, and cancellation. The next blocker is evidence,
+not another generic abstraction: obtain a verified Snapshot and encryption
+fixtures for the observed signed Weixin 4.1.11.55 build.
