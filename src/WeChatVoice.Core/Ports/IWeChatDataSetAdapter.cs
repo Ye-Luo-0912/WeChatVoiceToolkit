@@ -17,7 +17,7 @@ public interface IWeChatDataSetAdapter
         CancellationToken cancellationToken);
 }
 
-public interface IVoiceCatalog
+public interface IVoiceCatalog : IAsyncDisposable
 {
     VoiceCatalogContext Context { get; }
 

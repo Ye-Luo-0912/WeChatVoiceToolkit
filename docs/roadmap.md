@@ -1,9 +1,29 @@
 # Roadmap
 
-1. Validate the framework with `doctor`, snapshots, schema probing, and helper
-   protocol tests.
-2. Receive verified `message_0.db` and `media_0.db` schema JSON, WeChat
-   version, and a few known voice timestamps.
-3. Implement one isolated schema adapter for a specified contact, incoming
-   voice records, original SILK output, and a manifest.
-4. Evaluate a local SILK decoder and only then consider a UI.
+## Completed foundation
+
+1. Group-level snapshots now have content-addressed IDs and exclude only the
+   reserved `.wechatvoice/` metadata directory.
+2. Shareable probes and executable workspaces are separate. Workspace loads
+   require `ILocalWorkspaceVerifier`; adapters receive only a verified local
+   workspace.
+3. Materialization has a verified raw-snapshot boundary, source-to-output
+   database mapping, strict output traversal, SQLite acceptance checks, and a
+   persisted materialization manifest. The CLI closes the path into a local
+   workspace JSON.
+4. Export paths use only `SourceStableKey`, catalogs are disposable, and run
+   Journals use a Run Lease with processing/failure/cancellation and manifest
+   commit events. `voice export recover --journal` rebuilds a manifest after a
+   crash.
+
+## Current blocker and next step
+
+The actual WeChat 4.x files observed on the development machine are encrypted
+or proprietary containers, not ordinary SQLite. Do not guess tables or keys.
+The next implementation step requires a user-provided key-file or a fixed,
+verified decryptor plus schema evidence for `message_N.db`, `media_N.db`, and
+the contact database. Then implement one isolated adapter for exact contact
+selection, incoming voice association, and raw SILK output.
+
+WAV decoding remains a derived, later phase and must not become a prerequisite
+for the first usable SILK chain.

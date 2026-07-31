@@ -154,6 +154,18 @@ public sealed class DataSetProbeService
             options.IncludeLocalPaths);
     }
 
+    public Task<DataSetProbe> ProbeAsync(
+        VerifiedRawSnapshot snapshot,
+        DataSetProbeOptions? options,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        // The raw boundary has already verified the manifest against the
+        // current directory. Re-probing intentionally does not trust or
+        // re-read a JSON manifest a second time.
+        return ProbeAsync(snapshot.Snapshot.SnapshotDirectory, options, cancellationToken);
+    }
+
     private static void AddPairingIssues(IReadOnlyList<DatabaseArtifact> artifacts, ICollection<DataSetIssue> issues)
     {
         var messageShards = artifacts.Where(static item => string.Equals(item.LogicalRole, "message", StringComparison.OrdinalIgnoreCase))

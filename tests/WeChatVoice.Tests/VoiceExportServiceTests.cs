@@ -37,7 +37,8 @@ public sealed class VoiceExportServiceTests
         Assert.True(File.Exists(Path.Combine(exportRoot, "latest.manifest.json")));
         var journalLines = await File.ReadAllLinesAsync(Assert.Single(Directory.EnumerateFiles(Path.Combine(exportRoot, "runs"), "*.jsonl")));
         var events = journalLines.Select(line => JsonDocument.Parse(line).RootElement.GetProperty("event").GetString()!).ToArray();
-        Assert.Equal(["run-started", "item-failed", "item-committed", "run-completed"], events);
+        Assert.Equal(["run-started", "item-failed", "item-committed", "processing-completed", "manifest-committed"], events);
+        Assert.Equal(ExportRunStatus.Completed, manifest.RunStatus);
     }
 
     [Fact]
@@ -160,6 +161,8 @@ public sealed class VoiceExportServiceTests
             var match = _records.Single(item => item.Record.PayloadLocator?.BlobKey == locator.BlobKey);
             return ValueTask.FromResult(match.CreateStream());
         }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class FailingDecoder : IVoiceDecoder
@@ -170,8 +173,35 @@ public sealed class VoiceExportServiceTests
 
     private sealed class CopyingDecoder : IVoiceDecoder
     {
-        public Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken)
-            => input.CopyToAsync(output, cancellationToken);
+        public async Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken)
+        {
+            await output.WriteAsync(CreateWave(), cancellationToken);
+        }
+
+        private static byte[] CreateWave()
+        {
+            var data = new byte[] { 0, 0, 0, 0 };
+            using var stream = new MemoryStream();
+            using (var writer = new BinaryWriter(stream, System.Text.Encoding.ASCII, leaveOpen: true))
+            {
+                writer.Write("RIFF"u8.ToArray());
+                writer.Write(36 + data.Length);
+                writer.Write("WAVE"u8.ToArray());
+                writer.Write("fmt "u8.ToArray());
+                writer.Write(16);
+                writer.Write((short)1);
+                writer.Write((short)1);
+                writer.Write(8000);
+                writer.Write(16000);
+                writer.Write((short)2);
+                writer.Write((short)16);
+                writer.Write("data"u8.ToArray());
+                writer.Write(data.Length);
+                writer.Write(data);
+            }
+
+            return stream.ToArray();
+        }
     }
 
     private sealed class FaultingReadStream : Stream

@@ -53,5 +53,7 @@ public sealed class VoiceScanServiceTests
 
         public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
             => ValueTask.FromResult<Stream>(new MemoryStream());
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

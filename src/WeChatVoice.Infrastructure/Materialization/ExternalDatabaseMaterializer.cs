@@ -32,8 +32,8 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
 
     public string Id => "external-decryptor-v1";
 
-    public async Task<MaterializationResult> MaterializeAsync(
-        RawSnapshot snapshot,
+    public async Task<VerifiedMaterialization> MaterializeAsync(
+        VerifiedRawSnapshot snapshot,
         MaterializationOptions options,
         CancellationToken cancellationToken)
     {
@@ -45,15 +45,15 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
             throw new FileNotFoundException("The configured external decryptor was not found.", _executablePath);
         }
 
-        var sourceRoot = Path.GetFullPath(snapshot.SnapshotDirectory);
+        var rawSnapshot = snapshot.Snapshot;
+        var sourceRoot = Path.GetFullPath(rawSnapshot.SnapshotDirectory);
         if (!Directory.Exists(sourceRoot))
         {
             throw new DirectoryNotFoundException($"The raw snapshot directory was not found: '{sourceRoot}'.");
         }
 
-        await ValidateRawSnapshotAsync(snapshot, cancellationToken).ConfigureAwait(false);
         var sourceProbe = await new DataSetProbeService().ProbeAsync(
-            sourceRoot,
+            snapshot,
             new DataSetProbeOptions(IncludeLocalPaths: true),
             cancellationToken).ConfigureAwait(false);
         if (sourceProbe.DataSet.Databases.Count == 0)
@@ -88,12 +88,12 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
                 throw new DatabaseMaterializationException(result.ExitCode, result.StandardOutput, result.StandardError, "The external decryptor did not materialize every required source database.");
             }
 
-            var workspaceId = ComputeWorkspaceId(snapshot.SnapshotId, backendSha256, _backendVersion, validation.Databases);
+            var workspaceId = ComputeWorkspaceId(rawSnapshot.SnapshotId, backendSha256, _backendVersion, validation.Databases);
             var manifestPath = Path.Combine(staging, ".wechatvoice", "materialization-manifest.json");
             Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
             var manifest = new MaterializationManifest(
                 workspaceId,
-                snapshot.SnapshotId,
+                rawSnapshot.SnapshotId,
                 Id,
                 _backendVersion,
                 backendSha256,
@@ -107,16 +107,16 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
 
             Directory.Move(staging, options.OutputDirectory);
             var movedManifestPath = Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json");
-            return new MaterializationResult(
+            return new VerifiedMaterialization(new MaterializationResult(
                 workspaceId,
-                snapshot.SnapshotId,
+                rawSnapshot.SnapshotId,
                 Id,
                 _backendVersion,
                 backendSha256,
                 options.OutputDirectory,
                 validation.Databases,
                 validation.Files,
-                movedManifestPath);
+                movedManifestPath), DateTimeOffset.UtcNow);
         }
         catch (Exception exception)
         {
@@ -343,67 +343,12 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         }
     }
 
-    private static async Task ValidateRawSnapshotAsync(RawSnapshot snapshot, CancellationToken cancellationToken)
-    {
-        var root = Path.GetFullPath(snapshot.SnapshotDirectory);
-        var expected = snapshot.Manifest.Files.ToDictionary(static file => file.RelativePath.Replace('\\', '/'), StringComparer.OrdinalIgnoreCase);
-        if (expected.Count == 0)
-        {
-            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot manifest contains no files to verify.");
-        }
-
-        var actualPaths = EnumerateRegularFilesStrict(root)
-            .Where(path => !IsInternalMetadataPath(root, path))
-            .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/'))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (!actualPaths.SetEquals(expected.Keys))
-        {
-            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot file set differs from its manifest; materialization was refused.");
-        }
-
-        foreach (var pair in expected)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var path = CombineUnderRoot(root, pair.Key);
-            var info = new FileInfo(path);
-            var hash = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
-            if (info.Length != pair.Value.ByteLength || !string.Equals(hash, pair.Value.Sha256, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new DatabaseMaterializationException(null, null, null, $"The raw snapshot file failed manifest verification: '{pair.Key}'.");
-            }
-        }
-    }
-
     private static string ComputeWorkspaceId(string snapshotId, string backendSha256, string backendVersion, IEnumerable<MaterializedDatabase> databases)
     {
         var canonical = string.Join('\n', databases.OrderBy(static item => item.OutputRelativePath, StringComparer.OrdinalIgnoreCase)
             .Select(item => string.Join('|', item.OutputRelativePath, item.Sha256, item.ByteLength.ToString(System.Globalization.CultureInfo.InvariantCulture), item.SchemaFingerprint)));
         var bytes = Encoding.UTF8.GetBytes(string.Join('|', snapshotId, backendSha256, backendVersion, canonical));
         return "materialized-" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-    }
-
-    private static bool IsInternalMetadataPath(string root, string path)
-    {
-        var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
-        return relative.Equals(".wechatvoice", StringComparison.OrdinalIgnoreCase)
-            || relative.StartsWith(".wechatvoice/", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string CombineUnderRoot(string root, string relativePath)
-    {
-        if (Path.IsPathRooted(relativePath))
-        {
-            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot manifest contains an absolute path.");
-        }
-
-        var candidate = Path.GetFullPath(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
-        if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new DatabaseMaterializationException(null, null, null, "The raw snapshot manifest contains a path outside its root.");
-        }
-
-        return candidate;
     }
 
     private static (string Role, int? Shard) ClassifyRole(string fileName)

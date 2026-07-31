@@ -11,7 +11,8 @@ public sealed record VoiceQuery
         DateTimeOffset? FromUtc = null,
         DateTimeOffset? ToUtc = null,
         int? MaximumResults = null,
-        string? ContactUsername = null)
+        string? ContactUsername = null,
+        string? ContactId = null)
     {
         if (MaximumResults is <= 0)
         {
@@ -31,6 +32,7 @@ public sealed record VoiceQuery
         this.ToUtc = normalizedTo;
         this.MaximumResults = MaximumResults;
         this.ContactUsername = string.IsNullOrWhiteSpace(ContactUsername) ? null : ContactUsername;
+        this.ContactId = string.IsNullOrWhiteSpace(ContactId) ? null : ContactId;
     }
 
     public string? ConversationId { get; }
@@ -44,4 +46,10 @@ public sealed record VoiceQuery
     public int? MaximumResults { get; }
 
     public string? ContactUsername { get; }
+
+    /// <summary>
+    /// Stable adapter-owned contact identity. Query consumers should prefer
+    /// this over display names or a possibly changed username.
+    /// </summary>
+    public string? ContactId { get; }
 }

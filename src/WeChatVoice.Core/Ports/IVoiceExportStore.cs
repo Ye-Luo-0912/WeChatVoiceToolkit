@@ -8,7 +8,7 @@ namespace WeChatVoice.Core.Ports;
 /// </summary>
 public interface IVoiceExportStore
 {
-    ValueTask<IExportRunJournal> BeginRunAsync(
+    ValueTask<IExportRunLease> BeginRunAsync(
         VoiceExportRunContext context,
         CancellationToken cancellationToken);
 
@@ -17,5 +17,4 @@ public interface IVoiceExportStore
         ExistingArtifactPolicy policy,
         CancellationToken cancellationToken);
 
-    Task FinalizeRunAsync(VoiceExportManifest manifest, CancellationToken cancellationToken);
 }

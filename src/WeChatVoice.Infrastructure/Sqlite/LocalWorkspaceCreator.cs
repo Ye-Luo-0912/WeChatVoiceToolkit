@@ -34,6 +34,12 @@ public sealed class LocalWorkspaceCreator
             probe.AdapterCandidates);
     }
 
+    public Task<LocalWorkspace> CreateAsync(VerifiedMaterialization materialization, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(materialization);
+        return CreateAsync(materialization.OutputRoot, cancellationToken);
+    }
+
     private static string ComputeWorkspaceId(string sourceRoot, string dataSetId)
     {
         var canonical = Encoding.UTF8.GetBytes(Path.GetFullPath(sourceRoot) + "|" + dataSetId);

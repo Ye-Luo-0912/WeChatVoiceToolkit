@@ -22,7 +22,7 @@ metadata directory from source enumeration.
 
 Schema adapters operate on `WeChatDataSet`, not one database. A data set contains
 message, media, contact, and shard artifacts. `IWeChatDataSetAdapter` opens an
-`IVoiceCatalog`, whose voice records carry a `VoicePayloadLocator` that can point
+`IAsyncDisposable IVoiceCatalog`, whose voice records carry a `VoicePayloadLocator` that can point
 from message metadata to a media database BLOB.
 
 `IVoiceExportStore.BeginItemAsync` returns an export lease. The lease owns path
@@ -33,8 +33,11 @@ family, account, conversation, message, and media identities. A separate
 catalog context records dataset, snapshot, adapter version, and database
 fingerprints for audit. Original and decoded artifacts have independent
 Missing/VerifiedExisting/Conflict states, so a later run can add a missing WAV
-without rewriting verified SILK. Run history is appended and flushed as JSONL
-events under `runs/`; `latest.manifest.json` is the only rolling pointer.
+without rewriting verified SILK. Physical paths use only the stable-key hash,
+not message time. Run history is appended and flushed as JSONL events under
+`runs/`; `processing-completed` is distinct from `manifest-committed`, and
+`latest.manifest.json` is the only rolling pointer. A truncated final Journal
+line is ignored by `voice export recover`.
 
 `dataset probe` discovers database files, pairs message/media shards, records
 WAL/SHM completeness, hashes every DB/WAL/SHM member, and emits a deterministic

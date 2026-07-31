@@ -50,6 +50,7 @@ public sealed class VoiceExportService
         var failures = new ConcurrentQueue<VoiceExportFailure>();
         var activeExports = new List<Task>(options.MaxDegreeOfParallelism);
         var cancellationObserved = false;
+        var runFailed = false;
 
         try
         {
@@ -70,6 +71,7 @@ public sealed class VoiceExportService
         }
         catch (Exception exception)
         {
+            runFailed = true;
             var failure = CreateFailure(null, "query", exception);
             failures.Enqueue(failure);
             await AppendAsync(journal, new VoiceExportJournalEvent("item-failed", runId, DateTimeOffset.UtcNow, Failure: failure), CancellationToken.None).ConfigureAwait(false);
@@ -86,6 +88,11 @@ public sealed class VoiceExportService
             }
         }
 
+        var runStatus = cancellationObserved || cancellationToken.IsCancellationRequested
+            ? ExportRunStatus.Cancelled
+            : runFailed
+                ? ExportRunStatus.Failed
+                : ExportRunStatus.Completed;
         var manifest = new VoiceExportManifest(
             DateTimeOffset.UtcNow,
             entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal),
@@ -98,13 +105,24 @@ public sealed class VoiceExportService
             context.AccountId,
             context.DatasetId,
             context.AdapterVersion,
-            context.DatabaseFingerprints);
+            context.DatabaseFingerprints,
+            runStatus,
+            runStatus == ExportRunStatus.Cancelled);
 
         await AppendAsync(
             journal,
-            new VoiceExportJournalEvent("run-completed", runId, DateTimeOffset.UtcNow, Context: context, Cancelled: cancellationObserved || cancellationToken.IsCancellationRequested),
+            new VoiceExportJournalEvent(
+                runStatus == ExportRunStatus.Cancelled
+                    ? "run-cancelled"
+                    : runStatus == ExportRunStatus.Failed
+                        ? "run-failed"
+                        : "processing-completed",
+                runId,
+                DateTimeOffset.UtcNow,
+                Context: context,
+                Cancelled: runStatus == ExportRunStatus.Cancelled),
             CancellationToken.None).ConfigureAwait(false);
-        await _exportStore.FinalizeRunAsync(manifest, CancellationToken.None).ConfigureAwait(false);
+        await journal.FinalizeAsync(manifest, CancellationToken.None).ConfigureAwait(false);
         if (cancellationObserved || cancellationToken.IsCancellationRequested)
         {
             throw new OperationCanceledException(cancellationToken);
@@ -131,7 +149,7 @@ public sealed class VoiceExportService
         VoiceExportOptions options,
         VoiceCatalogContext context,
         string runId,
-        IExportRunJournal journal,
+        IExportRunLease journal,
         ConcurrentQueue<VoiceExportEntry> entries,
         ConcurrentQueue<VoiceExportFailure> failures,
         CancellationToken cancellationToken)
@@ -260,7 +278,7 @@ public sealed class VoiceExportService
         string stage,
         string error,
         string runId,
-        IExportRunJournal journal,
+        IExportRunLease journal,
         ConcurrentQueue<VoiceExportFailure> failures,
         CancellationToken cancellationToken)
     {
@@ -376,6 +394,6 @@ public sealed class VoiceExportService
             qualityFlags.Count == 0 && record.DurationMs is not null ? Array.Empty<string>() : qualityFlags.Concat(record.DurationMs is null ? ["duration-unknown"] : Array.Empty<string>()).ToArray(),
             false);
 
-    private static Task AppendAsync(IExportRunJournal journal, VoiceExportJournalEvent journalEvent, CancellationToken cancellationToken)
+    private static Task AppendAsync(IExportRunLease journal, VoiceExportJournalEvent journalEvent, CancellationToken cancellationToken)
         => journal.AppendAsync(journalEvent, cancellationToken);
 }

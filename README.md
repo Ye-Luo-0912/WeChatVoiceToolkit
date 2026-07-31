@@ -21,6 +21,7 @@ dotnet run --project src/WeChatVoice.Cli -- contact list --workspace .\.wechatvo
 dotnet run --project src/WeChatVoice.Cli -- contact search --workspace .\.wechatvoice\local-workspace.json --query wxid
 dotnet run --project src/WeChatVoice.Cli -- voice scan --workspace .\.wechatvoice\local-workspace.json --contact-username wxid_xxx --direction incoming --from 2025-01-01
 dotnet run --project src/WeChatVoice.Cli -- voice export --workspace .\.wechatvoice\local-workspace.json --contact-username wxid_xxx --direction incoming --format silk --output .\exports\peer
+dotnet run --project src/WeChatVoice.Cli -- voice export recover --journal .\exports\peer\runs\<run-id>.jsonl
 dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --external-decryptor .\tools\decryptor.exe --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json --key-file .\key.bin
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
@@ -52,7 +53,8 @@ It writes a materialization manifest and creates the local workspace JSON as one
 closed workflow.
 
 Export output is idempotent by `SourceStableKey` (adapter family, account,
-conversation, message primary key, and media primary key); snapshot and
+conversation, message primary key, and media primary key); physical paths use
+only a content hash fan-out and never the message timestamp. Snapshot and
 database hashes remain provenance only. Missing identity or media association
 is rejected before payload access. Runs are stored under
 `runs/<run-id>.manifest.json` and an append-and-flush

@@ -10,8 +10,8 @@ public interface IDatabaseMaterializer
 {
     string Id { get; }
 
-    Task<MaterializationResult> MaterializeAsync(
-        RawSnapshot snapshot,
+    Task<VerifiedMaterialization> MaterializeAsync(
+        VerifiedRawSnapshot snapshot,
         MaterializationOptions options,
         CancellationToken cancellationToken);
 }

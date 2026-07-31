@@ -18,7 +18,9 @@ public sealed record VoiceExportManifest
         string? AccountId = null,
         string? DatasetId = null,
         string? AdapterVersion = null,
-        IReadOnlyList<string>? DatabaseFingerprints = null)
+        IReadOnlyList<string>? DatabaseFingerprints = null,
+        ExportRunStatus RunStatus = ExportRunStatus.Completed,
+        bool Cancelled = false)
     {
         this.GeneratedAtUtc = GeneratedAtUtc.ToUniversalTime();
         this.Entries = Freeze(Entries);
@@ -30,6 +32,8 @@ public sealed record VoiceExportManifest
         this.DatasetId = DatasetId;
         this.AdapterVersion = AdapterVersion;
         this.DatabaseFingerprints = Freeze(DatabaseFingerprints);
+        this.RunStatus = RunStatus;
+        this.Cancelled = Cancelled || RunStatus == ExportRunStatus.Cancelled;
     }
 
     public DateTimeOffset GeneratedAtUtc { get; }
@@ -52,8 +56,19 @@ public sealed record VoiceExportManifest
 
     public IReadOnlyList<string> DatabaseFingerprints { get; }
 
+    public ExportRunStatus RunStatus { get; }
+
+    public bool Cancelled { get; }
+
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T>? values)
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());
+}
+
+public enum ExportRunStatus
+{
+    Completed,
+    Cancelled,
+    Failed,
 }
 
 public sealed record VoiceExportRunContext(

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WeChatVoice.Application;
+using WeChatVoice.Cli.Services;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Adapters;
@@ -119,12 +120,10 @@ static Command CreateVoiceCommand()
     var workspaceOption = new Option<string>("--workspace")
     {
         Description = "Local executable workspace JSON containing absolute database paths.",
-        Required = true,
     };
     var outputOption = new Option<string>("--output")
     {
         Description = "Export root directory.",
-        Required = true,
     };
     var conversationOption = new Option<string?>("--conversation-id")
     {
@@ -184,10 +183,10 @@ static Command CreateVoiceCommand()
 
         try
         {
-            var catalog = await OpenCatalogAsync(workspacePath, cancellationToken).ConfigureAwait(false);
-            await EnsureExactContactAsync(catalog, contactUsername, cancellationToken).ConfigureAwait(false);
+            await using var catalog = await OpenCatalogAsync(workspacePath, cancellationToken).ConfigureAwait(false);
+            var contact = await new ContactResolver().ResolveExactAsync(catalog, contactUsername, cancellationToken).ConfigureAwait(false);
             var service = new VoiceExportService(catalog, new FileSystemVoiceExportStore(output));
-            var query = BuildVoiceQuery(conversationId, contactUsername, directionText, fromText, toText);
+            var query = BuildVoiceQuery(conversationId, contact, directionText, fromText, toText);
             var manifest = await service.ExportAsync(query, new VoiceExportOptions { DecodeToWav = false }, cancellationToken).ConfigureAwait(false);
             WriteJson(manifest);
             return GetExportExitCode(manifest);
@@ -232,9 +231,8 @@ static Command CreateVoiceCommand()
 
         try
         {
-            var catalog = await OpenCatalogAsync(workspace, cancellationToken).ConfigureAwait(false);
-            var contact = parseResult.GetValue(scanContactOption);
-            await EnsureExactContactAsync(catalog, contact, cancellationToken).ConfigureAwait(false);
+            await using var catalog = await OpenCatalogAsync(workspace, cancellationToken).ConfigureAwait(false);
+            var contact = await new ContactResolver().ResolveExactAsync(catalog, parseResult.GetValue(scanContactOption), cancellationToken).ConfigureAwait(false);
             var query = BuildVoiceQuery(
                 parseResult.GetValue(scanConversationOption),
                 contact,
@@ -264,6 +262,44 @@ static Command CreateVoiceCommand()
 
     voiceCommand.Subcommands.Add(exportCommand);
     voiceCommand.Subcommands.Add(scanCommand);
+
+    var recoverCommand = new Command("recover", "Rebuild a manifest from a flushed export Journal after a process crash.");
+    var journalOption = new Option<string>("--journal")
+    {
+        Description = "runs/<run-id>.jsonl Journal to recover.",
+        Required = true,
+    };
+    recoverCommand.Options.Add(journalOption);
+    recoverCommand.SetAction(async (parseResult, cancellationToken) =>
+    {
+        var journalPath = parseResult.GetValue(journalOption);
+        if (journalPath is null)
+        {
+            Console.Error.WriteLine("--journal is required.");
+            return 2;
+        }
+
+        try
+        {
+            var fullJournalPath = Path.GetFullPath(journalPath);
+            var exportRoot = Path.GetDirectoryName(Path.GetDirectoryName(fullJournalPath)!)
+                ?? throw new InvalidDataException("The Journal path must be nested under an export root runs directory.");
+            var manifest = await new FileSystemVoiceExportStore(exportRoot).RecoverRunAsync(fullJournalPath, cancellationToken).ConfigureAwait(false);
+            WriteJson(manifest);
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Export Journal recovery was cancelled.");
+            return 130;
+        }
+        catch (Exception exception)
+        {
+            WriteError(exception);
+            return 1;
+        }
+    });
+    exportCommand.Subcommands.Add(recoverCommand);
     return voiceCommand;
 }
 
@@ -407,8 +443,7 @@ static Command CreateWorkspaceCommand()
 
         try
         {
-            var workspace = await ReadLocalWorkspaceAsync(workspacePath, cancellationToken).ConfigureAwait(false);
-            var verified = await new LocalWorkspaceVerifier().VerifyAsync(workspace, cancellationToken).ConfigureAwait(false);
+            var verified = await new WorkspaceLoader().LoadVerifiedAsync(workspacePath, cancellationToken).ConfigureAwait(false);
             WriteJson(new WorkspaceVerifyResult(
                 Path.GetFullPath(workspacePath),
                 verified.Workspace.WorkspaceId,
@@ -483,21 +518,22 @@ static Command CreateWorkspaceCommand()
             var manifestPath = Path.GetFullPath(snapshotManifest ?? Path.Combine(snapshotRoot, ".wechatvoice", "snapshot-manifest.json"));
             var manifest = await ReadJsonFileAsync<SnapshotManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
             var rawSnapshot = new RawSnapshot(manifest, snapshotRoot);
+            var verifiedSnapshot = await new RawSnapshotVerifier().VerifyAsync(rawSnapshot, cancellationToken).ConfigureAwait(false);
             var materialization = await new ExternalDatabaseMaterializer(decryptor).MaterializeAsync(
-                rawSnapshot,
+                verifiedSnapshot,
                 new MaterializationOptions(Path.GetFullPath(output), keyFile is null ? null : Path.GetFullPath(keyFile)),
                 cancellationToken).ConfigureAwait(false);
             var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(output, ".wechatvoice", "local-workspace.json"));
-            var localWorkspace = await new LocalWorkspaceCreator().CreateAsync(materialization.OutputRoot, cancellationToken).ConfigureAwait(false);
+            var localWorkspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);
             await WriteJsonFileAsync(localWorkspacePath, localWorkspace, cancellationToken).ConfigureAwait(false);
             WriteJson(new WorkspaceMaterializationResult(
-                materialization.WorkspaceId,
+                materialization.Result.WorkspaceId,
                 materialization.OutputRoot,
-                materialization.ManifestPath,
+                materialization.Result.ManifestPath,
                 localWorkspacePath,
                 localWorkspace.WorkspaceId,
                 localWorkspace.DataSet.DataSetId,
-                materialization.Databases.Count));
+                materialization.Result.Databases.Count));
             return 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -530,7 +566,7 @@ static Command CreateContactCommand()
         var workspace = parseResult.GetValue(listWorkspaceOption);
         try
         {
-            var catalog = await OpenCatalogAsync(workspace!, cancellationToken).ConfigureAwait(false);
+            await using var catalog = await OpenCatalogAsync(workspace!, cancellationToken).ConfigureAwait(false);
             var contacts = new List<ContactRecord>();
             await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
@@ -555,7 +591,7 @@ static Command CreateContactCommand()
         var queryText = parseResult.GetValue(searchOption);
         try
         {
-            var catalog = await OpenCatalogAsync(workspace!, cancellationToken).ConfigureAwait(false);
+            await using var catalog = await OpenCatalogAsync(workspace!, cancellationToken).ConfigureAwait(false);
             var contacts = new List<ContactRecord>();
             await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(queryText), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
@@ -579,23 +615,21 @@ static Command CreateContactCommand()
 
 static async Task<IVoiceCatalog> OpenCatalogAsync(string path, CancellationToken cancellationToken)
 {
-    var workspace = await ReadLocalWorkspaceAsync(path, cancellationToken).ConfigureAwait(false);
-    var verified = await new LocalWorkspaceVerifier().VerifyAsync(workspace, cancellationToken).ConfigureAwait(false);
+    var verified = await new WorkspaceLoader().LoadVerifiedAsync(path, cancellationToken).ConfigureAwait(false);
     var resolver = new DataSetAdapterResolver(BuiltInAdapters.Create());
     var adapter = resolver.Resolve(verified.DataSet);
     return await adapter.OpenAsync(verified, cancellationToken).ConfigureAwait(false);
 }
 
-static async Task<LocalWorkspace> ReadLocalWorkspaceAsync(string path, CancellationToken cancellationToken)
+static VoiceQuery BuildVoiceQuery(string? conversationId, ContactRecord contact, string? directionText, string? fromText, string? toText)
 {
-    var fullPath = Path.GetFullPath(path);
-    await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-    var workspace = await JsonSerializer.DeserializeAsync<LocalWorkspace>(stream, CliJson.Options, cancellationToken).ConfigureAwait(false);
-    return workspace ?? throw new InvalidDataException("The local workspace was empty.");
-}
+    ArgumentNullException.ThrowIfNull(contact);
+    if (!string.IsNullOrWhiteSpace(conversationId)
+        && !string.Equals(conversationId, contact.ConversationId, StringComparison.Ordinal))
+    {
+        throw new ArgumentException("--conversation-id conflicts with the selected contact's stable ConversationId.", nameof(conversationId));
+    }
 
-static VoiceQuery BuildVoiceQuery(string? conversationId, string? contactUsername, string? directionText, string? fromText, string? toText)
-{
     VoiceDirection? direction = null;
     if (!string.IsNullOrWhiteSpace(directionText))
     {
@@ -608,11 +642,12 @@ static VoiceQuery BuildVoiceQuery(string? conversationId, string? contactUsernam
     }
 
     return new VoiceQuery(
-        conversationId,
+        conversationId ?? contact.ConversationId,
         direction,
         ParseUtc(fromText, "--from"),
         ParseUtc(toText, "--to"),
-        ContactUsername: contactUsername);
+        ContactUsername: contact.Username,
+        ContactId: contact.ContactId);
 }
 
 static DateTimeOffset? ParseUtc(string? value, string optionName)
@@ -628,25 +663,6 @@ static DateTimeOffset? ParseUtc(string? value, string optionName)
     }
 
     return parsed;
-}
-
-static async Task EnsureExactContactAsync(IVoiceCatalog catalog, string? username, CancellationToken cancellationToken)
-{
-    if (string.IsNullOrWhiteSpace(username))
-    {
-        throw new ArgumentException("--contact-username is required for the audited voice path.");
-    }
-
-    var contacts = new List<ContactRecord>();
-    await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(Username: username), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
-    {
-        contacts.Add(contact);
-    }
-
-    if (contacts.Count != 1)
-    {
-        throw new InvalidOperationException($"Stable contact username '{username}' matched {contacts.Count} contacts; export requires exactly one match.");
-    }
 }
 
 static Command CreateSchemaCommand()

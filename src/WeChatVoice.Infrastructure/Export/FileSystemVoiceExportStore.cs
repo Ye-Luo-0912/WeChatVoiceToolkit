@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -26,7 +25,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
     public string ExportRoot => _exportRoot;
 
-    public ValueTask<IExportRunJournal> BeginRunAsync(
+    public ValueTask<IExportRunLease> BeginRunAsync(
         VoiceExportRunContext context,
         CancellationToken cancellationToken)
     {
@@ -42,7 +41,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             FileShare.Read,
             128 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return ValueTask.FromResult<IExportRunJournal>(new FileSystemExportRunJournal(stream));
+        return ValueTask.FromResult<IExportRunLease>(new FileSystemExportRunJournal(_exportRoot, context.RunId, stream));
     }
 
     public ValueTask<IExportItemLease> BeginItemAsync(
@@ -55,22 +54,20 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var sourceStableKey = record.SourceStableKey
             ?? throw new SourceIdentityRequiredException("The voice record lacks a complete SourceStableKey; reusable export is refused.");
 
-        var occurredAtUtc = record.OccurredAtUtc.ToUniversalTime();
-        var year = occurredAtUtc.ToString("yyyy", CultureInfo.InvariantCulture);
-        var month = occurredAtUtc.ToString("MM", CultureInfo.InvariantCulture);
-        var sourceId = ExportPathSafety.SanitizeFileStem(record.SourceMessageKey, "voice");
-        var stableSuffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourceStableKey)))
-            .ToLowerInvariant()[..16];
-        var fileName = $"{sourceId[..Math.Min(sourceId.Length, 64)]}-{stableSuffix}";
-        var originalManifestPath = $"original/{year}/{month}/{fileName}.silk";
-        var decodedManifestPath = $"decoded/{year}/{month}/{fileName}.wav";
-        var originalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "original", year, month, $"{fileName}.silk");
-        var decodedPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "decoded", year, month, $"{fileName}.wav");
+        var stableKeyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourceStableKey)))
+            .ToLowerInvariant();
+        var prefix1 = stableKeyHash[..2];
+        var prefix2 = stableKeyHash[2..4];
+        var fileName = stableKeyHash[..32];
+        var originalManifestPath = $"original/{prefix1}/{prefix2}/{fileName}.silk";
+        var decodedManifestPath = $"decoded/{prefix1}/{prefix2}/{fileName}.wav";
+        var originalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "original", prefix1, prefix2, $"{fileName}.silk");
+        var decodedPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "decoded", prefix1, prefix2, $"{fileName}.wav");
 
         var original = ReadExistingArtifact(originalPath, originalManifestPath);
         var decoded = ReadExistingArtifact(decodedPath, decodedManifestPath);
         var originalState = GetOriginalState(original, record);
-        var decodedState = GetDecodedState(decoded, record);
+        var decodedState = GetDecodedState(decoded, record, decodedPath);
 
         if (policy == ExistingArtifactPolicy.Fail
             && (originalState != ExportArtifactState.Missing || decodedState != ExportArtifactState.Missing))
@@ -127,27 +124,27 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
     }
 
-    public Task FinalizeRunAsync(VoiceExportManifest manifest, CancellationToken cancellationToken)
+    public async Task<VoiceExportManifest> RecoverRunAsync(string journalPath, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentException.ThrowIfNullOrWhiteSpace(journalPath);
+        var fullJournalPath = Path.GetFullPath(journalPath);
         var runsDirectory = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs");
-        Directory.CreateDirectory(runsDirectory);
-        var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", manifest.RunId + ".jsonl");
-        var manifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", manifest.RunId + ".manifest.json");
-        var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
-        return FinalizeFilesAsync(manifest, journalPath, manifestPath, latestPath, cancellationToken);
-    }
+        var expectedPrefix = runsDirectory.EndsWith(Path.DirectorySeparatorChar) ? runsDirectory : runsDirectory + Path.DirectorySeparatorChar;
+        if (!fullJournalPath.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(Path.GetDirectoryName(fullJournalPath), runsDirectory, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(Path.GetExtension(fullJournalPath), ".jsonl", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The recovery journal must be a .jsonl file directly under the export root's runs directory.");
+        }
 
-    private static async Task FinalizeFilesAsync(
-        VoiceExportManifest manifest,
-        string journalPath,
-        string manifestPath,
-        string latestPath,
-        CancellationToken cancellationToken)
-    {
-        var journalManifest = await ReadManifestFromJournalAsync(manifest, journalPath, cancellationToken).ConfigureAwait(false);
-        await AtomicFileWriter.WriteJsonAsync(manifestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-        await AtomicFileWriter.WriteJsonAsync(latestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        var runId = Path.GetFileNameWithoutExtension(fullJournalPath);
+        var fallback = new VoiceExportManifest(DateTimeOffset.UtcNow, RunId: runId, RunStatus: ExportRunStatus.Failed);
+        var recovered = await ReadManifestFromJournalAsync(fallback, fullJournalPath, cancellationToken).ConfigureAwait(false);
+        var manifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".manifest.json");
+        var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
+        await AtomicFileWriter.WriteJsonAsync(manifestPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        await AtomicFileWriter.WriteJsonAsync(latestPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        return recovered;
     }
 
     private static async Task<VoiceExportManifest> ReadManifestFromJournalAsync(
@@ -162,6 +159,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
         var entries = new List<VoiceExportEntry>();
         var failures = new List<VoiceExportFailure>();
+        VoiceCatalogContext? journalContext = null;
         await using var stream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 128 * 1024, leaveOpen: false);
         while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
@@ -171,10 +169,25 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 continue;
             }
 
-            var journalEvent = JsonSerializer.Deserialize<VoiceExportJournalEvent>(line, InfrastructureJson.Compact);
+            VoiceExportJournalEvent? journalEvent;
+            try
+            {
+                journalEvent = JsonSerializer.Deserialize<VoiceExportJournalEvent>(line, InfrastructureJson.Compact);
+            }
+            catch (JsonException)
+            {
+                // A process crash can leave a truncated final JSONL line. The
+                // preceding flushed events remain authoritative.
+                break;
+            }
             if (journalEvent?.Entry is { } entry && journalEvent.Event is "item-committed" or "item-skipped")
             {
                 entries.Add(entry);
+            }
+
+            if (journalEvent?.Context is { } context)
+            {
+                journalContext = context;
             }
 
             if (journalEvent?.Failure is { } failure && journalEvent.Event == "item-failed")
@@ -190,12 +203,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 .ThenBy(static failure => failure.Stage, StringComparer.Ordinal)
                 .ThenBy(static failure => failure.Error, StringComparer.Ordinal),
             fallback.RunId,
-            fallback.SnapshotId,
-            fallback.AdapterId,
-            fallback.AccountId,
-            fallback.DatasetId,
-            fallback.AdapterVersion,
-            fallback.DatabaseFingerprints);
+            journalContext?.SnapshotId ?? fallback.SnapshotId,
+            journalContext?.AdapterId ?? fallback.AdapterId,
+            journalContext?.AccountId ?? fallback.AccountId,
+            journalContext?.DatasetId ?? fallback.DatasetId,
+            journalContext?.AdapterVersion ?? fallback.AdapterVersion,
+            journalContext?.DatabaseFingerprints ?? fallback.DatabaseFingerprints,
+            fallback.RunStatus,
+            fallback.Cancelled);
     }
 
     private static ExportArtifact? ReadExistingArtifact(string path, string relativePath)
@@ -217,17 +232,19 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         return hashMatches && lengthMatches ? ExportArtifactState.VerifiedExisting : ExportArtifactState.Conflict;
     }
 
-    private static ExportArtifactState GetDecodedState(ExportArtifact? artifact, VoiceRecord record)
+    private static ExportArtifactState GetDecodedState(ExportArtifact? artifact, VoiceRecord record, string path)
     {
         if (artifact is null)
         {
             return ExportArtifactState.Missing;
         }
 
-        var hashMatches = record.DecodedSha256 is null
+        var hasKnownHash = !string.IsNullOrWhiteSpace(record.DecodedSha256);
+        var hashMatches = !hasKnownHash
             || string.Equals(artifact.Sha256, record.DecodedSha256, StringComparison.OrdinalIgnoreCase);
         var lengthMatches = record.DecodedByteLength is null || artifact.ByteLength == record.DecodedByteLength.Value;
-        return hashMatches && lengthMatches ? ExportArtifactState.VerifiedExisting : ExportArtifactState.Conflict;
+        var wavValid = WavFileValidator.IsValid(path);
+        return hashMatches && lengthMatches && (hasKnownHash || wavValid) ? ExportArtifactState.VerifiedExisting : ExportArtifactState.Conflict;
     }
 
     private void Reserve(string path, string sourceStableKey)
@@ -259,6 +276,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         private readonly string _decodedPath;
         private readonly bool _replace;
         private readonly Action _release;
+        private ExportArtifactState _decodedState;
+        private ExportArtifact? _existingDecodedArtifact;
         private string? _originalTemporaryPath;
         private string? _decodedTemporaryPath;
         private bool _originalCommitted;
@@ -284,18 +303,18 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             _originalPath = originalPath;
             _decodedPath = decodedPath;
             OriginalState = originalState;
-            DecodedState = decodedState;
+            _decodedState = decodedState;
             ExistingOriginalArtifact = existingOriginalArtifact;
-            ExistingDecodedArtifact = existingDecodedArtifact;
+            _existingDecodedArtifact = existingDecodedArtifact;
             _replace = replace;
             _release = release;
         }
 
         public VoiceRecord Record { get; }
         public ExportArtifactState OriginalState { get; }
-        public ExportArtifactState DecodedState { get; }
+        public ExportArtifactState DecodedState => _decodedState;
         public ExportArtifact? ExistingOriginalArtifact { get; }
-        public ExportArtifact? ExistingDecodedArtifact { get; }
+        public ExportArtifact? ExistingDecodedArtifact => _existingDecodedArtifact;
         public string OriginalManifestPath { get; }
         public string DecodedManifestPath { get; }
 
@@ -426,9 +445,31 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             {
                 _originalTemporaryPath = null;
                 _originalCommitted = true;
+                if (_replace
+                    && ExistingOriginalArtifact is not null
+                    && !string.Equals(ExistingOriginalArtifact.Sha256, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    InvalidateDecodedArtifact();
+                }
             }
 
             return artifact;
+        }
+
+        private void InvalidateDecodedArtifact()
+        {
+            if (_existingDecodedArtifact is null && _decodedState == ExportArtifactState.Missing)
+            {
+                return;
+            }
+
+            if (File.Exists(_decodedPath))
+            {
+                File.Delete(_decodedPath);
+            }
+
+            _existingDecodedArtifact = null;
+            _decodedState = ExportArtifactState.Missing;
         }
 
         private static void AtomicCommit(string temporaryPath, string finalPath)
@@ -511,13 +552,23 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
     }
 
-    private sealed class FileSystemExportRunJournal : IExportRunJournal
+    private sealed class FileSystemExportRunJournal : IExportRunLease
     {
+        private readonly string _exportRoot;
+        private readonly string _runId;
         private readonly FileStream _stream;
         private readonly SemaphoreSlim _gate = new(1, 1);
         private bool _disposed;
+        private int _disposeStarted;
 
-        public FileSystemExportRunJournal(FileStream stream) => _stream = stream;
+        public FileSystemExportRunJournal(string exportRoot, string runId, FileStream stream)
+        {
+            _exportRoot = exportRoot;
+            _runId = runId;
+            _stream = stream;
+        }
+
+        public string RunId => _runId;
 
         public async Task AppendAsync(VoiceExportJournalEvent journalEvent, CancellationToken cancellationToken)
         {
@@ -530,10 +581,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     throw new ObjectDisposedException(nameof(FileSystemExportRunJournal));
                 }
 
-                var line = JsonSerializer.Serialize(journalEvent, InfrastructureJson.Compact) + Environment.NewLine;
-                var bytes = Encoding.UTF8.GetBytes(line);
-                await _stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-                await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await AppendCoreAsync(journalEvent, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -541,16 +589,67 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
         }
 
+        public async Task FinalizeAsync(VoiceExportManifest manifest, CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(manifest);
+            if (!string.Equals(manifest.RunId, _runId, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"The manifest RunId '{manifest.RunId}' does not match the active journal RunId '{_runId}'.");
+            }
+
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(FileSystemExportRunJournal));
+                }
+
+                var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".jsonl");
+                var manifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".manifest.json");
+                var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
+                var journalManifest = await ReadManifestFromJournalAsync(manifest, journalPath, cancellationToken).ConfigureAwait(false);
+                await AtomicFileWriter.WriteJsonAsync(manifestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                await AtomicFileWriter.WriteJsonAsync(latestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                await AppendCoreAsync(new VoiceExportJournalEvent("manifest-committed", _runId, DateTimeOffset.UtcNow, Context: null), cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        private async Task AppendCoreAsync(VoiceExportJournalEvent journalEvent, CancellationToken cancellationToken)
+        {
+            if (!string.Equals(journalEvent.RunId, _runId, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"The journal event RunId '{journalEvent.RunId}' does not match the active journal RunId '{_runId}'.");
+            }
+
+            var line = JsonSerializer.Serialize(journalEvent, InfrastructureJson.Compact) + Environment.NewLine;
+            var bytes = Encoding.UTF8.GetBytes(line);
+            await _stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         public async ValueTask DisposeAsync()
         {
-            if (_disposed)
+            if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
             {
                 return;
             }
 
-            _disposed = true;
-            await _stream.DisposeAsync().ConfigureAwait(false);
-            _gate.Dispose();
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                _disposed = true;
+                await _stream.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _gate.Release();
+                _gate.Dispose();
+            }
         }
     }
 }

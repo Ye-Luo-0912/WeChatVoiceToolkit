@@ -24,8 +24,16 @@ user-supplied, lawfully accessible WeChat data source.
 - New WeChat integrations must use `WeChatDataSet` and
   `IWeChatDataSetAdapter`/`IVoiceCatalog`; never infer a payload relationship
   from a single `SchemaSnapshot`.
+- Treat `RawSnapshot`, `MaterializationResult`, and `LocalWorkspace` JSON as
+  untrusted data. Pipeline boundaries must use `VerifiedRawSnapshot`,
+  `VerifiedMaterialization`, and `VerifiedLocalWorkspace` respectively.
+- `IVoiceCatalog` is `IAsyncDisposable`; every host that opens one must dispose
+  it with `await using`.
 - Export application code must use `IExportItemLease`; do not add absolute-path
   writes back into `VoiceExportService`.
+- Export Journal completion is valid only after the manifest files are written
+  and the `manifest-committed` event is flushed. A processing-completed event
+  is not a committed run.
 - Contact selection for scan/export must use the exact stable internal username;
   remarks and nicknames are display/search fields only.
 - The first usable export chain is decrypted DB bundle -> incoming voice -> raw
