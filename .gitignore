@@ -12,9 +12,9 @@ artifacts/
 *.userosscache
 
 # Local data and exported media (may contain personal data)
-workspace/
-exports/
-snapshots/
+/workspace/
+/exports/
+/snapshots/
 *.db
 *.db-wal
 *.db-shm
