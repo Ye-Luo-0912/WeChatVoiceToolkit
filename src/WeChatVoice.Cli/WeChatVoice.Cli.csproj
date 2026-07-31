@@ -17,7 +17,7 @@
     <ProjectReference Include="..\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />
     <ProjectReference Include="..\WeChatVoice.KeyAcquisition\WeChatVoice.KeyAcquisition.csproj" />
     <ProjectReference Include="..\WeChatVoice.Windows\WeChatVoice.Windows.csproj" />
-    <ProjectReference Include="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" />
   </ItemGroup>
 
   <Target Name="CopyKeyBroker" AfterTargets="Build">

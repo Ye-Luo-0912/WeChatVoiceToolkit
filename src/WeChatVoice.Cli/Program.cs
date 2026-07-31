@@ -11,7 +11,7 @@ using WeChatVoice.Infrastructure.Export;
 using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Snapshots;
 using WeChatVoice.Infrastructure.Sqlite;
-using WeChatVoice.KeyAcquisition;
+using WeChatVoice.KeyBroker;
 using WeChatVoice.Windows;
 
 var rootCommand = new RootCommand("Safe, schema-agnostic WeChat voice toolkit foundation.");
@@ -32,7 +32,7 @@ static Command CreateDoctorCommand()
     {
         var adapters = BuiltInAdapters.Create();
         var materializationBackends = BuiltInMaterializationBackends.Create();
-        var keyProfiles = BuiltInKeyExtractionProfiles.Create();
+        var keyProfiles = GuardedKeyExtractionProfiles.Create();
         var report = new DoctorReport(
             System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
             Environment.OSVersion.VersionString,

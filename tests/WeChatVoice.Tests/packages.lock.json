@@ -118,6 +118,7 @@
           "WeChatVoice.Core": "[1.0.0, )",
           "WeChatVoice.Infrastructure": "[1.0.0, )",
           "WeChatVoice.KeyAcquisition": "[1.0.0, )",
+          "WeChatVoice.KeyBroker": "[1.0.0, )",
           "WeChatVoice.Windows": "[1.0.0, )"
         }
       },
