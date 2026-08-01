@@ -12,11 +12,17 @@ public sealed partial class App : Avalonia.Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            var services = DesktopServices.Create();
-            desktop.MainWindow = new MainWindow
+            var allowDevelopmentBroker = false;
+#if DEBUG
+            allowDevelopmentBroker = desktop.Args.Contains("--allow-development-broker", StringComparer.Ordinal);
+#endif
+            var services = DesktopServices.Create(allowDevelopmentBroker);
+            var mainWindow = new MainWindow
             {
                 DataContext = new MainWindowViewModel(services),
             };
+            services.FolderPicker.Attach(mainWindow);
+            desktop.MainWindow = mainWindow;
         }
 
         base.OnFrameworkInitializationCompleted();

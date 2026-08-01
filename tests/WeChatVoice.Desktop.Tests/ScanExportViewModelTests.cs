@@ -1,5 +1,6 @@
 using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Desktop.ViewModels;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Workflows.Composition;
 using WeChatVoice.Workflows.Workflows;
 
@@ -65,7 +66,7 @@ public sealed class ScanExportViewModelTests : IDisposable
         await viewModel.ScanCommand.ExecuteAsync(null);
 
         Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
-        Assert.Contains("Workspace", viewModel.RunHost.LastError, StringComparison.Ordinal);
+        Assert.Equal(ErrorCode.InvalidRequest, viewModel.RunHost.LastErrorCode);
     }
 
     [Fact]

@@ -298,7 +298,9 @@ public sealed class VoiceExportService
         ConcurrentQueue<VoiceExportFailure> failures,
         CancellationToken cancellationToken)
     {
-        var failure = new VoiceExportFailure(record.MessageId, stage, string.IsNullOrWhiteSpace(error) ? stage : error);
+        // Failure records are persisted in manifests and journals. Exception
+        // text may contain local paths, account identifiers, or SQLite data.
+        var failure = new VoiceExportFailure(record.MessageId, stage, stage);
         failures.Enqueue(failure);
         await AppendAsync(journal, new VoiceExportJournalEvent("item-failed", runId, DateTimeOffset.UtcNow, record.MessageId, Failure: failure), cancellationToken).ConfigureAwait(false);
     }
@@ -388,7 +390,7 @@ public sealed class VoiceExportService
     }
 
     private static VoiceExportFailure CreateFailure(string? messageId, string stage, Exception exception)
-        => new(messageId, stage, string.IsNullOrWhiteSpace(exception.Message) ? exception.GetType().Name : exception.Message, exception.GetType().FullName);
+        => new(messageId, stage, stage);
 
     private static VoiceExportEntry CreateEntry(
         VoiceRecord record,

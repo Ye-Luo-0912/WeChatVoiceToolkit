@@ -3,6 +3,7 @@ using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.KeyProfileMetadata;
 using WeChatVoice.Windows;
+using WeChatVoice.Workflows.Broker;
 using KeyProfileMetadataModel = WeChatVoice.KeyProfileMetadata.KeyProfileMetadata;
 
 namespace WeChatVoice.Workflows.Workflows;
@@ -20,16 +21,19 @@ public sealed class EnvironmentAssessmentWorkflow : IEnvironmentAssessmentWorkfl
     private readonly Workspaces.WorkspaceLoader _loader;
     private readonly IReadOnlyList<KeyProfileMetadataModel> _keyProfiles;
     private readonly IReadOnlyList<string> _registeredAdapters;
+    private readonly IBrokerTrustPolicy _brokerTrustPolicy;
 
     public EnvironmentAssessmentWorkflow(
         Workspaces.WorkspaceLoader? loader = null,
         IReadOnlyList<KeyProfileMetadataModel>? keyProfiles = null,
-        IReadOnlyList<string>? registeredAdapters = null)
+        IReadOnlyList<string>? registeredAdapters = null,
+        IBrokerTrustPolicy? brokerTrustPolicy = null)
     {
         _loader = loader ?? new Workspaces.WorkspaceLoader();
         _keyProfiles = keyProfiles ?? BuiltInKeyProfileMetadata.Create();
         _registeredAdapters = registeredAdapters
             ?? BuiltInAdapters.Create().Select(static adapter => adapter.Id).Order(StringComparer.Ordinal).ToArray();
+        _brokerTrustPolicy = brokerTrustPolicy ?? new ReleaseBrokerTrustPolicy();
     }
 
     public async Task<EnvironmentAssessmentResult> RunAsync(
@@ -39,7 +43,7 @@ public sealed class EnvironmentAssessmentWorkflow : IEnvironmentAssessmentWorkfl
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
-        if (!context.StateMachine.TryStart())
+        if (!context.TryStart())
         {
             throw new InvalidOperationException("The workflow state machine is not idle.");
         }
@@ -65,6 +69,19 @@ public sealed class EnvironmentAssessmentWorkflow : IEnvironmentAssessmentWorkfl
 
             var workerInstalled = File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.exe"));
             var brokerInstalled = File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe"));
+            var brokerPath = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe");
+            var brokerTrust = brokerInstalled
+                ? _brokerTrustPolicy.Verify(brokerPath)
+                : BrokerTrustResult.Deny("broker-not-installed");
+            var workerTrust = workerInstalled
+                ? await WorkerBundleTrustEvaluator.VerifyAsync(AppContext.BaseDirectory, cancellationToken).ConfigureAwait(false)
+                : WorkerBundleTrustResult.Deny("worker-not-installed");
+            var installSecurity = new InstallDirectorySecurityResult(
+                Protected: _brokerTrustPolicy is ReleaseBrokerTrustPolicy
+                    && brokerTrust.Verified
+                    && !string.Equals(brokerTrust.NonSensitiveReason, "install-directory-user-writable", StringComparison.Ordinal),
+                UserWritable: string.Equals(brokerTrust.NonSensitiveReason, "install-directory-user-writable", StringComparison.Ordinal),
+                NonSensitiveReason: brokerTrust.Verified ? null : brokerTrust.NonSensitiveReason);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.EnvironmentAssessment, OperationStageIds.Completing);
             return new EnvironmentAssessmentResult(
@@ -78,8 +95,11 @@ public sealed class EnvironmentAssessmentWorkflow : IEnvironmentAssessmentWorkfl
                 MatchingAdapters: matchingAdapters,
                 WorkerInstalled: workerInstalled,
                 BrokerInstalled: brokerInstalled,
-                BrokerAcquireAndMaterializeAvailable: brokerInstalled && workerInstalled && matchingProfiles.Count > 0,
-                Workspace: workspace);
+                BrokerAcquireAndMaterializeAvailable: brokerInstalled && workerInstalled && matchingProfiles.Count > 0 && brokerTrust.Verified && workerTrust.Verified,
+                Workspace: workspace,
+                BrokerTrustResult: brokerTrust,
+                WorkerBundleTrustResult: workerTrust,
+                InstallDirectorySecurity: installSecurity);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

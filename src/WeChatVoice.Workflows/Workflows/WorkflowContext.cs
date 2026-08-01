@@ -14,17 +14,39 @@ public sealed class WorkflowContext
 {
     private static readonly IProgress<OperationProgress> Noop = new NoopProgress();
 
-    public WorkflowContext(IAccountConfirmation accountConfirmation, IProgress<OperationProgress>? progress = null)
+    public WorkflowContext(
+        IAccountConfirmation accountConfirmation,
+        IProgress<OperationProgress>? progress = null,
+        WorkflowStateMachine? stateMachine = null)
     {
         AccountConfirmation = accountConfirmation ?? throw new ArgumentNullException(nameof(accountConfirmation));
         Progress = progress ?? Noop;
+        StateMachine = stateMachine ?? new WorkflowStateMachine();
     }
 
-    public WorkflowStateMachine StateMachine { get; } = new();
+    /// <summary>
+    /// The state machine supplied by the host for this run. A context created
+    /// directly by the CLI or a test gets its own machine for compatibility;
+    /// Desktop passes the active run machine so there is only one observable
+    /// state source.
+    /// </summary>
+    public WorkflowStateMachine StateMachine { get; }
 
     public IAccountConfirmation AccountConfirmation { get; }
 
     public IProgress<OperationProgress> Progress { get; }
+
+    /// <summary>
+    /// Starts a workflow when it owns the context directly. A Desktop host
+    /// starts the shared session before dispatching the operation, in which
+    /// case this is an idempotent validation of the already-running state.
+    /// </summary>
+    public bool TryStart()
+    {
+        var state = StateMachine.State;
+        return state == WorkflowState.Running
+            || (state == WorkflowState.Idle && StateMachine.TryStart());
+    }
 
     /// <summary>
     /// Emits a running progress event with the given well-known stage. Status

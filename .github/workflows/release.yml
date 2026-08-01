@@ -1,0 +1,39 @@
+name: signed-release-smoke
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-release-smoke:
+    runs-on: windows-latest
+    env:
+      CI: true
+      WECHATVOICE_SIGNED_RELEASE: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore locked
+        run: dotnet restore WeChatVoice.slnx --locked-mode
+      - name: Materialize signing certificate
+        shell: pwsh
+        env:
+          WECHATVOICE_SIGNING_PFX_BASE64: ${{ secrets.WECHATVOICE_SIGNING_PFX_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WECHATVOICE_SIGNING_PFX_BASE64)) {
+            throw 'WECHATVOICE_SIGNING_PFX_BASE64 is not configured.'
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'wechatvoice-release-signing.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WECHATVOICE_SIGNING_PFX_BASE64))
+          "WECHATVOICE_SIGNING_PFX_PATH=$pfxPath" >> $env:GITHUB_ENV
+      - name: Publish, sign, manifest, and protected-directory trust smoke
+        shell: pwsh
+        env:
+          WECHATVOICE_SIGNING_PFX_PASSWORD: ${{ secrets.WECHATVOICE_SIGNING_PFX_PASSWORD }}
+        run: ./scripts/publish-smoke.ps1 -PfxPath "$env:WECHATVOICE_SIGNING_PFX_PATH" -PfxPassword "$env:WECHATVOICE_SIGNING_PFX_PASSWORD" -RequireSignature -ReleaseTrustSmoke

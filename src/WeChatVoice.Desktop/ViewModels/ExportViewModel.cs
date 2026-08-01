@@ -25,6 +25,10 @@ public sealed partial class ExportViewModel : PageViewModelBase
 
     public override string Title => "语音导出";
 
+    public override bool CanNavigate => Services.Project.Workspace is not null;
+
+    public override string? NavigationHint => CanNavigate ? null : "请先完成物料化或加载 Workspace";
+
     [ObservableProperty]
     private string? _workspacePath;
 
@@ -62,37 +66,47 @@ public sealed partial class ExportViewModel : PageViewModelBase
     private string? _manifestPath;
 
     [RelayCommand]
-    private Task ExportAsync() => RunHost.RunAsync(async (context, cancellationToken) =>
-    {
-        if (string.IsNullOrWhiteSpace(WorkspacePath) || string.IsNullOrWhiteSpace(OutputDirectory))
+    private Task ExportAsync() => RunHost.RunAsync(
+        async (context, cancellationToken) =>
         {
-            throw new ArgumentException("请填写 Workspace 与输出目录。");
-        }
+            var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath)
+                ? Services.Project.WorkspacePath
+                : WorkspacePath;
+            if (string.IsNullOrWhiteSpace(workspacePath) || string.IsNullOrWhiteSpace(OutputDirectory))
+            {
+                throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace and output directories are required.");
+            }
 
-        var result = await Workflows.VoiceExport.RunAsync(
-            new VoiceExportWorkflowRequest(
-                WorkspacePath,
-                OutputDirectory,
-                ContactUsername: string.IsNullOrWhiteSpace(ContactUsername) ? null : ContactUsername,
-                ConversationId: null,
-                Direction: ParseDirection(),
-                From: VoiceQueryBuilder.ParseUtc(FromText, "from"),
-                To: VoiceQueryBuilder.ParseUtc(ToText, "to")),
-            context,
-            cancellationToken).ConfigureAwait(false);
-        var manifest = result.Manifest;
-        ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
-        SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
-        Failures = manifest.Failures;
-        FailureCount = manifest.Failures.Count;
-        ExportSummary = manifest.RunStatus switch
+            return await Workflows.VoiceExport.RunAsync(
+                new VoiceExportWorkflowRequest(
+                    workspacePath,
+                    OutputDirectory,
+                    ContactUsername: string.IsNullOrWhiteSpace(ContactUsername) ? Services.Project.SelectedContact?.Username : ContactUsername,
+                    ConversationId: null,
+                    Direction: ParseDirection(),
+                    From: VoiceQueryBuilder.ParseUtc(FromText, "from"),
+                    To: VoiceQueryBuilder.ParseUtc(ToText, "to")),
+                context,
+                cancellationToken).ConfigureAwait(false);
+        },
+        result =>
         {
-            ExportRunStatus.Completed => $"导出完成：新增 {ExportedCount} 条，跳过 {SkippedCount} 条",
-            ExportRunStatus.CompletedWithFailures => $"导出完成（含失败）：新增 {ExportedCount} 条，失败 {FailureCount} 条",
-            ExportRunStatus.Cancelled => $"导出已取消：已完成 {ExportedCount} 条",
-            _ => $"导出失败：{FailureCount} 条",
-        };
-    });
+            Services.Project.LastExportRun = result;
+            Services.Project.Workspace = result.Workspace;
+            Services.Project.ExportDirectory = OutputDirectory;
+            var manifest = result.Manifest;
+            ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
+            SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
+            Failures = manifest.Failures;
+            FailureCount = manifest.Failures.Count;
+            ExportSummary = manifest.RunStatus switch
+            {
+                ExportRunStatus.Completed => $"导出完成：新增 {ExportedCount} 条，跳过 {SkippedCount} 条",
+                ExportRunStatus.CompletedWithFailures => $"导出完成（含失败）：新增 {ExportedCount} 条，失败 {FailureCount} 条",
+                ExportRunStatus.Cancelled => $"导出已取消：已完成 {ExportedCount} 条",
+                _ => $"导出失败：{FailureCount} 条",
+            };
+        });
 
     /// <summary>Recovers a manifest from a flushed run journal after a crash.</summary>
     [RelayCommand]
@@ -112,9 +126,9 @@ public sealed partial class ExportViewModel : PageViewModelBase
             Failures = manifest.Failures;
             ExportSummary = $"Journal 恢复完成：{ExportedCount} 条，失败 {manifest.Failures.Count} 条";
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            LastError = exception.Message;
+            LastError = "[WorkflowFailed] retry";
         }
     }
 
@@ -133,6 +147,6 @@ public sealed partial class ExportViewModel : PageViewModelBase
 
         return Enum.TryParse<VoiceDirection>(DirectionText, true, out var direction)
             ? direction
-            : throw new ArgumentException("方向必须是 incoming 或 outgoing。");
+            : throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Direction must be incoming or outgoing.");
     }
 }

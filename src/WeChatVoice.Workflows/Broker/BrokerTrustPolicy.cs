@@ -18,3 +18,11 @@ public interface IBrokerTrustPolicy
 {
     BrokerTrustResult Verify(string brokerPath);
 }
+
+public sealed record WorkerBundleTrustResult(bool Verified, string? NonSensitiveReason)
+{
+    public static WorkerBundleTrustResult Ok() => new(true, null);
+    public static WorkerBundleTrustResult Deny(string reason) => new(false, reason);
+}
+
+public sealed record InstallDirectorySecurityResult(bool Protected, bool UserWritable, string? NonSensitiveReason);

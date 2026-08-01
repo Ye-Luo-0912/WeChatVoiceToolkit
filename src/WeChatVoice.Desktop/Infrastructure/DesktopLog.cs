@@ -5,16 +5,16 @@ using WeChatVoice.Core.Models;
 namespace WeChatVoice.Desktop.Infrastructure;
 
 /// <summary>
-/// LocalApplicationData log for the Desktop host. The log is deliberately
-/// narrow: it records stages, error codes, and durations only. It never
-/// receives contact usernames, keys, memory contents, or database data; a
-/// defensive scrubber additionally redacts wxid_ identifiers and long hex
-/// values in case a caller misuses the API.
+/// LocalApplicationData log for the Desktop host. It records stages, error
+/// codes, and durations only. RecentLines is an atomic snapshot rather than a
+/// live mutable collection, so the diagnostics page cannot enumerate while a
+/// worker appends a new entry.
 /// </summary>
 public sealed partial class DesktopLog
 {
     private static readonly object Gate = new();
     private readonly string _directory;
+    private readonly RingBuffer _recentLines = new();
 
     public DesktopLog(string? directory = null)
         => _directory = directory ?? Path.Combine(
@@ -22,11 +22,18 @@ public sealed partial class DesktopLog
             "WeChatVoiceToolkit",
             "logs");
 
-    /// <summary>Path of today's log file.</summary>
     public string LogPath => Path.Combine(_directory, $"desktop-{DateTime.UtcNow:yyyyMMdd}.log");
 
-    /// <summary>Last lines for the diagnostics page (ring buffer of the session).</summary>
-    public IReadOnlyList<string> RecentLines { get; } = new RingBuffer();
+    /// <summary>Returns a stable copy of the current session log.</summary>
+    public IReadOnlyList<string> GetRecentSnapshot()
+    {
+        lock (Gate)
+        {
+            return _recentLines.ToArray();
+        }
+    }
+
+    public IReadOnlyList<string> RecentLines => GetRecentSnapshot();
 
     public void Stage(OperationPhase phase, string stageId, double? percent = null)
         => Write($"stage {phase}:{Scrub(stageId)}{(percent is { } p ? $" {p:0}%" : string.Empty)}");
@@ -35,7 +42,6 @@ public sealed partial class DesktopLog
 
     public void Error(string message) => Write($"error {Scrub(message)}");
 
-    /// <summary>Records a typed failure code; no exception text crosses the log.</summary>
     public void ErrorCode(ErrorCode code) => Write($"error-code {code}");
 
     public void ErrorCode(BrokerTransportErrorCode code) => Write($"transport-code {code}");
@@ -56,11 +62,8 @@ public sealed partial class DesktopLog
             catch (UnauthorizedAccessException)
             {
             }
-        }
 
-        if (RecentLines is RingBuffer ring)
-        {
-            ring.Add(entry);
+            _recentLines.AddUnsafe(entry);
         }
     }
 
@@ -82,20 +85,20 @@ public sealed partial class DesktopLog
     [GeneratedRegex("\\b[0-9a-fA-F]{32,}\\b")]
     private static partial Regex HexPattern();
 
-    private sealed class RingBuffer : List<string>
+    private sealed class RingBuffer
     {
         private const int MaxCapacity = 200;
+        private readonly List<string> _items = [];
 
-        public new void Add(string item)
+        public void AddUnsafe(string item)
         {
-            lock (Gate)
+            _items.Add(item);
+            if (_items.Count > MaxCapacity)
             {
-                base.Add(item);
-                if (Count > MaxCapacity)
-                {
-                    RemoveRange(0, Count - MaxCapacity);
-                }
+                _items.RemoveRange(0, _items.Count - MaxCapacity);
             }
         }
+
+        public string[] ToArray() => _items.ToArray();
     }
 }

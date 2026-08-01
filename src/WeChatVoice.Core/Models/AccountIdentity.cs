@@ -15,7 +15,16 @@ public enum AccountIdentityState
     Confirmed,
 }
 
-public sealed record AccountIdentity(AccountIdentityState State, string? ConfirmedBy)
+public enum UserConfirmationState
+{
+    NotConfirmed,
+    Confirmed,
+}
+
+public sealed record AccountIdentity(
+    AccountIdentityState State,
+    string? ConfirmedBy,
+    UserConfirmationState UserConfirmation = UserConfirmationState.NotConfirmed)
 {
     public static AccountIdentity CandidateOnly { get; } = new(AccountIdentityState.Candidate, null);
 }

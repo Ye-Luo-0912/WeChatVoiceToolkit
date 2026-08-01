@@ -612,7 +612,6 @@ static Command CreateWorkspaceCommand()
                     backendId,
                     decryptor,
                     AllowUntrustedBackend: allowUntrustedBackend,
-                    AllowDevelopmentBroker: allowDevelopmentBroker,
                     RequestedAccountId: requestedAccount,
                     OutputDirectory: output,
                     WorkspaceOutputPath: workspaceOutput),

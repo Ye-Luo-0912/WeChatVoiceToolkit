@@ -1,5 +1,6 @@
 using WeChatVoice.Core.Models;
 using WeChatVoice.Windows;
+using WeChatVoice.Workflows.Broker;
 using KeyProfileMetadataModel = WeChatVoice.KeyProfileMetadata.KeyProfileMetadata;
 
 namespace WeChatVoice.Workflows.Workflows;
@@ -92,7 +93,10 @@ public sealed record EnvironmentAssessmentResult(
     bool WorkerInstalled,
     bool BrokerInstalled,
     bool BrokerAcquireAndMaterializeAvailable,
-    VerifiedLocalWorkspace? Workspace);
+    VerifiedLocalWorkspace? Workspace,
+    BrokerTrustResult? BrokerTrustResult = null,
+    WorkerBundleTrustResult? WorkerBundleTrustResult = null,
+    InstallDirectorySecurityResult? InstallDirectorySecurity = null);
 
 public sealed record SnapshotWorkflowRequest(
     string SourceDirectory,

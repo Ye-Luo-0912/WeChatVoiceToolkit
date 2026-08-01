@@ -17,11 +17,15 @@ public sealed class DesktopServices
     public DesktopServices(
         WorkflowCompositionRoot workflows,
         DesktopLog log,
-        RecentWorkspaceStore recentWorkspaces)
+        RecentWorkspaceStore recentWorkspaces,
+        OperationCoordinator? operationCoordinator = null)
     {
         Workflows = workflows;
         Log = log;
         RecentWorkspaces = recentWorkspaces;
+        OperationCoordinator = operationCoordinator ?? new OperationCoordinator();
+        Project = new ExportProjectSession();
+        FolderPicker = new DesktopFolderPicker();
     }
 
     public static DesktopServices Create(bool allowDevelopmentBroker = false, string? appDataDirectory = null)
@@ -49,4 +53,10 @@ public sealed class DesktopServices
     public DesktopLog Log { get; }
 
     public RecentWorkspaceStore RecentWorkspaces { get; }
+
+    public OperationCoordinator OperationCoordinator { get; }
+
+    public ExportProjectSession Project { get; }
+
+    public DesktopFolderPicker FolderPicker { get; }
 }

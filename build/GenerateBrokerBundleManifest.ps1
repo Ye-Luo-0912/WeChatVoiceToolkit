@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Directory,
-    [string]$PublisherThumbprint = ''
+    [string]$PublisherThumbprint = '',
+    [switch]$RequireSignedPublisher
 )
 $ErrorActionPreference = 'Stop'
 $Directory = [IO.Path]::GetFullPath($Directory.Trim().Trim('"'))
@@ -22,13 +23,24 @@ function Get-HashOrNull([string]$relative) {
 }
 
 $brokerSha = Get-HashOrNull 'WeChatVoice.KeyBroker.exe'
+$publisher = $PublisherThumbprint.Trim()
+if ([string]::IsNullOrWhiteSpace($publisher) -and $RequireSignedPublisher) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $exe
+    if ($signature.Status -eq 'Valid' -and $null -ne $signature.SignerCertificate) {
+        $publisher = $signature.SignerCertificate.Thumbprint
+    }
+    elseif ($RequireSignedPublisher) {
+        throw "The Broker EXE is not Authenticode-signed: $($signature.Status)"
+    }
+}
+
 $manifest = [ordered]@{
     brokerExeSha256 = $brokerSha
     depsFile = 'WeChatVoice.KeyBroker.deps.json'
     depsSha256 = Get-HashOrNull 'WeChatVoice.KeyBroker.deps.json'
     runtimeConfigFile = 'WeChatVoice.KeyBroker.runtimeconfig.json'
     runtimeConfigSha256 = Get-HashOrNull 'WeChatVoice.KeyBroker.runtimeconfig.json'
-    publisherThumbprint = if ([string]::IsNullOrWhiteSpace($PublisherThumbprint)) { $null } else { $PublisherThumbprint.Trim().ToLowerInvariant() }
+    publisherThumbprint = if ([string]::IsNullOrWhiteSpace($publisher)) { $null } else { $publisher.ToLowerInvariant() }
 }
 $json = $manifest | ConvertTo-Json -Depth 3
 [IO.File]::WriteAllText((Join-Path $Directory 'WeChatVoice.KeyBroker.bundle.json'), $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))

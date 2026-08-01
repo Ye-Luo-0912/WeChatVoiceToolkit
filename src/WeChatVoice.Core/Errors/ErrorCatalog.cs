@@ -25,6 +25,8 @@ public static class ErrorCatalog
         ErrorCode.ExportPartialFailure => new AppError(code, IsRetryable: true, "review-failures", "export-partial-failure"),
         ErrorCode.AccountConfirmationRequired => new AppError(code, IsRetryable: true, "confirm-account", "account-confirmation-required"),
         ErrorCode.UacElevationRejected => new AppError(code, IsRetryable: true, "retry-materialization", "uac-elevation-rejected"),
+        ErrorCode.WorkflowFailed => new AppError(code, IsRetryable: true, "retry", "workflow-failed"),
+        ErrorCode.InvalidRequest => new AppError(code, IsRetryable: false, "complete-request", "invalid-request"),
         _ => new AppError(code, IsRetryable: false, "retry", "unknown-error"),
     };
 }

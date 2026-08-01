@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.ViewModels;
@@ -37,21 +38,49 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
     private bool _isPotentiallyInconsistent;
 
     [RelayCommand]
-    private Task CreateSnapshotAsync() => RunHost.RunAsync(async (context, cancellationToken) =>
-    {
-        if (string.IsNullOrWhiteSpace(SourceDirectory) || string.IsNullOrWhiteSpace(OutputDirectory))
+    private Task CreateSnapshotAsync() => RunHost.RunAsync(
+        async (context, cancellationToken) =>
         {
-            throw new ArgumentException("请填写源目录与输出目录。");
-        }
+            if (string.IsNullOrWhiteSpace(SourceDirectory) || string.IsNullOrWhiteSpace(OutputDirectory))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "Source and output directories are required.");
+            }
 
-        var result = await Workflows.Snapshot.RunAsync(
-            new SnapshotWorkflowRequest(SourceDirectory, OutputDirectory, AllowLiveSource: AllowLiveSource, MaxAttempts: 3),
-            context,
-            cancellationToken).ConfigureAwait(false);
-        AccountCandidate = result.SourceIdentity?.AccountCandidate;
-        IsPotentiallyInconsistent = result.Manifest.PotentiallyInconsistent;
-        SnapshotSummary = $"快照 {result.Manifest.SnapshotId[..16]}… 已创建：{result.Manifest.Files.Count} 个文件"
-            + (result.SourceIdentity?.AccountCandidate is { } candidate ? $"；检测到账号：{candidate}" : string.Empty)
-            + (result.Manifest.PotentiallyInconsistent ? "；⚠ 源为活动状态（potentiallyInconsistent）" : string.Empty);
-    });
+            Services.Project.ResetFromSource(SourceDirectory);
+
+            return await Workflows.Snapshot.RunAsync(
+                new SnapshotWorkflowRequest(SourceDirectory, OutputDirectory, AllowLiveSource: AllowLiveSource, MaxAttempts: 3),
+                context,
+                cancellationToken).ConfigureAwait(false);
+        },
+        result =>
+        {
+            Services.Project.Snapshot = result;
+            Services.Project.SnapshotDirectory = OutputDirectory;
+            AccountCandidate = result.SourceIdentity?.AccountCandidate;
+            IsPotentiallyInconsistent = result.Manifest.PotentiallyInconsistent;
+            SnapshotSummary = $"快照 {result.Manifest.SnapshotId[..16]}… 已创建：{result.Manifest.Files.Count} 个文件"
+                + (result.SourceIdentity?.AccountCandidate is { } candidate ? $"；检测到账号：{candidate}" : string.Empty)
+                + (result.Manifest.PotentiallyInconsistent ? "；⚠ 源为活动状态（potentiallyInconsistent）" : string.Empty);
+        });
+
+    [RelayCommand]
+    private async Task BrowseSourceAsync()
+    {
+        var path = await Services.FolderPicker.PickFolderAsync("选择 Weixin db_storage 源目录").ConfigureAwait(true);
+        if (path is not null)
+        {
+            SourceDirectory = path;
+        }
+    }
+
+    [RelayCommand]
+    private async Task BrowseOutputAsync()
+    {
+        var path = await Services.FolderPicker.PickFolderAsync("选择快照输出目录").ConfigureAwait(true);
+        if (path is not null)
+        {
+            OutputDirectory = path;
+        }
+    }
 }

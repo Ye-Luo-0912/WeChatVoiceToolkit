@@ -1,12 +1,14 @@
-name: publish-smoke
+name: unsigned-layout-smoke
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  publish-smoke:
+  unsigned-layout-smoke:
     runs-on: windows-latest
     env:
       CI: true

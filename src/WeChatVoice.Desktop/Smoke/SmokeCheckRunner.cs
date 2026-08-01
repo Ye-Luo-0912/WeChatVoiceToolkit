@@ -1,6 +1,7 @@
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Desktop.Infrastructure;
+using WeChatVoice.Workflows.Broker;
 using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.Smoke;
@@ -14,7 +15,7 @@ namespace WeChatVoice.Desktop.Smoke;
 /// </summary>
 public static class SmokeCheckRunner
 {
-    public static int Run()
+    public static int Run(bool releaseTrustSmoke = false)
     {
         try
         {
@@ -30,6 +31,13 @@ public static class SmokeCheckRunner
             Assert(services.Workflows.ContactDiscovery is not null, "ContactDiscovery workflow missing");
             Assert(services.Workflows.VoiceScan is not null, "VoiceScan workflow missing");
             Assert(services.Workflows.VoiceExport is not null, "VoiceExport workflow missing");
+
+            if (releaseTrustSmoke)
+            {
+                var brokerPath = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe");
+                var trust = new ReleaseBrokerTrustPolicy(installDirectory: AppContext.BaseDirectory).Verify(brokerPath);
+                Assert(trust.Verified, $"release broker trust failed: {trust.NonSensitiveReason}");
+            }
 
             // 2. State machine transitions: run -> complete.
             var machine = new WorkflowStateMachine();

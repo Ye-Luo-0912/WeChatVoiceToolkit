@@ -10,20 +10,34 @@
     <KeyBrokerOutputPath Condition="'$(RuntimeIdentifier)' != ''">..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\$(RuntimeIdentifier)\</KeyBrokerOutputPath>
   </PropertyGroup>
 
-  <Target Name="BuildKeyBroker" BeforeTargets="CopyKeyBroker" Condition="'$(RuntimeIdentifier)' == ''">
-    <MSBuild Projects="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" Targets="Build" Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
+  <Target Name="BuildKeyBroker" BeforeTargets="CopyKeyBroker;CopyKeyBrokerToPublish">
+    <MSBuild Projects="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" Targets="Restore;Build" Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
   </Target>
 
-  <Target Name="CopyKeyBroker" AfterTargets="Build" Condition="'$(RuntimeIdentifier)' == ''">
+  <Target Name="CopyKeyBroker" AfterTargets="Build">
     <ItemGroup>
       <KeyBrokerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.KeyBroker*" />
       <SqlCipherWorkerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.SqlCipherWorker*" />
       <SqlCipherProviderFiles Include="$(KeyBrokerOutputPath)SQLitePCLRaw.provider.e_sqlcipher.dll" />
-      <SqlCipherNativeFiles Include="$(KeyBrokerOutputPath)runtimes\win-x64\native\e_sqlcipher.dll" />
+      <SqlCipherNativeFiles Include="$(KeyBrokerOutputPath)runtimes\win-x64\native\e_sqlcipher.dll" Condition="'$(RuntimeIdentifier)' == ''" />
+      <SqlCipherNativeFiles Include="$(KeyBrokerOutputPath)e_sqlcipher.dll" Condition="'$(RuntimeIdentifier)' != ''" />
     </ItemGroup>
     <Copy SourceFiles="@(KeyBrokerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SqlCipherWorkerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SqlCipherProviderFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SqlCipherNativeFiles)" DestinationFolder="$(OutDir)runtimes\win-x64\native" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyKeyBrokerToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <PublishedKeyBrokerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.KeyBroker*" />
+      <PublishedSqlCipherWorkerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.SqlCipherWorker*" />
+      <PublishedSqlCipherProviderFiles Include="$(KeyBrokerOutputPath)SQLitePCLRaw.provider.e_sqlcipher.dll" />
+      <PublishedSqlCipherNativeFiles Include="$(KeyBrokerOutputPath)e_sqlcipher.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PublishedKeyBrokerFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(PublishedSqlCipherWorkerFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(PublishedSqlCipherProviderFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(PublishedSqlCipherNativeFiles)" DestinationFolder="$(PublishDir)runtimes\win-x64\native" SkipUnchangedFiles="true" />
   </Target>
 </Project>

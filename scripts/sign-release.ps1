@@ -50,7 +50,7 @@ foreach ($file in @('WeChatVoice.Cli.exe', 'WeChatVoice.Desktop.exe', 'WeChatVoi
     $path = Join-Path $Directory $file
     $signature = Get-AuthenticodeSignature -LiteralPath $path
     if ($signature.Status -ne 'Valid') {
-        throw "Authenticode verification failed for $file: $($signature.Status)"
+        throw "Authenticode verification failed for ${file}: $($signature.Status)"
     }
     Write-Host "Signed and verified: $file ($($signature.SignerCertificate.Subject))"
 }

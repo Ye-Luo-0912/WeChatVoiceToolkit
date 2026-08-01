@@ -25,7 +25,6 @@
         <TextBox Width="380" PlaceholderText="可选：显式确认的账号（wxid_…）" Text="{Binding RequestedAccount}" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="16">
-        <CheckBox Content="允许未签名开发构建 Broker（仅调试）" IsChecked="{Binding AllowDevelopmentBroker}" />
         <Button Content="开始物料化" Command="{Binding MaterializeCommand}" />
         <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
         <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />

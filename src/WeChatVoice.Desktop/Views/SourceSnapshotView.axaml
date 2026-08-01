@@ -15,8 +15,10 @@
       <TextBlock FontSize="20" FontWeight="SemiBold" Text="创建源快照" />
       <TextBlock Text="源目录为 Weixin 账号目录下的 db_storage（如 …\wxid_xxx_16hex\db_storage）。快照是后续所有步骤的可信输入。" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="420" PlaceholderText="源目录（db_storage）" Text="{Binding SourceDirectory}" />
-        <TextBox Width="420" PlaceholderText="输出目录" Text="{Binding OutputDirectory}" />
+        <TextBox Width="350" PlaceholderText="源目录（db_storage）" Text="{Binding SourceDirectory}" />
+        <Button Content="选择" Command="{Binding BrowseSourceCommand}" />
+        <TextBox Width="350" PlaceholderText="输出目录" Text="{Binding OutputDirectory}" />
+        <Button Content="选择" Command="{Binding BrowseOutputCommand}" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="16">
         <CheckBox Content="允许活动源（potentiallyInconsistent）" IsChecked="{Binding AllowLiveSource}" />

@@ -37,7 +37,8 @@ internal static class BrokerHost
         string? workspaceOutput,
         CancellationToken cancellationToken,
         bool allowExperimentalProfile = false,
-        Action<BrokerStageEvent>? reportStage = null)
+        Action<BrokerStageEvent>? reportStage = null,
+        string? callerSid = null)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
@@ -123,7 +124,8 @@ internal static class BrokerHost
                     "materializing",
                     CompletedDatabases: completed,
                     TotalDatabases: total)),
-                checkpoint: stage => reportStage?.Invoke(new BrokerStageEvent(stage)));
+                checkpoint: stage => reportStage?.Invoke(new BrokerStageEvent(stage)),
+                finalWorkspaceUserSid: callerSid);
             var service = new EphemeralAcquireAndMaterializeService(
                 new ProfileDrivenKeyAcquisitionService(
                     new WeixinProcessLocator(),

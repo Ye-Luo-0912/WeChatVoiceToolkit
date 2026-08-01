@@ -19,6 +19,10 @@ public sealed partial class ContactViewModel : PageViewModelBase
 
     public override string Title => "联系人";
 
+    public override bool CanNavigate => Services.Project.Workspace is not null;
+
+    public override string? NavigationHint => CanNavigate ? null : "请先完成物料化或加载 Workspace";
+
     [ObservableProperty]
     private string? _workspacePath;
 
@@ -38,20 +42,31 @@ public sealed partial class ContactViewModel : PageViewModelBase
     private string _contactSummary = "尚未加载";
 
     [RelayCommand]
-    private Task LoadContactsAsync() => RunHost.RunAsync(async (context, cancellationToken) =>
-    {
-        if (string.IsNullOrWhiteSpace(WorkspacePath))
+    private Task LoadContactsAsync() => RunHost.RunAsync(
+        async (context, cancellationToken) =>
         {
-            throw new ArgumentException("请选择 Workspace 路径。");
-        }
+            if (string.IsNullOrWhiteSpace(WorkspacePath))
+            {
+                WorkspacePath = Services.Project.WorkspacePath;
+            }
+            if (string.IsNullOrWhiteSpace(WorkspacePath))
+            {
+                throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace path is required.");
+            }
 
-        var result = await Workflows.ContactDiscovery.RunAsync(
-            new ContactDiscoveryRequest(WorkspacePath, SearchTerm: string.IsNullOrWhiteSpace(SearchTerm) ? null : SearchTerm),
-            context,
-            cancellationToken).ConfigureAwait(false);
-        Contacts = result.Contacts;
-        SelectedContact = result.Contacts.FirstOrDefault();
-        AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
-        ContactSummary = $"共 {result.Contacts.Count} 个一对一联系人（群聊已排除）";
-    });
+            return await Workflows.ContactDiscovery.RunAsync(
+                new ContactDiscoveryRequest(WorkspacePath, SearchTerm: string.IsNullOrWhiteSpace(SearchTerm) ? null : SearchTerm),
+                context,
+                cancellationToken).ConfigureAwait(false);
+        },
+        result =>
+        {
+            Contacts = result.Contacts;
+            SelectedContact = result.Contacts.FirstOrDefault();
+            Services.Project.Workspace = result.Workspace;
+            Services.Project.SelectedContact = SelectedContact;
+            Services.Project.WorkspacePath = WorkspacePath;
+            AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
+            ContactSummary = $"共 {result.Contacts.Count} 个一对一联系人（群聊已排除）";
+        });
 }

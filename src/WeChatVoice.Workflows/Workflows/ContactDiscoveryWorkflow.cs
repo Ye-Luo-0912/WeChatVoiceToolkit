@@ -16,7 +16,7 @@ public sealed class ContactDiscoveryWorkflow(
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
-        if (!context.StateMachine.TryStart())
+        if (!context.TryStart())
         {
             throw new InvalidOperationException("The workflow state machine is not idle.");
         }

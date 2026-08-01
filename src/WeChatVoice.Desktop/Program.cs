@@ -14,7 +14,7 @@ public static class Program
     {
         if (args.Contains("--smoke-check", StringComparer.Ordinal))
         {
-            return Smoke.SmokeCheckRunner.Run();
+            return Smoke.SmokeCheckRunner.Run(args.Contains("--release-trust-smoke", StringComparer.Ordinal));
         }
 
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);

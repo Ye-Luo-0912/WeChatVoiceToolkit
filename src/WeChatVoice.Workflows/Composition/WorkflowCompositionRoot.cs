@@ -39,7 +39,7 @@ public sealed class WorkflowCompositionRoot
         IBrokerClient brokerClient = new KeyBrokerClient(trustPolicy, brokerDirectory);
         var brokerExecutor = new BrokerMaterializationExecutor(brokerClient);
 
-        EnvironmentAssessment = environmentAssessment ?? new EnvironmentAssessmentWorkflow(loader);
+        EnvironmentAssessment = environmentAssessment ?? new EnvironmentAssessmentWorkflow(loader, brokerTrustPolicy: trustPolicy);
         Snapshot = snapshot ?? new SnapshotWorkflow();
         Materialization = materialization ?? new MaterializationWorkflow(brokerExecutor);
         Workspace = workspace ?? new WorkspaceWorkflow(loader: loader);

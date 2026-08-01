@@ -16,6 +16,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 {
     private readonly ConcurrentDictionary<string, byte> _reservedPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _exportRoot;
+    private readonly SemaphoreSlim _artifactIndexGate = new(1, 1);
+    private Dictionary<string, ArtifactIndexEntry>? _artifactIndex;
 
     public FileSystemVoiceExportStore(string exportRoot)
     {
@@ -240,10 +242,85 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             journalContext?.MaterializationProvenance ?? fallback.Provenance);
     }
 
-    private static async Task<ExportArtifact?> ReadExistingArtifactAsync(string path, string relativePath, CancellationToken cancellationToken)
-        => File.Exists(path)
-            ? new ExportArtifact(relativePath, new FileInfo(path).Length, await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false))
-            : null;
+    private async Task<ExportArtifact?> ReadExistingArtifactAsync(string path, string relativePath, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        var info = new FileInfo(path);
+        await _artifactIndexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await EnsureArtifactIndexLoadedAsync(cancellationToken).ConfigureAwait(false);
+            var lastWriteTicks = info.LastWriteTimeUtc.Ticks;
+            if (_artifactIndex!.TryGetValue(relativePath, out var cached)
+                && cached.Length == info.Length
+                && cached.LastWriteUtcTicks == lastWriteTicks)
+            {
+                return new ExportArtifact(relativePath, cached.Length, cached.Sha256);
+            }
+
+            var sha256 = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            var entry = new ArtifactIndexEntry(relativePath, info.Length, lastWriteTicks, sha256, DateTimeOffset.UtcNow);
+            _artifactIndex[relativePath] = entry;
+            var indexPath = Path.Combine(_exportRoot, "artifact-index.jsonl");
+            Directory.CreateDirectory(_exportRoot);
+            await File.AppendAllTextAsync(indexPath, JsonSerializer.Serialize(entry, InfrastructureJson.Compact) + Environment.NewLine, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
+            return new ExportArtifact(relativePath, info.Length, sha256);
+        }
+        finally
+        {
+            _artifactIndexGate.Release();
+        }
+    }
+
+    private async Task EnsureArtifactIndexLoadedAsync(CancellationToken cancellationToken)
+    {
+        if (_artifactIndex is not null)
+        {
+            return;
+        }
+
+        _artifactIndex = new Dictionary<string, ArtifactIndexEntry>(StringComparer.OrdinalIgnoreCase);
+        var indexPath = Path.Combine(_exportRoot, "artifact-index.jsonl");
+        if (!File.Exists(indexPath))
+        {
+            return;
+        }
+
+        await using var stream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 32 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            try
+            {
+                var entry = JsonSerializer.Deserialize<ArtifactIndexEntry>(line, InfrastructureJson.Compact);
+                if (entry is not null && !string.IsNullOrWhiteSpace(entry.RelativePath))
+                {
+                    _artifactIndex[entry.RelativePath] = entry;
+                }
+            }
+            catch (JsonException)
+            {
+                // A torn final index line is ignored; the next verification
+                // will replace the entry with a complete record.
+            }
+        }
+    }
+
+    private sealed record ArtifactIndexEntry(
+        string RelativePath,
+        long Length,
+        long LastWriteUtcTicks,
+        string Sha256,
+        DateTimeOffset LastVerifiedUtc);
 
     private static ExportArtifactState GetOriginalState(ExportArtifact? artifact, VoiceRecord record)
     {

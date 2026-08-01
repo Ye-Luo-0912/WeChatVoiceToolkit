@@ -73,7 +73,7 @@ public sealed class MaterializationWorkflow : IMaterializationWorkflow
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
-        if (!context.StateMachine.TryStart())
+        if (!context.TryStart())
         {
             throw new InvalidOperationException("The workflow state machine is not idle.");
         }
@@ -126,7 +126,10 @@ public sealed class MaterializationWorkflow : IMaterializationWorkflow
             }
 
             var identity = confirmedAccountId is not null
-                ? new AccountIdentity(AccountIdentityState.Confirmed, "user-confirmed-materialization")
+                ? new AccountIdentity(
+                    AccountIdentityState.Candidate,
+                    null,
+                    UserConfirmationState.Confirmed)
                 : AccountIdentity.CandidateOnly;
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.Materialization, OperationStageIds.Completing);
@@ -205,7 +208,6 @@ public sealed record MaterializationWorkflowRequest(
     string BackendId,
     string? ExternalDecryptorPath,
     bool AllowUntrustedBackend,
-    bool AllowDevelopmentBroker,
     string? RequestedAccountId,
     string OutputDirectory,
     string? WorkspaceOutputPath);

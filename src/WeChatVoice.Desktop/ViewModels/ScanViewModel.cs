@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Workflows.Workflows;
 
@@ -24,6 +25,10 @@ public sealed partial class ScanViewModel : PageViewModelBase
     }
 
     public override string Title => "语音扫描";
+
+    public override bool CanNavigate => Services.Project.Workspace is not null;
+
+    public override string? NavigationHint => CanNavigate ? null : "请先完成物料化或加载 Workspace";
 
     [ObservableProperty]
     private string? _workspacePath;
@@ -65,33 +70,42 @@ public sealed partial class ScanViewModel : PageViewModelBase
     private string? _accountSummary;
 
     [RelayCommand]
-    private Task ScanAsync() => RunHost.RunAsync(async (context, cancellationToken) =>
-    {
-        if (string.IsNullOrWhiteSpace(WorkspacePath))
+    private Task ScanAsync() => RunHost.RunAsync(
+        async (context, cancellationToken) =>
         {
-            throw new ArgumentException("请填写 Workspace 路径。");
-        }
+            var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath)
+                ? Services.Project.WorkspacePath
+                : WorkspacePath;
+            if (string.IsNullOrWhiteSpace(workspacePath))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "Workspace path is required.");
+            }
 
-        var result = await Workflows.VoiceScan.RunAsync(
-            new VoiceScanWorkflowRequest(
-                WorkspacePath,
-                ContactUsername: string.IsNullOrWhiteSpace(ContactUsername) ? null : ContactUsername,
-                ConversationId: null,
-                Direction: ParseDirection(),
-                From: VoiceQueryBuilder.ParseUtc(FromText, "from"),
-                To: VoiceQueryBuilder.ParseUtc(ToText, "to")),
-            context,
-            cancellationToken).ConfigureAwait(false);
-        var report = result.Report;
-        MatchedVoiceCount = report.MatchedVoiceCount;
-        MissingCount = report.UnassociatedMediaCount;
-        EmptyCount = report.EmptyBlobCount;
-        InvalidHeaderCount = report.InvalidHeaderCount;
-        AmbiguousCount = report.AmbiguousPayloadCount;
-        DuplicateCount = report.SuspectedDuplicateCount;
-        AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
-        ScanSummary = $"扫描完成：匹配 {report.MatchedVoiceCount} 条；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；疑似重复 {DuplicateCount}";
-    });
+            return await Workflows.VoiceScan.RunAsync(
+                new VoiceScanWorkflowRequest(
+                    workspacePath,
+                    ContactUsername: string.IsNullOrWhiteSpace(ContactUsername) ? Services.Project.SelectedContact?.Username : ContactUsername,
+                    ConversationId: null,
+                    Direction: ParseDirection(),
+                    From: VoiceQueryBuilder.ParseUtc(FromText, "from"),
+                    To: VoiceQueryBuilder.ParseUtc(ToText, "to")),
+                context,
+                cancellationToken).ConfigureAwait(false);
+        },
+        result =>
+        {
+            Services.Project.Scan = result;
+            Services.Project.Workspace = result.Workspace;
+            var report = result.Report;
+            MatchedVoiceCount = report.MatchedVoiceCount;
+            MissingCount = report.UnassociatedMediaCount;
+            EmptyCount = report.EmptyBlobCount;
+            InvalidHeaderCount = report.InvalidHeaderCount;
+            AmbiguousCount = report.AmbiguousPayloadCount;
+            DuplicateCount = report.SuspectedDuplicateCount;
+            AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
+            ScanSummary = $"扫描完成：匹配 {report.MatchedVoiceCount} 条；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；疑似重复 {DuplicateCount}";
+        });
 
     private VoiceDirection? ParseDirection()
     {
@@ -102,6 +116,6 @@ public sealed partial class ScanViewModel : PageViewModelBase
 
         return Enum.TryParse<VoiceDirection>(DirectionText, true, out var direction)
             ? direction
-            : throw new ArgumentException("方向必须是 incoming 或 outgoing。");
+            : throw new AppFailureException(ErrorCode.InvalidRequest, "Direction must be incoming or outgoing.");
     }
 }

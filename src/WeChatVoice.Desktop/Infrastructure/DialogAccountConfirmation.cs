@@ -3,27 +3,159 @@ using WeChatVoice.Core.Ports;
 
 namespace WeChatVoice.Desktop.Infrastructure;
 
+/// <summary>One interactive account-confirmation request.</summary>
+public sealed class PendingAccountConfirmation
+{
+    internal PendingAccountConfirmation(AccountIdentityReport report)
+    {
+        RequestId = Guid.NewGuid();
+        Report = report;
+        Completion = new TaskCompletionSource<AccountConfirmation>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public Guid RequestId { get; }
+
+    public AccountIdentityReport Report { get; }
+
+    internal TaskCompletionSource<AccountConfirmation> Completion { get; }
+
+    internal CancellationTokenRegistration CancellationRegistration { get; set; }
+
+    internal void DisposeCancellationRegistration() => CancellationRegistration.Dispose();
+}
+
 /// <summary>
-/// UI-backed account confirmation port. The workflow blocks on
-/// <see cref="ConfirmAsync"/> while the page VM raises the confirmation dialog
-/// on the UI thread and completes this port with the user's answer. Declining
-/// returns <c>Confirmed = false</c>; the workflow then fails with
-/// <see cref="Core.Errors.ErrorCode.AccountConfirmationRequired"/>.
+/// UI-backed account confirmation. Every ConfirmAsync call creates a fresh
+/// pending request, and a second concurrent request is rejected. The caller
+/// supplies the UI dispatcher so the request event is never raised on the
+/// workflow worker thread.
 /// </summary>
 public sealed class DialogAccountConfirmation : IAccountConfirmation
 {
-    private readonly TaskCompletionSource<AccountConfirmation> _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly object _gate = new();
+    private readonly Action<Action> _marshal;
+    private PendingAccountConfirmation? _pending;
+
+    public DialogAccountConfirmation(Action<Action>? marshal = null)
+        => _marshal = marshal ?? (action => action());
 
     public event EventHandler<AccountIdentityReport>? ConfirmationRequested;
+
+    public PendingAccountConfirmation? Pending
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _pending;
+            }
+        }
+    }
 
     public async Task<AccountConfirmation> ConfirmAsync(
         AccountIdentityReport report,
         CancellationToken cancellationToken)
     {
-        ConfirmationRequested?.Invoke(this, report);
-        return await _tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var pending = new PendingAccountConfirmation(report);
+        lock (_gate)
+        {
+            if (_pending is not null)
+            {
+                throw new InvalidOperationException("An account confirmation request is already pending.");
+            }
+
+            _pending = pending;
+        }
+
+        pending.CancellationRegistration = cancellationToken.Register(
+            static state =>
+            {
+                var request = (PendingCancellationState)state!;
+                request.Owner.Cancel(request.Pending, request.Token);
+            },
+            new PendingCancellationState(this, pending, cancellationToken));
+
+        try
+        {
+            var shouldRaise = false;
+            lock (_gate)
+            {
+                shouldRaise = ReferenceEquals(_pending, pending);
+            }
+
+            if (shouldRaise)
+            {
+                _marshal(() =>
+                {
+                    lock (_gate)
+                    {
+                        if (!ReferenceEquals(_pending, pending))
+                        {
+                            return;
+                        }
+                    }
+
+                    ConfirmationRequested?.Invoke(this, report);
+                });
+            }
+
+            return await pending.Completion.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            ClearIfCurrent(pending);
+            pending.DisposeCancellationRegistration();
+        }
     }
 
-    public void Complete(bool confirmed, string? confirmedAccountId)
-        => _tcs.TrySetResult(new AccountConfirmation(confirmed, confirmedAccountId));
+    /// <summary>Completes the currently displayed request.</summary>
+    public bool Complete(bool confirmed, string? confirmedAccountId)
+    {
+        PendingAccountConfirmation? pending;
+        lock (_gate)
+        {
+            pending = _pending;
+            _pending = null;
+        }
+
+        if (pending is null)
+        {
+            return false;
+        }
+
+        pending.Completion.TrySetResult(new AccountConfirmation(confirmed, confirmedAccountId));
+        pending.DisposeCancellationRegistration();
+        return true;
+    }
+
+    private void Cancel(PendingAccountConfirmation pending, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_pending, pending))
+            {
+                return;
+            }
+
+            _pending = null;
+        }
+
+        pending.Completion.TrySetCanceled(cancellationToken);
+    }
+
+    private void ClearIfCurrent(PendingAccountConfirmation pending)
+    {
+        lock (_gate)
+        {
+            if (ReferenceEquals(_pending, pending))
+            {
+                _pending = null;
+            }
+        }
+    }
+
+    private sealed record PendingCancellationState(
+        DialogAccountConfirmation Owner,
+        PendingAccountConfirmation Pending,
+        CancellationToken Token);
 }

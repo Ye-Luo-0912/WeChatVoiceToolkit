@@ -16,7 +16,6 @@ public sealed class MaterializationWorkflowTests
             backend,
             externalDecryptor,
             AllowUntrustedBackend: allowUntrusted,
-            AllowDevelopmentBroker: false,
             RequestedAccountId: account,
             "C:\\output",
             null);

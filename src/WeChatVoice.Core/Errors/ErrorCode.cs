@@ -56,4 +56,10 @@ public enum ErrorCode
 
     /// <summary>The elevated Key Broker could not start because the user declined the UAC prompt.</summary>
     UacElevationRejected,
+
+    /// <summary>A workflow boundary returned an unexpected failure.</summary>
+    WorkflowFailed,
+
+    /// <summary>The host supplied an incomplete or invalid workflow request.</summary>
+    InvalidRequest,
 }

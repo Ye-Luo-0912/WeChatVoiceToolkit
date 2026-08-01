@@ -77,7 +77,7 @@ public sealed class MaterializationViewModelTests : IDisposable
         await run;
 
         Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
-        Assert.Contains("AccountConfirmationRequired", viewModel.RunHost.LastError, StringComparison.Ordinal);
+        Assert.Equal(ErrorCode.AccountConfirmationRequired, viewModel.RunHost.LastErrorCode);
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public sealed class MaterializationViewModelTests : IDisposable
 
         Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
         Assert.True(viewModel.IsUacRejected);
-        Assert.Contains("UacElevationRejected", viewModel.RunHost.LastError, StringComparison.Ordinal);
+        Assert.Equal(ErrorCode.UacElevationRejected, viewModel.RunHost.LastErrorCode);
     }
 
     [Fact]

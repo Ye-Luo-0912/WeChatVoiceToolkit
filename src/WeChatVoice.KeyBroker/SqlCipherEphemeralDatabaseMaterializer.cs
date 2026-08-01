@@ -31,6 +31,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
     };
     private readonly string workerPath;
     private readonly bool allowDevelopmentWorker;
+    private readonly string? finalWorkspaceUserSid;
     private readonly Action<int, int>? progress;
     private readonly Action<string>? checkpoint;
 
@@ -38,10 +39,12 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         string? workerPath = null,
         bool allowDevelopmentWorker = false,
         Action<int, int>? progress = null,
-        Action<string>? checkpoint = null)
+        Action<string>? checkpoint = null,
+        string? finalWorkspaceUserSid = null)
     {
         this.workerPath = Path.GetFullPath(workerPath ?? Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.exe"));
         this.allowDevelopmentWorker = allowDevelopmentWorker || (workerPath is not null && Path.GetExtension(workerPath).Equals(".dll", StringComparison.OrdinalIgnoreCase));
+        this.finalWorkspaceUserSid = finalWorkspaceUserSid;
         this.progress = progress;
         this.checkpoint = checkpoint;
     }
@@ -222,6 +225,18 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             }
 
             Directory.Move(staging, options.OutputDirectory);
+            if (BrokerDirectorySecurity.IsElevated())
+            {
+                try
+                {
+                    BrokerDirectorySecurity.GrantFinalWorkspaceAccess(options.OutputDirectory, finalWorkspaceUserSid);
+                }
+                catch
+                {
+                    TryDeleteOutput(options.OutputDirectory);
+                    throw;
+                }
+            }
             var movedManifestPath = Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json");
             return new VerifiedMaterialization(new MaterializationResult(
                 workspaceId,
@@ -552,6 +567,23 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             }
         }
         catch (InvalidOperationException)
+        {
+        }
+    }
+
+    private static void TryDeleteOutput(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
         {
         }
     }

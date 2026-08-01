@@ -1,34 +1,43 @@
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.Infrastructure;
 
 /// <summary>
-/// Owns one workflow run on a page: the explicit state machine, cancellation,
-/// progress marshaling to the UI thread, and retry. Large files and hashing
-/// always execute on the thread pool; only state/progress updates are posted
-/// to the UI thread. All reported messages are non-sensitive (stages, error
-/// codes); contact data never flows through this host.
+/// Owns the Desktop lifecycle for one workflow at a time. A run session holds
+/// the exact StateMachine passed to WorkflowContext, its cancellation source,
+/// and a monotonically increasing version. Results and progress are applied
+/// on the UI dispatcher only when their session is still current.
 /// </summary>
 public sealed partial class WorkflowRunHost : ObservableObject
 {
-    private readonly Action<Action> _marshal;
-    private CancellationTokenSource? _cts;
-    private DialogAccountConfirmation? _lastConfirmation;
-    private Func<WorkflowContext, CancellationToken, Task>? _lastAction;
-    private int _runVersion;
+    private readonly Func<Action, Task> _invokeOnUi;
+    private readonly SemaphoreSlim _runGate = new(1, 1);
+    private readonly OperationCoordinator? _coordinator;
+    private readonly object _sessionGate = new();
+    private WorkflowRunSession? _activeSession;
+    private Func<Task>? _retry;
+    private long _runVersion;
 
-    public WorkflowRunHost(Action<Action>? marshal = null, DesktopLog? log = null)
+    public WorkflowRunHost(Action<Action>? marshal = null, DesktopLog? log = null, OperationCoordinator? coordinator = null)
     {
-        _marshal = marshal ?? (action => Dispatcher.UIThread.Post(action));
+        _invokeOnUi = marshal is null
+            ? InvokeOnAvaloniaUiAsync
+            : action =>
+            {
+                marshal(action);
+                return Task.CompletedTask;
+            };
         Log = log;
-        StateMachine.Transitioned += (_, _) => _marshal(OnStateChanged);
+        _coordinator = coordinator;
     }
 
-    public WorkflowStateMachine StateMachine { get; } = new();
+    /// <summary>The state machine for the current (or most recent) session.</summary>
+    public WorkflowStateMachine StateMachine { get; private set; } = new();
 
     public DesktopLog? Log { get; }
 
@@ -44,8 +53,21 @@ public sealed partial class WorkflowRunHost : ObservableObject
     [ObservableProperty]
     private double? _percentComplete;
 
+    /// <summary>
+    /// Safe presentation text kept for existing bindings. UI branching uses
+    /// the typed code properties below and never parses this text.
+    /// </summary>
     [ObservableProperty]
     private string? _lastError;
+
+    [ObservableProperty]
+    private ErrorCode? _lastErrorCode;
+
+    [ObservableProperty]
+    private BrokerTransportErrorCode? _lastTransportErrorCode;
+
+    [ObservableProperty]
+    private AppError? _lastAppError;
 
     public bool IsRunning => State is WorkflowState.Running or WorkflowState.AwaitingUser or WorkflowState.Cancelling;
 
@@ -56,90 +78,236 @@ public sealed partial class WorkflowRunHost : ObservableObject
     public bool IsAwaitingUser => State == WorkflowState.AwaitingUser;
 
     /// <summary>
-    /// Convenience overload for pages whose workflows do not prompt for
-    /// account confirmation (environment, snapshot, contact, scan, export).
+    /// Convenience overload for operations without account confirmation.
     /// </summary>
-    public Task RunAsync(Func<WorkflowContext, CancellationToken, Task> action)
-        => RunAsync(new DialogAccountConfirmation(), action);
+    public Task RunAsync(Func<WorkflowContext, CancellationToken, Task> operation)
+        => RunAsync(() => new DialogAccountConfirmation(), operation);
+
+    public Task RunAsync(
+        DialogAccountConfirmation confirmation,
+        Func<WorkflowContext, CancellationToken, Task> operation)
+        => RunAsync(() => confirmation, operation);
 
     /// <summary>
-    /// Runs one workflow invocation. The caller supplies the account
-    /// confirmation port (page VMs pass a UI-backed
-    /// <see cref="DialogAccountConfirmation"/>) and the run; cancellation
-    /// requests flow through a fresh token per run. File and hash work runs on
-    /// the thread pool; state and progress updates are marshaled to the UI
-    /// thread.
+    /// Runs a non-result operation with a fresh confirmation instance on every
+    /// retry. The factory overload is important for interactive workflows:
+    /// retrying must create a new confirmation session, not reuse a completed
+    /// dialog object.
     /// </summary>
-    public Task RunAsync(DialogAccountConfirmation confirmation, Func<WorkflowContext, CancellationToken, Task> action)
+    public Task RunAsync(
+        Func<DialogAccountConfirmation> confirmationFactory,
+        Func<WorkflowContext, CancellationToken, Task> operation)
     {
-        ArgumentNullException.ThrowIfNull(confirmation);
-        ArgumentNullException.ThrowIfNull(action);
-        if (IsRunning)
-        {
-            throw new InvalidOperationException("A workflow run is already active.");
-        }
-
-        var version = ++_runVersion;
-        var cts = new CancellationTokenSource();
-        _cts = cts;
-        _lastConfirmation = confirmation;
-        _lastAction = action;
-        LastError = null;
-        Log?.Info($"run {version} starting");
-        StateMachine.TryStart();
-
-        var context = new WorkflowContext(
-            confirmation,
-            new Progress<OperationProgress>(progress => _marshal(() => OnProgress(progress))));
-
-        return Task.Run(async () =>
-        {
-            try
+        ArgumentNullException.ThrowIfNull(confirmationFactory);
+        ArgumentNullException.ThrowIfNull(operation);
+        return StartRun(
+            confirmationFactory,
+            async (context, cancellationToken) =>
             {
-                await action(context, cts.Token).ConfigureAwait(false);
-                _marshal(() => OnRunCompleted(null));
-                Log?.Info($"run {version} completed");
-            }
-            catch (OperationCanceledException) when (cts.IsCancellationRequested)
-            {
-                _marshal(() => OnRunCompleted(new OperationCanceledException(cts.Token)));
-                Log?.Info($"run {version} cancelled");
-            }
-            catch (Exception exception)
-            {
-                _marshal(() => OnRunCompleted(exception));
-            }
-            finally
-            {
-                cts.Dispose();
-            }
-        });
+                await operation(context, cancellationToken).ConfigureAwait(false);
+                return Unit.Value;
+            },
+            applyOnUiThread: null);
     }
 
-    /// <summary>Requests cancellation of the active run (button binding).</summary>
+    public Task RunAsync<TResult>(
+        Func<WorkflowContext, CancellationToken, Task<TResult>> operation,
+        Action<TResult> applyOnUiThread)
+        => RunAsync(() => new DialogAccountConfirmation(), operation, applyOnUiThread);
+
+    public Task RunAsync<TResult>(
+        DialogAccountConfirmation confirmation,
+        Func<WorkflowContext, CancellationToken, Task<TResult>> operation,
+        Action<TResult> applyOnUiThread)
+        => RunAsync(() => confirmation, operation, applyOnUiThread);
+
+    /// <summary>
+    /// Executes the workflow away from the UI thread. The result callback is
+    /// dispatched and awaited before the returned task completes, so page
+    /// properties and collections are never changed by a worker thread.
+    /// </summary>
+    public Task RunAsync<TResult>(
+        Func<DialogAccountConfirmation> confirmationFactory,
+        Func<WorkflowContext, CancellationToken, Task<TResult>> operation,
+        Action<TResult> applyOnUiThread)
+    {
+        ArgumentNullException.ThrowIfNull(confirmationFactory);
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(applyOnUiThread);
+        return StartRun(confirmationFactory, operation, applyOnUiThread);
+    }
+
     [RelayCommand]
     private void Cancel()
     {
-        if (CanCancel)
+        WorkflowRunSession? session;
+        lock (_sessionGate)
         {
-            StateMachine.TryRequestCancellation();
-            _cts?.Cancel();
+            session = _activeSession;
         }
-    }
 
-    /// <summary>Re-runs the last action with a fresh run (button binding).</summary>
-    [RelayCommand]
-    private void Retry()
-    {
-        if (_lastAction is null || _lastConfirmation is null || IsRunning)
+        if (session is null)
         {
             return;
         }
 
-        RunAsync(_lastConfirmation, _lastAction);
+        var state = session.StateMachine.State;
+        if (state is not (WorkflowState.Running or WorkflowState.AwaitingUser))
+        {
+            return;
+        }
+
+        if (session.StateMachine.TryRequestCancellation())
+        {
+            session.Cancellation.Cancel();
+        }
     }
 
-    private void OnProgress(OperationProgress progress)
+    [RelayCommand]
+    private void Retry()
+    {
+        if (_retry is null || IsRunning)
+        {
+            return;
+        }
+
+        _ = _retry();
+    }
+
+    private Task StartRun<TResult>(
+        Func<DialogAccountConfirmation> confirmationFactory,
+        Func<WorkflowContext, CancellationToken, Task<TResult>> operation,
+        Action<TResult>? applyOnUiThread)
+    {
+        if (!_runGate.Wait(0))
+        {
+            throw new InvalidOperationException("A workflow run is already active.");
+        }
+
+        IDisposable? operationLease = null;
+        if (_coordinator is not null && !_coordinator.TryAcquire(out operationLease))
+        {
+            _runGate.Release();
+            throw new InvalidOperationException("Another Desktop operation is already active.");
+        }
+
+        var version = Interlocked.Increment(ref _runVersion);
+        var session = new WorkflowRunSession(version, _runGate);
+        DialogAccountConfirmation confirmation;
+        try
+        {
+            confirmation = confirmationFactory()
+                ?? throw new InvalidOperationException("The account confirmation factory returned null.");
+        }
+        catch
+        {
+            operationLease?.Dispose();
+            _runGate.Release();
+            throw;
+        }
+
+        lock (_sessionGate)
+        {
+            _activeSession = session;
+            StateMachine = session.StateMachine;
+            _retry = () => StartRun(confirmationFactory, operation, applyOnUiThread);
+        }
+
+        session.StateMachine.Transitioned += (_, _) => QueueStateChanged(session);
+        LastError = null;
+        LastErrorCode = null;
+        LastTransportErrorCode = null;
+        LastAppError = null;
+        Log?.Info($"run {version} starting");
+
+        if (!session.StateMachine.TryStart())
+        {
+            session.Dispose();
+            lock (_sessionGate)
+            {
+                if (ReferenceEquals(_activeSession, session))
+                {
+                    _activeSession = null;
+                }
+            }
+
+            operationLease?.Dispose();
+            _runGate.Release();
+            throw new InvalidOperationException("The workflow session could not be started.");
+        }
+
+        QueueStateChanged(session);
+        var context = new WorkflowContext(
+            confirmation,
+            new Progress<OperationProgress>(progress => QueueProgress(session, progress)),
+            session.StateMachine);
+        return ExecuteAsync(session, context, operation, applyOnUiThread, operationLease);
+    }
+
+    private async Task ExecuteAsync<TResult>(
+        WorkflowRunSession session,
+        WorkflowContext context,
+        Func<WorkflowContext, CancellationToken, Task<TResult>> operation,
+        Action<TResult>? applyOnUiThread,
+        IDisposable? operationLease)
+    {
+        try
+        {
+            var result = await Task.Run(
+                () => operation(context, session.Cancellation.Token),
+                session.Cancellation.Token).ConfigureAwait(false);
+            if (applyOnUiThread is not null)
+            {
+                await InvokeIfCurrentAsync(session, () => applyOnUiThread(result)).ConfigureAwait(false);
+            }
+
+            await InvokeIfCurrentAsync(session, () => CompleteRun(session, exception: null)).ConfigureAwait(false);
+            Log?.Info($"run {session.Version} completed");
+        }
+        catch (OperationCanceledException) when (session.Cancellation.IsCancellationRequested)
+        {
+            await InvokeIfCurrentAsync(session, () => CompleteRun(session, new OperationCanceledException(session.Cancellation.Token))).ConfigureAwait(false);
+            Log?.Info($"run {session.Version} cancelled");
+        }
+        catch (Exception exception)
+        {
+            await InvokeIfCurrentAsync(session, () => CompleteRun(session, exception)).ConfigureAwait(false);
+        }
+        finally
+        {
+            session.Dispose();
+            operationLease?.Dispose();
+            _runGate.Release();
+        }
+    }
+
+    private void QueueProgress(WorkflowRunSession session, OperationProgress progress)
+        => _ = InvokeIfCurrentAsync(session, () => OnProgress(session, progress));
+
+    private void QueueStateChanged(WorkflowRunSession session)
+        => _ = InvokeIfCurrentAsync(session, () => OnStateChanged(session));
+
+    private async Task InvokeIfCurrentAsync(WorkflowRunSession session, Action action)
+    {
+        await _invokeOnUi(() =>
+        {
+            if (IsCurrent(session))
+            {
+                action();
+            }
+        }).ConfigureAwait(false);
+    }
+
+    private bool IsCurrent(WorkflowRunSession session)
+    {
+        lock (_sessionGate)
+        {
+            return ReferenceEquals(_activeSession, session)
+                && session.Version == Volatile.Read(ref _runVersion);
+        }
+    }
+
+    private void OnProgress(WorkflowRunSession session, OperationProgress progress)
     {
         StageId = progress.Stage.Id;
         StageMessage = progress.Stage.Message;
@@ -147,29 +315,64 @@ public sealed partial class WorkflowRunHost : ObservableObject
         Log?.Stage(progress.Phase, progress.Stage.Id, progress.Stage.PercentComplete);
     }
 
-    private void OnRunCompleted(Exception? exception)
+    private void CompleteRun(WorkflowRunSession session, Exception? exception)
     {
         if (exception is null)
         {
-            StateMachine.TryComplete();
+            if (session.StateMachine.State == WorkflowState.Running)
+            {
+                session.StateMachine.TryComplete();
+            }
         }
         else if (exception is OperationCanceledException)
         {
-            StateMachine.TryCancel();
+            if (session.StateMachine.State is WorkflowState.Running or WorkflowState.AwaitingUser or WorkflowState.Cancelling)
+            {
+                session.StateMachine.TryCancel();
+            }
         }
         else
         {
-            StateMachine.TryFail();
-            LastError = ToDisplayError(exception);
-            Log?.Error(LastError);
+            SetTypedError(exception);
+            if (session.StateMachine.State is WorkflowState.Running or WorkflowState.Cancelling)
+            {
+                session.StateMachine.TryFail();
+            }
         }
 
-        _cts = null;
+        OnStateChanged(session);
     }
 
-    private void OnStateChanged()
+    private void SetTypedError(Exception exception)
     {
-        State = StateMachine.State;
+        switch (exception)
+        {
+            case AppFailureException app:
+                LastErrorCode = app.Code;
+                LastAppError = ErrorCatalog.Get(app.Code);
+                LastError = $"[{app.Code}] {LastAppError.SuggestedAction}";
+                Log?.ErrorCode(app.Code);
+                break;
+            case BrokerTransportException transport:
+                LastTransportErrorCode = transport.Code;
+                LastError = $"[{transport.Code}] retry";
+                Log?.ErrorCode(transport.Code);
+                break;
+            default:
+                // Unknown boundary failures are deliberately normalized. Do
+                // not expose exception type, message, path, or SQLite text.
+                const ErrorCode code = ErrorCode.WorkflowFailed;
+                LastErrorCode = code;
+                LastAppError = ErrorCatalog.Get(code);
+                LastError = $"[{code}] {LastAppError.SuggestedAction}";
+                Log?.ErrorCode(code);
+                break;
+        }
+    }
+
+    private void OnStateChanged(WorkflowRunSession session)
+    {
+        State = session.StateMachine.State;
         OnPropertyChanged(nameof(IsRunning));
         OnPropertyChanged(nameof(CanCancel));
         OnPropertyChanged(nameof(CanRetry));
@@ -180,15 +383,11 @@ public sealed partial class WorkflowRunHost : ObservableObject
         }
     }
 
-    /// <summary>
-    /// Maps typed failures to display text. Codes come from the error catalog;
-    /// exception messages are used only when non-sensitive (the lower layers
-    /// already constrain them to non-sensitive text).
-    /// </summary>
-    private static string ToDisplayError(Exception exception) => exception switch
+    private static async Task InvokeOnAvaloniaUiAsync(Action action)
+        => await Dispatcher.UIThread.InvokeAsync(action);
+
+    private readonly struct Unit
     {
-        Core.Errors.AppFailureException app => $"[{app.Code}] {app.Message}",
-        Core.Errors.BrokerTransportException transport => $"[{transport.Code}] {transport.Message}",
-        _ => $"{exception.GetType().Name}: {exception.Message}",
-    };
+        public static Unit Value { get; } = new();
+    }
 }

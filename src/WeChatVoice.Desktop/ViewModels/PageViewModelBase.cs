@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using Avalonia.Threading;
 using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Workflows.Composition;
 
@@ -10,18 +11,37 @@ namespace WeChatVoice.Desktop.ViewModels;
 /// </summary>
 public abstract partial class PageViewModelBase : ObservableObject
 {
+    private readonly Action<Action> _marshal;
+
     protected PageViewModelBase(DesktopServices services, Action<Action>? marshal = null)
     {
         Services = services;
-        RunHost = new WorkflowRunHost(marshal: marshal, log: services.Log);
+        _marshal = marshal ?? (action => Dispatcher.UIThread.Post(action));
+        RunHost = new WorkflowRunHost(marshal: _marshal, log: services.Log, coordinator: services.OperationCoordinator);
+        services.Project.PropertyChanged += (_, _) =>
+            ApplyOnUiThread(() =>
+            {
+                OnPropertyChanged(nameof(CanNavigate));
+                OnPropertyChanged(nameof(NavigationHint));
+            });
     }
 
     protected DesktopServices Services { get; }
 
     protected WorkflowCompositionRoot Workflows => Services.Workflows;
 
+    /// <summary>Dispatches page state changes to the Avalonia UI thread.</summary>
+    protected void ApplyOnUiThread(Action action) => _marshal(action);
+
+    protected DialogAccountConfirmation CreateAccountConfirmation()
+        => new(_marshal);
+
     /// <summary>Owns the current run's state machine, progress, and cancellation.</summary>
     public WorkflowRunHost RunHost { get; }
+
+    public virtual bool CanNavigate => true;
+
+    public virtual string? NavigationHint => null;
 
     public abstract string Title { get; }
 }

@@ -48,7 +48,7 @@ internal static class BrokerPipeServer
             await pipe.WaitForConnectionAsync(connectionTimeout.Token).ConfigureAwait(false);
         }
 
-        BrokerClientIdentityVerifier.Verify(pipe.SafePipeHandle);
+        var callerSid = BrokerClientIdentityVerifier.Verify(pipe.SafePipeHandle);
 
         // The UAC/pipe connection budget is deliberately not reused for the
         // expensive memory scan and materialization operation.
@@ -64,7 +64,8 @@ internal static class BrokerPipeServer
             workspaceOutput,
             operationTimeout.Token,
             allowExperimentalProfile,
-            stage => BrokerProtocol.Write(writer, stage)).ConfigureAwait(false);
+            stage => BrokerProtocol.Write(writer, stage),
+            callerSid).ConfigureAwait(false);
     }
 
     private static void ValidateOutputPath(string path, string parameterName)

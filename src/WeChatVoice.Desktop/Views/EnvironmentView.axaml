@@ -20,6 +20,11 @@
       <TextBlock Text="{Binding DetectionSummary}" FontWeight="SemiBold" />
       <TextBlock Text="{Binding CapabilitySummary}" />
       <TextBlock Text="{Binding WorkspaceSummary}" />
+      <StackPanel Spacing="4">
+        <TextBlock Text="{Binding BrokerTrustSummary}" />
+        <TextBlock Text="{Binding WorkerBundleTrustSummary}" />
+        <TextBlock Text="{Binding InstallDirectorySecuritySummary}" />
+      </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="24">
         <TextBlock Text="{Binding WorkerInstalled, StringFormat='SQLCipher Worker：{0}'}" />
         <TextBlock Text="{Binding BrokerInstalled, StringFormat='Key Broker：{0}'}" />

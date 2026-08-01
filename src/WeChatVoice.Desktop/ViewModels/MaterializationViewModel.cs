@@ -15,7 +15,7 @@ namespace WeChatVoice.Desktop.ViewModels;
 /// </summary>
 public sealed partial class MaterializationViewModel : PageViewModelBase
 {
-    private readonly DialogAccountConfirmation _confirmation = new();
+    private DialogAccountConfirmation? _activeConfirmation;
 
     public MaterializationViewModel(DesktopServices services)
         : this(services, marshal: null)
@@ -26,14 +26,9 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     internal MaterializationViewModel(DesktopServices services, Action<Action>? marshal)
         : base(services, marshal)
     {
-        _confirmation.ConfirmationRequested += (_, report) =>
-        {
-            PendingAccountCandidate = report.AccountCandidate;
-            IsConfirmDialogOpen = true;
-        };
         RunHost.PropertyChanged += (_, eventArgs) =>
         {
-            if (eventArgs.PropertyName == nameof(WorkflowRunHost.LastError))
+            if (eventArgs.PropertyName == nameof(WorkflowRunHost.LastErrorCode))
             {
                 OnPropertyChanged(nameof(IsUacRejected));
             }
@@ -41,9 +36,13 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     }
 
     /// <summary>True when the last failure was a declined UAC elevation prompt.</summary>
-    public bool IsUacRejected => RunHost.LastError?.Contains("UacElevationRejected", StringComparison.Ordinal) == true;
+    public bool IsUacRejected => RunHost.LastErrorCode == ErrorCode.UacElevationRejected;
 
     public override string Title => "物料化";
+
+    public override bool CanNavigate => Services.Project.Snapshot is not null;
+
+    public override string? NavigationHint => CanNavigate ? null : "请先创建源快照";
 
     [ObservableProperty]
     private string? _snapshotDirectory;
@@ -56,9 +55,6 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
 
     [ObservableProperty]
     private string? _requestedAccount;
-
-    [ObservableProperty]
-    private bool _allowDevelopmentBroker;
 
     [ObservableProperty]
     private string? _resultSummary;
@@ -76,46 +72,68 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     private bool _isConfirmDialogOpen;
 
     [RelayCommand]
-    private Task MaterializeAsync() => RunHost.RunAsync(_confirmation, async (context, cancellationToken) =>
+    private Task MaterializeAsync()
     {
-        if (string.IsNullOrWhiteSpace(SnapshotDirectory) || string.IsNullOrWhiteSpace(OutputDirectory))
-        {
-            throw new ArgumentException("请填写快照目录与输出目录。");
-        }
-
-        if (AllowDevelopmentBroker)
-        {
-            Services.Log.Info("development broker opt-in");
-        }
-
         UacRejected = false;
-        var result = await Workflows.Materialization.RunAsync(
-            new MaterializationWorkflowRequest(
-                SnapshotDirectory,
-                SnapshotManifestPath: null,
-                BackendId: "weixin-windows-4",
-                ExternalDecryptorPath: null,
-                AllowUntrustedBackend: false,
-                AllowDevelopmentBroker: AllowDevelopmentBroker,
-                RequestedAccountId: string.IsNullOrWhiteSpace(RequestedAccount) ? null : RequestedAccount,
-                OutputDirectory,
-                WorkspaceOutputPath: string.IsNullOrWhiteSpace(WorkspaceOutputPath) ? null : WorkspaceOutputPath),
-            context,
-            cancellationToken).ConfigureAwait(false);
-        Services.RecentWorkspaces.Add(result.Workspace, result.LocalWorkspacePath);
-        IdentitySummary = result.AccountIdentity.State == AccountIdentityState.Confirmed
-            ? $"账号已确认：{result.Workspace.DataSet.AccountId}（{result.AccountIdentity.ConfirmedBy}）"
-            : "账号身份为候选状态";
-        ResultSummary = $"物料化完成：Workspace {result.Workspace.Workspace.WorkspaceId}；数据库 {result.Workspace.DataSet.Databases.Count} 个；"
-            + (result.ProfileId is null ? "外部后端" : $"Profile {result.ProfileId} / MaterializationId {result.MaterializationId}");
-    });
+        return RunHost.RunAsync(
+            CreateConfirmationSession,
+            async (context, cancellationToken) =>
+            {
+                var snapshotDirectory = string.IsNullOrWhiteSpace(SnapshotDirectory)
+                    ? Services.Project.SnapshotDirectory
+                    : SnapshotDirectory;
+                if (string.IsNullOrWhiteSpace(snapshotDirectory) || string.IsNullOrWhiteSpace(OutputDirectory))
+                {
+                    throw new AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Snapshot and output directories are required.");
+                }
+
+                return await Workflows.Materialization.RunAsync(
+                    new MaterializationWorkflowRequest(
+                        snapshotDirectory,
+                        SnapshotManifestPath: null,
+                        BackendId: "weixin-windows-4",
+                        ExternalDecryptorPath: null,
+                        AllowUntrustedBackend: false,
+                        RequestedAccountId: string.IsNullOrWhiteSpace(RequestedAccount) ? null : RequestedAccount,
+                        OutputDirectory,
+                        WorkspaceOutputPath: string.IsNullOrWhiteSpace(WorkspaceOutputPath) ? null : WorkspaceOutputPath),
+                    context,
+                    cancellationToken).ConfigureAwait(false);
+            },
+            result =>
+            {
+                Services.Project.Materialization = result;
+                Services.Project.Workspace = result.Workspace;
+                Services.Project.WorkspacePath = result.LocalWorkspacePath;
+                Services.RecentWorkspaces.Add(result.Workspace, result.LocalWorkspacePath);
+                IdentitySummary = result.AccountIdentity.State == AccountIdentityState.Confirmed
+                    ? $"数据库证据已确认账号：{result.Workspace.DataSet.AccountId}（{result.AccountIdentity.ConfirmedBy}）"
+                    : result.AccountIdentity.UserConfirmation == UserConfirmationState.Confirmed
+                        ? $"用户已确认账号候选：{result.Workspace.DataSet.AccountId}（证据等级：{result.AccountIdentity.State}）"
+                        : $"账号身份为候选状态（证据等级：{result.AccountIdentity.State}）";
+                ResultSummary = $"物料化完成：Workspace {result.Workspace.Workspace.WorkspaceId}；数据库 {result.Workspace.DataSet.Databases.Count} 个；"
+                    + (result.ProfileId is null ? "外部后端" : $"Profile {result.ProfileId} / MaterializationId {result.MaterializationId}");
+            });
+    }
+
+    private DialogAccountConfirmation CreateConfirmationSession()
+    {
+        var confirmation = CreateAccountConfirmation();
+        confirmation.ConfirmationRequested += (_, report) =>
+        {
+            PendingAccountCandidate = report.AccountCandidate;
+            IsConfirmDialogOpen = true;
+        };
+        _activeConfirmation = confirmation;
+        return confirmation;
+    }
 
     /// <summary>User confirmed the detected account in the dialog.</summary>
     [RelayCommand]
     private void ConfirmAccount()
     {
         IsConfirmDialogOpen = false;
-        _confirmation.Complete(confirmed: true, PendingAccountCandidate);
+        _activeConfirmation?.Complete(confirmed: true, PendingAccountCandidate);
     }
 
     /// <summary>User declined the detected account; the run fails with AccountConfirmationRequired.</summary>
@@ -123,6 +141,6 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     private void DeclineAccount()
     {
         IsConfirmDialogOpen = false;
-        _confirmation.Complete(confirmed: false, null);
+        _activeConfirmation?.Complete(confirmed: false, null);
     }
 }

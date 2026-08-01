@@ -53,7 +53,8 @@ public sealed class WorkflowRunHostTests
         await host.RunAsync((_, _) => throw new InvalidOperationException("boom"));
 
         Assert.Equal(WorkflowState.Failed, host.State);
-        Assert.Contains("boom", host.LastError, StringComparison.Ordinal);
+        Assert.Equal(Core.Errors.ErrorCode.WorkflowFailed, host.LastErrorCode);
+        Assert.DoesNotContain("boom", host.LastError, StringComparison.Ordinal);
         Assert.True(host.CanRetry);
     }
 
@@ -79,6 +80,30 @@ public sealed class WorkflowRunHostTests
         await host.RunAsync(action);
         Assert.Equal(WorkflowState.Completed, host.State);
         Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task Application_coordinator_rejects_a_second_page_operation()
+    {
+        var coordinator = new OperationCoordinator();
+        var first = new WorkflowRunHost(marshal: action => action(), coordinator: coordinator);
+        var second = new WorkflowRunHost(marshal: action => action(), coordinator: coordinator);
+        using var started = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+
+        var firstRun = first.RunAsync((_, cancellationToken) => Task.Run(() =>
+        {
+            started.Set();
+            release.Wait(cancellationToken);
+        }, cancellationToken));
+        started.Wait();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            second.RunAsync((_, _) => Task.CompletedTask));
+
+        release.Set();
+        await firstRun;
+        Assert.Equal(WorkflowState.Completed, first.State);
     }
 
     [Fact]
@@ -112,6 +137,8 @@ public sealed class WorkflowRunHostTests
     {
         var host = CreateHost();
         var confirmation = new DialogAccountConfirmation();
+        var requested = new TaskCompletionSource<AccountIdentityReport>(TaskCreationOptions.RunContinuationsAsynchronously);
+        confirmation.ConfirmationRequested += (_, report) => requested.TrySetResult(report);
         var run = host.RunAsync(confirmation, async (context, cancellationToken) =>
         {
             var result = await context.AccountConfirmation.ConfirmAsync(
@@ -123,7 +150,7 @@ public sealed class WorkflowRunHostTests
             }
         });
 
-        await Task.Yield();
+        await requested.Task;
         confirmation.Complete(false, null);
         await run;
 

@@ -9,32 +9,48 @@
         MinHeight="600"
         Title="WeChatVoice 语音导出工具"
         WindowStartupLocation="CenterScreen">
-  <Grid ColumnDefinitions="210,*">
-    <Border Grid.Column="0" Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
-      <DockPanel>
-        <TextBlock DockPanel.Dock="Top"
-                   Margin="16,18,16,12"
-                   FontSize="16"
-                   FontWeight="SemiBold"
-                   Text="WeChatVoice" />
-        <TextBlock DockPanel.Dock="Bottom"
-                   Margin="16,8"
-                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                   FontSize="11"
-                   Text="仅支持 Weixin 4.1.11.55 · 一对一联系人 · 原始 SILK" />
-        <ListBox ItemsSource="{Binding Pages}"
-                 SelectedItem="{Binding SelectedPage, Mode=TwoWay}"
-                 Background="Transparent"
-                 BorderThickness="0">
-          <ListBox.ItemTemplate>
-            <DataTemplate x:DataType="vm:PageViewModelBase">
-              <TextBlock Text="{Binding Title}" Padding="12,8" />
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-      </DockPanel>
+  <Grid RowDefinitions="Auto,*">
+    <Border Grid.Row="0"
+            IsVisible="{Binding IsDevelopmentBrokerEnabled}"
+            Background="#FFF1C2"
+            Padding="12,8">
+      <TextBlock Text="{Binding DevelopmentTrustBanner}"
+                 Foreground="#6B4E00"
+                 FontWeight="SemiBold" />
     </Border>
 
-    <ContentControl Grid.Column="1" Content="{Binding SelectedPage}" />
+    <Grid Grid.Row="1" ColumnDefinitions="210,*">
+      <Border Grid.Column="0" Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top"
+                     Margin="16,18,16,12"
+                     FontSize="16"
+                     FontWeight="SemiBold"
+                     Text="WeChatVoice" />
+          <TextBlock DockPanel.Dock="Bottom"
+                     Margin="16,8"
+                     Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                     FontSize="11"
+                     Text="仅支持 Weixin 4.1.11.55 · 一对一联系人 · 原始 SILK" />
+          <ListBox ItemsSource="{Binding Pages}"
+                   SelectedItem="{Binding SelectedPage, Mode=TwoWay}"
+                   Background="Transparent"
+                   BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:PageViewModelBase">
+                <TextBlock Text="{Binding Title}" Padding="12,8" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <TextBlock DockPanel.Dock="Bottom"
+                     Margin="16,0,16,12"
+                     Text="{Binding NavigationHint}"
+                     TextWrapping="Wrap"
+                     Foreground="#A33A00" />
+        </DockPanel>
+      </Border>
+
+      <ContentControl Grid.Column="1" Content="{Binding SelectedPage}" />
+    </Grid>
   </Grid>
 </Window>
