@@ -43,3 +43,21 @@ user-supplied, lawfully accessible WeChat data source.
   SILK -> run manifest. Do not make WAV decoding a prerequisite.
 - Dataset probing may discover filenames and emit adapter candidates, but it
   must never choose an unverified schema mapping by convention.
+
+## Development principles
+
+- Prefer code reuse over parallel one-off implementations. Extend an existing
+  interface, validator, framing primitive, file index, or test fixture when it
+  already expresses the required behavior; keep one authoritative path for
+  verification and persistence rules.
+- Design for high performance without sacrificing correctness. Keep database
+  access read-only and bounded, use streaming I/O for BLOBs and exports, avoid
+  repeated hashing or process startup, apply filters and limits in SQL, and
+  measure before introducing complex concurrency or low-level optimization.
+- Design for high maintainability. Keep responsibilities small and explicit,
+  preserve verified-type boundaries, make security and provenance data flow
+  visible, prefer deterministic behavior and actionable errors, and add focused
+  tests whenever a boundary, invariant, or performance guarantee changes.
+- New code must fit the existing composition root and lifecycle contracts. Do
+  not add hidden global state, duplicate registries, implicit provider changes,
+  or compatibility shims unless a concrete migration requirement exists.
