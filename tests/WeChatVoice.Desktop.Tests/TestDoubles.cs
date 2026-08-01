@@ -77,7 +77,9 @@ public sealed class FakeScanWorkflow : IVoiceScanWorkflow
             EmptyBlobCount: 1,
             SuspectedDuplicateCount: 0,
             InvalidHeaderCount: 1,
-            AmbiguousPayloadCount: 1),
+            AmbiguousPayloadCount: 1,
+            ExportableVoiceCount: 1,
+            TotalPayloadBytes: 10),
         TestDoubles.Verified());
 
     public Task<VoiceScanWorkflowResult> RunAsync(VoiceScanWorkflowRequest request, WorkflowContext context, CancellationToken cancellationToken)

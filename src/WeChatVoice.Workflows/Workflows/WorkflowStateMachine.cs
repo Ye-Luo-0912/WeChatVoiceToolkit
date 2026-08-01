@@ -72,6 +72,8 @@ public sealed class WorkflowStateMachine
 
     private bool TryTransition(WorkflowState to, params WorkflowState[] allowedFrom)
     {
+        EventHandler<WorkflowStateTransition>? handler;
+        WorkflowStateTransition transition;
         lock (_gate)
         {
             if (!allowedFrom.Contains(_state))
@@ -81,8 +83,10 @@ public sealed class WorkflowStateMachine
 
             var from = _state;
             _state = to;
-            Transitioned?.Invoke(this, new WorkflowStateTransition(from, to));
-            return true;
+            transition = new WorkflowStateTransition(from, to);
+            handler = Transitioned;
         }
+        handler?.Invoke(this, transition);
+        return true;
     }
 }

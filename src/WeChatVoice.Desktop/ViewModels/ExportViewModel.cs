@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Workflows.Workflows;
 
@@ -39,7 +40,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
     private string? _outputDirectory;
 
     [ObservableProperty]
-    private string? _directionText;
+    private string? _directionText = VoiceDirection.Incoming.ToString();
 
     [ObservableProperty]
     private string? _fromText;
@@ -72,6 +73,18 @@ public sealed partial class ExportViewModel : PageViewModelBase
             var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath)
                 ? Services.Project.WorkspacePath
                 : WorkspacePath;
+            var plan = Services.Project.SelectionPlan;
+            var contact = Services.Project.SelectedContact;
+            if (plan is null || Services.Project.Scan is null || plan.ScanReport.ExportableVoiceCount == 0 || contact is null || string.IsNullOrWhiteSpace(contact.Username))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "Complete contact selection and an exportable scan before exporting.");
+            }
+
+            if (Services.Project.Workspace is null || !string.Equals(plan.WorkspaceId, Services.Project.Workspace.Workspace.WorkspaceId, StringComparison.Ordinal))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "The scan plan is no longer valid for this workspace.");
+            }
+
             if (string.IsNullOrWhiteSpace(workspacePath) || string.IsNullOrWhiteSpace(OutputDirectory))
             {
                 throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace and output directories are required.");
@@ -81,11 +94,11 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 new VoiceExportWorkflowRequest(
                     workspacePath,
                     OutputDirectory,
-                    ContactUsername: string.IsNullOrWhiteSpace(ContactUsername) ? Services.Project.SelectedContact?.Username : ContactUsername,
+                    ContactUsername: plan.ContactUsername,
                     ConversationId: null,
-                    Direction: ParseDirection(),
-                    From: VoiceQueryBuilder.ParseUtc(FromText, "from"),
-                    To: VoiceQueryBuilder.ParseUtc(ToText, "to")),
+                    Direction: plan.Direction,
+                    From: plan.FromUtc,
+                    To: plan.ToUtc),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
@@ -118,18 +131,15 @@ public sealed partial class ExportViewModel : PageViewModelBase
             return;
         }
 
-        try
-        {
-            var manifest = await Workflows.VoiceExport.RecoverRunAsync(journalPath, CancellationToken.None).ConfigureAwait(false);
-            ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
-            SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
-            Failures = manifest.Failures;
-            ExportSummary = $"Journal 恢复完成：{ExportedCount} 条，失败 {manifest.Failures.Count} 条";
-        }
-        catch (Exception)
-        {
-            LastError = "[WorkflowFailed] retry";
-        }
+        await RunHost.RunAsync(
+            async (_, cancellationToken) => await Workflows.VoiceExport.RecoverRunAsync(journalPath, cancellationToken).ConfigureAwait(false),
+            manifest =>
+            {
+                ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
+                SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
+                Failures = manifest.Failures;
+                ExportSummary = $"Journal 恢复完成：{ExportedCount} 条，失败 {manifest.Failures.Count} 条";
+            });
     }
 
     [ObservableProperty]
@@ -138,13 +148,8 @@ public sealed partial class ExportViewModel : PageViewModelBase
     [ObservableProperty]
     private string? _lastError;
 
-    private VoiceDirection? ParseDirection()
+    private VoiceDirection ParseDirection()
     {
-        if (string.IsNullOrWhiteSpace(DirectionText))
-        {
-            return null;
-        }
-
         return Enum.TryParse<VoiceDirection>(DirectionText, true, out var direction)
             ? direction
             : throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Direction must be incoming or outgoing.");

@@ -11,15 +11,17 @@ namespace WeChatVoice.Desktop.ViewModels;
 /// </summary>
 public abstract partial class PageViewModelBase : ObservableObject
 {
-    private readonly Action<Action> _marshal;
+    private readonly Func<Action, Task> _marshal;
 
     protected PageViewModelBase(DesktopServices services, Action<Action>? marshal = null)
     {
         Services = services;
-        _marshal = marshal ?? (action => Dispatcher.UIThread.Post(action));
-        RunHost = new WorkflowRunHost(marshal: _marshal, log: services.Log, coordinator: services.OperationCoordinator);
+        _marshal = marshal is null
+            ? action => Dispatcher.UIThread.InvokeAsync(action).GetTask()
+            : action => { marshal(action); return Task.CompletedTask; };
+        RunHost = new WorkflowRunHost(invokeOnUi: _marshal, log: services.Log, coordinator: services.OperationCoordinator);
         services.Project.PropertyChanged += (_, _) =>
-            ApplyOnUiThread(() =>
+            _ = ApplyOnUiThreadAsync(() =>
             {
                 OnPropertyChanged(nameof(CanNavigate));
                 OnPropertyChanged(nameof(NavigationHint));
@@ -31,10 +33,10 @@ public abstract partial class PageViewModelBase : ObservableObject
     protected WorkflowCompositionRoot Workflows => Services.Workflows;
 
     /// <summary>Dispatches page state changes to the Avalonia UI thread.</summary>
-    protected void ApplyOnUiThread(Action action) => _marshal(action);
+    protected Task ApplyOnUiThreadAsync(Action action) => _marshal(action);
 
     protected DialogAccountConfirmation CreateAccountConfirmation()
-        => new(_marshal);
+        => new(action => _ = _marshal(action));
 
     /// <summary>Owns the current run's state machine, progress, and cancellation.</summary>
     public WorkflowRunHost RunHost { get; }

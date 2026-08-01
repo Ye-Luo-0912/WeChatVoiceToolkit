@@ -27,6 +27,7 @@ public static class ErrorCatalog
         ErrorCode.UacElevationRejected => new AppError(code, IsRetryable: true, "retry-materialization", "uac-elevation-rejected"),
         ErrorCode.WorkflowFailed => new AppError(code, IsRetryable: true, "retry", "workflow-failed"),
         ErrorCode.InvalidRequest => new AppError(code, IsRetryable: false, "complete-request", "invalid-request"),
+        ErrorCode.OperationBusy => new AppError(code, IsRetryable: true, "wait-for-active-operation", "operation-busy"),
         _ => new AppError(code, IsRetryable: false, "retry", "unknown-error"),
     };
 }

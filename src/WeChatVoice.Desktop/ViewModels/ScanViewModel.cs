@@ -37,7 +37,7 @@ public sealed partial class ScanViewModel : PageViewModelBase
     private string? _contactUsername;
 
     [ObservableProperty]
-    private string? _directionText;
+    private string? _directionText = VoiceDirection.Incoming.ToString();
 
     [ObservableProperty]
     private string? _fromText;
@@ -67,12 +67,27 @@ public sealed partial class ScanViewModel : PageViewModelBase
     private int _duplicateCount;
 
     [ObservableProperty]
+    private int _exportableVoiceCount;
+
+    [ObservableProperty]
+    private int _rejectedVoiceCount;
+
+    [ObservableProperty]
+    private long _totalPayloadBytes;
+
+    [ObservableProperty]
     private string? _accountSummary;
 
     [RelayCommand]
     private Task ScanAsync() => RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
+            var selected = Services.Project.SelectedContact;
+            if (selected is null || string.IsNullOrWhiteSpace(selected.Username))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "Please select a contact before scanning.");
+            }
+
             var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath)
                 ? Services.Project.WorkspacePath
                 : WorkspacePath;
@@ -84,7 +99,7 @@ public sealed partial class ScanViewModel : PageViewModelBase
             return await Workflows.VoiceScan.RunAsync(
                 new VoiceScanWorkflowRequest(
                     workspacePath,
-                    ContactUsername: string.IsNullOrWhiteSpace(ContactUsername) ? Services.Project.SelectedContact?.Username : ContactUsername,
+                    ContactUsername: selected.Username,
                     ConversationId: null,
                     Direction: ParseDirection(),
                     From: VoiceQueryBuilder.ParseUtc(FromText, "from"),
@@ -97,25 +112,37 @@ public sealed partial class ScanViewModel : PageViewModelBase
             Services.Project.Scan = result;
             Services.Project.Workspace = result.Workspace;
             var report = result.Report;
+            var contact = Services.Project.SelectedContact!;
+            var direction = ParseDirection();
+            var from = VoiceQueryBuilder.ParseUtc(FromText, "from");
+            var to = VoiceQueryBuilder.ParseUtc(ToText, "to");
+            var dataSetId = result.Workspace.DataSet.DataSetId ?? "";
+            var accountId = result.Workspace.DataSet.AccountId ?? "";
+            var fingerprint = VoiceSelectionPlan.ComputeFingerprint(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
+                contact.ContactId, contact.Username!, direction, from, to, null);
+            Services.Project.SelectionPlan = new VoiceSelectionPlan(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
+                contact.ContactId, contact.Username!, direction, from, to, null, fingerprint, report);
             MatchedVoiceCount = report.MatchedVoiceCount;
             MissingCount = report.UnassociatedMediaCount;
             EmptyCount = report.EmptyBlobCount;
             InvalidHeaderCount = report.InvalidHeaderCount;
             AmbiguousCount = report.AmbiguousPayloadCount;
             DuplicateCount = report.SuspectedDuplicateCount;
+            ExportableVoiceCount = report.ExportableVoiceCount;
+            RejectedVoiceCount = report.RejectedVoiceCount;
+            TotalPayloadBytes = report.TotalPayloadBytes;
             AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
-            ScanSummary = $"扫描完成：匹配 {report.MatchedVoiceCount} 条；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；疑似重复 {DuplicateCount}";
+            ScanSummary = $"扫描完成：可导出 {report.ExportableVoiceCount} 条 / 匹配 {report.MatchedVoiceCount} 条；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；疑似重复 {DuplicateCount}";
         });
 
-    private VoiceDirection? ParseDirection()
+    private VoiceDirection ParseDirection()
     {
-        if (string.IsNullOrWhiteSpace(DirectionText))
-        {
-            return null;
-        }
-
         return Enum.TryParse<VoiceDirection>(DirectionText, true, out var direction)
             ? direction
             : throw new AppFailureException(ErrorCode.InvalidRequest, "Direction must be incoming or outgoing.");
     }
+
+    partial void OnDirectionTextChanged(string? value) => Services.Project.SelectionPlan = null;
+    partial void OnFromTextChanged(string? value) => Services.Project.SelectionPlan = null;
+    partial void OnToTextChanged(string? value) => Services.Project.SelectionPlan = null;
 }

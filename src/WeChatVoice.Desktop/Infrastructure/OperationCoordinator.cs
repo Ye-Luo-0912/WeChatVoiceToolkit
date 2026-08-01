@@ -5,9 +5,12 @@ namespace WeChatVoice.Desktop.Infrastructure;
 /// deliberately exposes a non-blocking acquisition so a second click cannot
 /// queue behind the active operation and appear to be running.
 /// </summary>
-public sealed class OperationCoordinator
+public sealed class OperationCoordinator : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private int _busy;
+
+    public bool IsBusy => Volatile.Read(ref _busy) != 0;
 
     public bool TryAcquire(out IDisposable lease)
     {
@@ -17,22 +20,27 @@ public sealed class OperationCoordinator
             return false;
         }
 
-        lease = new Lease(_gate);
+        Interlocked.Exchange(ref _busy, 1);
+        OnPropertyChanged(nameof(IsBusy));
+        lease = new Lease(this, _gate);
         return true;
     }
 
     private sealed class Lease : IDisposable
     {
         private readonly SemaphoreSlim _gate;
+        private readonly OperationCoordinator _owner;
         private int _disposed;
 
-        public Lease(SemaphoreSlim gate) => _gate = gate;
+        public Lease(OperationCoordinator owner, SemaphoreSlim gate) { _owner = owner; _gate = gate; }
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
                 _gate.Release();
+                Interlocked.Exchange(ref _owner._busy, 0);
+                _owner.OnPropertyChanged(nameof(IsBusy));
             }
         }
     }

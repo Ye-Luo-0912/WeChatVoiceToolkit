@@ -237,7 +237,7 @@ public sealed class KeyBrokerClient : IBrokerClient
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
         }
     }

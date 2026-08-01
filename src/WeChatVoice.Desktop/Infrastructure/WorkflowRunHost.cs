@@ -36,6 +36,13 @@ public sealed partial class WorkflowRunHost : ObservableObject
         _coordinator = coordinator;
     }
 
+    public WorkflowRunHost(Func<Action, Task> invokeOnUi, DesktopLog? log = null, OperationCoordinator? coordinator = null)
+    {
+        _invokeOnUi = invokeOnUi ?? throw new ArgumentNullException(nameof(invokeOnUi));
+        Log = log;
+        _coordinator = coordinator;
+    }
+
     /// <summary>The state machine for the current (or most recent) session.</summary>
     public WorkflowStateMachine StateMachine { get; private set; } = new();
 
@@ -181,14 +188,20 @@ public sealed partial class WorkflowRunHost : ObservableObject
     {
         if (!_runGate.Wait(0))
         {
-            throw new InvalidOperationException("A workflow run is already active.");
+            LastErrorCode = ErrorCode.OperationBusy;
+            LastAppError = ErrorCatalog.Get(ErrorCode.OperationBusy);
+            LastError = $"[{ErrorCode.OperationBusy}] {LastAppError.SuggestedAction}";
+            return Task.CompletedTask;
         }
 
         IDisposable? operationLease = null;
         if (_coordinator is not null && !_coordinator.TryAcquire(out operationLease))
         {
             _runGate.Release();
-            throw new InvalidOperationException("Another Desktop operation is already active.");
+            LastErrorCode = ErrorCode.OperationBusy;
+            LastAppError = ErrorCatalog.Get(ErrorCode.OperationBusy);
+            LastError = $"[{ErrorCode.OperationBusy}] {LastAppError.SuggestedAction}";
+            return Task.CompletedTask;
         }
 
         var version = Interlocked.Increment(ref _runVersion);

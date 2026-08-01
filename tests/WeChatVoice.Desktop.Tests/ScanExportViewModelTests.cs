@@ -3,6 +3,7 @@ using WeChatVoice.Desktop.ViewModels;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Workflows.Composition;
 using WeChatVoice.Workflows.Workflows;
+using WeChatVoice.Core.Models;
 
 namespace WeChatVoice.Desktop.Tests;
 
@@ -47,7 +48,7 @@ public sealed class ScanExportViewModelTests : IDisposable
     {
         var viewModel = new ScanViewModel(Services, marshal: action => action());
         viewModel.WorkspacePath = "C:\\workspace.json";
-        viewModel.ContactUsername = "wxid_peer";
+        Services.Project.SelectedContact = new ContactRecord("contact-1", "wxid_peer", "Peer", null);
 
         await viewModel.ScanCommand.ExecuteAsync(null);
 
@@ -75,7 +76,9 @@ public sealed class ScanExportViewModelTests : IDisposable
         var viewModel = new ExportViewModel(Services, marshal: action => action());
         viewModel.WorkspacePath = "C:\\workspace.json";
         viewModel.OutputDirectory = "C:\\exports";
-        viewModel.ContactUsername = "wxid_peer";
+        Services.Project.SelectedContact = new ContactRecord("contact-1", "wxid_peer", "Peer", null);
+        var scan = new ScanViewModel(Services, marshal: action => action()) { WorkspacePath = "C:\\workspace.json" };
+        await scan.ScanCommand.ExecuteAsync(null);
 
         await viewModel.ExportCommand.ExecuteAsync(null);
 

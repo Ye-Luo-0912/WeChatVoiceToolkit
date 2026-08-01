@@ -1,4 +1,5 @@
 using WeChatVoice.Core.Models;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Workflows.Workflows;
 
@@ -98,8 +99,8 @@ public sealed class WorkflowRunHostTests
         }, cancellationToken));
         started.Wait();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            second.RunAsync((_, _) => Task.CompletedTask));
+        await second.RunAsync((_, _) => Task.CompletedTask);
+        Assert.Equal(ErrorCode.OperationBusy, second.LastErrorCode);
 
         release.Set();
         await firstRun;

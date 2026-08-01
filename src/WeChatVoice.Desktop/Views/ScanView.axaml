@@ -15,10 +15,10 @@
       <TextBlock Text="只读审计，不写任何文件。仅支持一对一联系人；输出为原始 SILK 的关联状态。" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBox Width="340" PlaceholderText="Workspace JSON 路径" Text="{Binding WorkspacePath}" />
-        <TextBox Width="220" PlaceholderText="联系人用户名（wxid_…）" Text="{Binding ContactUsername}" />
+        <TextBlock Width="360" Text="联系人必须在联系人页显式选择" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="180" PlaceholderText="方向 incoming/outgoing" Text="{Binding DirectionText}" />
+        <TextBlock Width="180" Text="仅对方发来的语音（incoming）" />
         <TextBox Width="180" PlaceholderText="起始 UTC 时间" Text="{Binding FromText}" />
         <TextBox Width="180" PlaceholderText="结束 UTC 时间" Text="{Binding ToText}" />
         <Button Content="扫描" Command="{Binding ScanCommand}" />

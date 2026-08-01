@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Serialization;
@@ -50,7 +51,7 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(_executablePath))
         {
-            throw new FileNotFoundException("The configured external decryptor was not found.", _executablePath);
+            throw new AppFailureException(ErrorCode.WorkerBundleUntrusted, "The configured external decryptor was not found.");
         }
 
         var rawSnapshot = snapshot.Snapshot;

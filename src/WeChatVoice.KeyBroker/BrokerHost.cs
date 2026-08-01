@@ -166,6 +166,10 @@ internal static class BrokerHost
                 await JsonSerializer.SerializeAsync(workspaceStream, workspace, JsonOptions, cancellationToken).ConfigureAwait(false);
                 await workspaceStream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
+            var stateDirectory = Path.Combine(outputRoot, ".wechatvoice");
+            Directory.CreateDirectory(stateDirectory);
+            await File.WriteAllTextAsync(Path.Combine(stateDirectory, "materialization-state.json"), "{\"state\":\"WorkspaceCommitted\"}", cancellationToken).ConfigureAwait(false);
+            await File.WriteAllTextAsync(Path.Combine(stateDirectory, "materialization-state.json"), "{\"state\":\"Completed\"}", cancellationToken).ConfigureAwait(false);
 
             BrokerProtocol.Write(output, new BrokerResponse(
                 "completed",
@@ -184,11 +188,6 @@ internal static class BrokerHost
         {
             BrokerProtocol.Write(output, Failed(request?.RequestId, "malformed_request", "The request is not valid JSON."));
             return 2;
-        }
-        catch (FileNotFoundException)
-        {
-            BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_not_found", "The requested snapshot manifest was not found."));
-            return 4;
         }
         catch (AppFailureException exception)
         {
@@ -233,7 +232,17 @@ internal static class BrokerHost
             throw new AppFailureException(ErrorCode.SnapshotInvalid, "The broker accepts only a reserved snapshot manifest path.");
         }
 
-        await using var stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        FileStream stream;
+        try
+        {
+            stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (FileNotFoundException exception)
+        {
+            throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest was not found.", exception);
+        }
+        await using (stream)
+        {
         var manifest = await JsonSerializer.DeserializeAsync<SnapshotManifest>(stream, JsonOptions, cancellationToken).ConfigureAwait(false)
             ?? throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest was empty.");
         if (!string.Equals(manifest.SnapshotId, request.SnapshotId, StringComparison.OrdinalIgnoreCase))
@@ -245,6 +254,7 @@ internal static class BrokerHost
         var snapshotRoot = Directory.GetParent(metadataDirectory)?.FullName
             ?? throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest has no snapshot root.");
         return await new RawSnapshotVerifier().VerifyAsync(new RawSnapshot(manifest, snapshotRoot), cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>

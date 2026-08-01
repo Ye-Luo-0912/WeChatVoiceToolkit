@@ -64,7 +64,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         ArgumentNullException.ThrowIfNull(options);
         if (!File.Exists(workerPath))
         {
-            throw new FileNotFoundException("The bundled SQLCipher worker was not found.", workerPath);
+            throw new AppFailureException(ErrorCode.WorkerBundleUntrusted, "The bundled SQLCipher worker was not found.");
         }
 
         var backendSha256 = await VerifyWorkerBundleAsync(cancellationToken).ConfigureAwait(false);
@@ -224,6 +224,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            await File.WriteAllTextAsync(Path.Combine(staging, ".wechatvoice", "materialization-state.json"), "{\"state\":\"DatabasesCommitted\"}", cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, options.OutputDirectory);
             if (BrokerDirectorySecurity.IsElevated())
             {
@@ -238,6 +239,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 }
             }
             var movedManifestPath = Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json");
+            await File.WriteAllTextAsync(Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-state.json"), "{\"state\":\"Completed\"}", cancellationToken).ConfigureAwait(false);
             return new VerifiedMaterialization(new MaterializationResult(
                 workspaceId,
                 snapshot.Snapshot.SnapshotId,

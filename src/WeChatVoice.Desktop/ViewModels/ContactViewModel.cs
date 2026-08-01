@@ -45,28 +45,31 @@ public sealed partial class ContactViewModel : PageViewModelBase
     private Task LoadContactsAsync() => RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
-            if (string.IsNullOrWhiteSpace(WorkspacePath))
-            {
-                WorkspacePath = Services.Project.WorkspacePath;
-            }
-            if (string.IsNullOrWhiteSpace(WorkspacePath))
+            var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
+            if (string.IsNullOrWhiteSpace(workspacePath))
             {
                 throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace path is required.");
             }
 
             return await Workflows.ContactDiscovery.RunAsync(
-                new ContactDiscoveryRequest(WorkspacePath, SearchTerm: string.IsNullOrWhiteSpace(SearchTerm) ? null : SearchTerm),
+                new ContactDiscoveryRequest(workspacePath, SearchTerm: string.IsNullOrWhiteSpace(SearchTerm) ? null : SearchTerm),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
         result =>
         {
             Contacts = result.Contacts;
-            SelectedContact = result.Contacts.FirstOrDefault();
+            SelectedContact = null;
             Services.Project.Workspace = result.Workspace;
-            Services.Project.SelectedContact = SelectedContact;
-            Services.Project.WorkspacePath = WorkspacePath;
+            Services.Project.WorkspacePath = result.Workspace.Workspace.SourceRoot;
             AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
             ContactSummary = $"共 {result.Contacts.Count} 个一对一联系人（群聊已排除）";
         });
+
+    partial void OnSelectedContactChanged(ContactRecord? value)
+    {
+        Services.Project.SelectedContact = value;
+        Services.Project.Scan = null;
+        Services.Project.LastExportRun = null;
+    }
 }

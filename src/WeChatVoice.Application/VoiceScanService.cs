@@ -27,6 +27,8 @@ public sealed class VoiceScanService
         var empty = 0;
         var invalidHeader = 0;
         var ambiguous = 0;
+        var exportable = 0;
+        long totalPayloadBytes = 0;
 
         await foreach (var record in _catalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
         {
@@ -42,6 +44,11 @@ public sealed class VoiceScanService
             shardCounts[shard] = shardCounts.TryGetValue(shard, out var shardCount) ? shardCount + 1 : 1;
             var stateName = record.PayloadState.ToString();
             payloadStates[stateName] = payloadStates.TryGetValue(stateName, out var stateCount) ? stateCount + 1 : 1;
+            if (record.PayloadState == VoicePayloadState.Linked && record.PayloadByteLength is > 0)
+            {
+                exportable++;
+                totalPayloadBytes = checked(totalPayloadBytes + record.PayloadByteLength.Value);
+            }
             if (record.PayloadState == VoicePayloadState.Missing)
             {
                 unassociated++;
@@ -81,6 +88,8 @@ public sealed class VoiceScanService
             invalidHeader,
             ambiguous,
             payloadStates,
-            query.DeepScan);
+            query.DeepScan,
+            exportable,
+            totalPayloadBytes);
     }
 }

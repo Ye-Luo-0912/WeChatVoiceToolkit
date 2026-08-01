@@ -29,9 +29,11 @@
         <ListBox.ItemTemplate>
           <DataTemplate x:DataType="models:ContactRecord">
             <StackPanel Orientation="Horizontal" Spacing="16">
+              <TextBlock Text="{Binding DisplayName}" Width="180" />
+              <TextBlock Text="{Binding Remark}" Width="180" />
+              <TextBlock Text="{Binding Nickname}" Width="180" />
+              <TextBlock Text="{Binding ContactId}" Width="240" />
               <TextBlock Text="{Binding Username}" Width="240" />
-              <TextBlock Text="{Binding DisplayName}" Width="200" />
-              <TextBlock Text="{Binding WeChatId}" />
             </StackPanel>
           </DataTemplate>
         </ListBox.ItemTemplate>

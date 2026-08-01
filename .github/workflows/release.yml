@@ -20,7 +20,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - name: Restore locked
-        run: dotnet restore WeChatVoice.slnx --locked-mode
+        run: dotnet restore WeChatVoice.slnx --locked-mode --runtime win-x64
       - name: Materialize signing certificate
         shell: pwsh
         env:

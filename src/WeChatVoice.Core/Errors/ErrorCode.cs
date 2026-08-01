@@ -62,4 +62,7 @@ public enum ErrorCode
 
     /// <summary>The host supplied an incomplete or invalid workflow request.</summary>
     InvalidRequest,
+
+    /// <summary>A different high-cost Desktop operation is currently active.</summary>
+    OperationBusy,
 }

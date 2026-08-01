@@ -19,6 +19,7 @@ public sealed partial class ExportProjectSession : ObservableObject
     [ObservableProperty] private string? _workspacePath;
     [ObservableProperty] private ContactRecord? _selectedContact;
     [ObservableProperty] private VoiceScanWorkflowResult? _scan;
+    [ObservableProperty] private VoiceSelectionPlan? _selectionPlan;
     [ObservableProperty] private VoiceExportWorkflowResult? _lastExportRun;
     [ObservableProperty] private string? _exportDirectory;
 
@@ -32,6 +33,7 @@ public sealed partial class ExportProjectSession : ObservableObject
         WorkspacePath = null;
         SelectedContact = null;
         Scan = null;
+        SelectionPlan = null;
         LastExportRun = null;
     }
 }
