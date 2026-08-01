@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using WeChatVoice.Application;
 using WeChatVoice.Cli.Services;
+using WeChatVoice.Cli.Services.BrokerTrust;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Adapters;
@@ -574,6 +576,14 @@ static Command CreateWorkspaceCommand()
     {
         Description = "Explicitly allow the development-only external backend. It is never a formal backend pin.",
     };
+    var allowDevelopmentBrokerOption = new Option<bool>("--allow-development-broker")
+    {
+        Description = "Accept an unsigned development Key Broker only when it is located in a verified repository build directory.",
+    };
+    var accountOption = new Option<string?>("--account")
+    {
+        Description = "Exact stable Weixin account username; doubles as explicit confirmation of the detected account.",
+    };
     var materializedOutputOption = new Option<string>("--output")
     {
         Description = "New ordinary SQLite output directory.",
@@ -588,6 +598,8 @@ static Command CreateWorkspaceCommand()
     materializeCommand.Options.Add(backendOption);
     materializeCommand.Options.Add(decryptorOption);
     materializeCommand.Options.Add(allowUntrustedBackendOption);
+    materializeCommand.Options.Add(allowDevelopmentBrokerOption);
+    materializeCommand.Options.Add(accountOption);
     materializeCommand.Options.Add(materializedOutputOption);
     materializeCommand.Options.Add(workspaceOutputOption);
     materializeCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -597,6 +609,8 @@ static Command CreateWorkspaceCommand()
         var backendId = parseResult.GetValue(backendOption);
         var decryptor = parseResult.GetValue(decryptorOption);
         var allowUntrustedBackend = parseResult.GetValue(allowUntrustedBackendOption);
+        var allowDevelopmentBroker = parseResult.GetValue(allowDevelopmentBrokerOption);
+        var requestedAccount = parseResult.GetValue(accountOption);
         var output = parseResult.GetValue(materializedOutputOption);
         var workspaceOutput = parseResult.GetValue(workspaceOutputOption);
         if (snapshotDirectory is null || backendId is null || output is null)
@@ -624,6 +638,13 @@ static Command CreateWorkspaceCommand()
             var manifest = await ReadJsonFileAsync<SnapshotManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
             var rawSnapshot = new RawSnapshot(manifest, snapshotRoot);
             var verifiedSnapshot = await new RawSnapshotVerifier().VerifyAsync(rawSnapshot, cancellationToken).ConfigureAwait(false);
+
+            // Account identity is path-derived and only a candidate. The user
+            // must explicitly confirm the detected account before the broker
+            // spends a privileged materialization on it; nothing is silent.
+            var sourceIdentity = SnapshotSourceIdentity.TryDerive(manifest.SourceDirectory, manifest.Files);
+            var confirmedAccountId = await ConfirmAccountAsync(sourceIdentity?.AccountCandidate, requestedAccount, cancellationToken).ConfigureAwait(false);
+
             var outputRoot = Path.GetFullPath(output);
             var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(
                 Path.GetDirectoryName(outputRoot) ?? throw new InvalidDataException("The materialization output must have a parent directory."),
@@ -636,7 +657,15 @@ static Command CreateWorkspaceCommand()
                     throw new MaterializationBackendUnavailableException(backendId, $"Materialization backend '{backendId}' is not registered.");
                 }
 
-                var brokerResult = await new KeyBrokerClient().AcquireAndMaterializeAsync(
+                var trustPolicy = allowDevelopmentBroker
+                    ? (IBrokerTrustPolicy)new DevelopmentBrokerTrustPolicy()
+                    : new ReleaseBrokerTrustPolicy();
+                if (allowDevelopmentBroker)
+                {
+                    Console.Error.WriteLine("警告：使用未签名的开发构建 Key Broker，仅供开发调试，禁止用于正式发布。");
+                }
+
+                var brokerResult = await new KeyBrokerClient(trustPolicy).AcquireAndMaterializeAsync(
                     verifiedSnapshot,
                     manifestPath,
                     outputRoot,
@@ -649,10 +678,18 @@ static Command CreateWorkspaceCommand()
                 {
                     throw new KeyBrokerOperationException(
                         brokerResult.Error?.Code ?? "broker_failed",
-                        brokerResult.Error?.Message ?? "The Key Broker did not complete materialization.");
+                        brokerResult.Error?.Message ?? "The Key Broker did not complete materialization.",
+                        brokerResult.Error?.IsRetryable ?? false,
+                        brokerResult.Error?.SuggestedAction);
                 }
 
                 var verifiedWorkspace = await new WorkspaceLoader().LoadVerifiedAsync(localWorkspacePath, cancellationToken).ConfigureAwait(false);
+                if (confirmedAccountId is not null
+                    && !string.Equals(verifiedWorkspace.DataSet.AccountId, confirmedAccountId, StringComparison.Ordinal))
+                {
+                    throw new AppFailureException(ErrorCode.WorkspaceInvalid, "The Broker produced a workspace for a different account than the one confirmed.");
+                }
+
                 WriteJson(new BrokerWorkspaceMaterializationResult(
                     brokerResult.ProfileId,
                     brokerResult.MaterializationId,
@@ -946,8 +983,41 @@ static void ReportBrokerStage(KeyBrokerStage stage)
     Console.Error.WriteLine($"broker-stage:{stage.Stage}{(details.Count == 0 ? string.Empty : " " + string.Join(' ', details))}");
 }
 
-static void WriteError(Exception exception) =>
+static void WriteError(Exception exception)
+{
+    // Stable error codes stay machine-readable; the presentation layer owns
+    // the localized text. This is the same boundary a future UI host uses.
+    if (exception is KeyBrokerOperationException brokerException)
+    {
+        var detail = brokerException.Code;
+        if (Enum.TryParse<ErrorCode>(detail, ignoreCase: true, out var parsed))
+        {
+            detail = parsed.ToString();
+            var zh = ErrorMessagesZhHans.Get(parsed);
+            Console.Error.WriteLine($"[{detail}] {zh.Message}{(zh.SuggestedAction is null ? string.Empty : "（" + zh.SuggestedAction + "）")}");
+            return;
+        }
+
+        Console.Error.WriteLine($"[{brokerException.Code}] {brokerException.Message}");
+        return;
+    }
+
+    if (exception is AppFailureException appException)
+    {
+        var zh = ErrorMessagesZhHans.Get(appException.Code);
+        Console.Error.WriteLine($"[{appException.Code}] {zh.Message}{(zh.SuggestedAction is null ? string.Empty : "（" + zh.SuggestedAction + "）")}");
+        return;
+    }
+
+    if (exception is NoMatchingDataSetAdapterException)
+    {
+        var zh = ErrorMessagesZhHans.Get(ErrorCode.UnsupportedSchema);
+        Console.Error.WriteLine($"[{ErrorCode.UnsupportedSchema}] {zh.Message}{(zh.SuggestedAction is null ? string.Empty : "（" + zh.SuggestedAction + "）")}");
+        return;
+    }
+
     Console.Error.WriteLine($"{exception.GetType().Name}: {exception.Message}");
+}
 
 static int GetExportExitCode(VoiceExportManifest manifest)
 {
@@ -962,6 +1032,88 @@ static int GetExportExitCode(VoiceExportManifest manifest)
     }
 
     return manifest.Failures.Count == 0 ? 0 : 3;
+}
+
+/// <summary>
+/// Resolves and confirms the path-derived account candidate before a
+/// privileged materialization runs. An explicit <c>--account</c> that matches
+/// the candidate counts as confirmation; otherwise the confirmation port
+/// prompts the user. A null candidate (unrecognized layout) proceeds and the
+/// workspace validation later refuses it.
+/// </summary>
+static async Task<string?> ConfirmAccountAsync(string? candidate, string? requestedAccount, CancellationToken cancellationToken)
+{
+    if (candidate is null)
+    {
+        return null;
+    }
+
+    if (requestedAccount is not null)
+    {
+        if (!string.Equals(requestedAccount, candidate, StringComparison.Ordinal))
+        {
+            throw new AppFailureException(ErrorCode.AccountConfirmationRequired, $"The requested account '{requestedAccount}' does not match the detected account '{candidate}'.");
+        }
+
+        return candidate;
+    }
+
+    var confirmation = await new ConsoleAccountConfirmation().ConfirmAsync(
+        new AccountIdentityReport(candidate, AccountIdentityState.Candidate, null),
+        cancellationToken).ConfigureAwait(false);
+    if (!confirmation.Confirmed || !string.Equals(confirmation.ConfirmedAccountId, candidate, StringComparison.Ordinal))
+    {
+        throw new AppFailureException(ErrorCode.AccountConfirmationRequired, "Account confirmation was declined.");
+    }
+
+    return candidate;
+}
+
+/// <summary>
+/// Presentation-layer mapping from stable error codes to zh-Hans guidance.
+/// Lower layers never emit these strings; a future UI host maps the same
+/// codes with its own localized copy.
+/// </summary>
+internal static class ErrorMessagesZhHans
+{    internal static (string Message, string? SuggestedAction) Get(ErrorCode code)
+    {
+        var error = ErrorCatalog.Get(code);
+        var message = code switch
+        {
+            ErrorCode.WeixinNotRunning => "未检测到正在运行的微信进程",
+            ErrorCode.UnsupportedWeixinVersion => "当前微信版本不受支持",
+            ErrorCode.ProcessIdentityMismatch => "微信进程身份与所选配置不匹配",
+            ErrorCode.SnapshotInvalid => "快照校验失败",
+            ErrorCode.SnapshotInconsistent => "快照内容在验证过程中发生变化",
+            ErrorCode.KeyCandidateNotFound => "未找到能验证全部数据库组的密钥候选",
+            ErrorCode.DatabaseGroupUncovered => "密钥获取未覆盖所有必需的数据库组",
+            ErrorCode.WorkerBundleUntrusted => "SQLCipher 工作进程包未通过信任验证",
+            ErrorCode.WorkerFailed => "SQLCipher 工作进程执行失败",
+            ErrorCode.MaterializationInvalid => "数据物化输出未通过独立验证",
+            ErrorCode.WorkspaceInvalid => "工作区无效",
+            ErrorCode.UnsupportedSchema => "未找到支持该数据库结构的适配器",
+            ErrorCode.ContactNotFound => "未找到指定的联系人",
+            ErrorCode.ExportPartialFailure => "导出完成但存在部分失败项",
+            ErrorCode.AccountConfirmationRequired => "检测到账号，需要您确认后继续",
+            _ => "发生未知错误",
+        };
+        var action = error.SuggestedAction switch
+        {
+            "start-weixin" => "请先启动微信后再试",
+            "use-supported-version" => "请使用受支持的微信版本",
+            "restart-weixin-and-retry" => "请重启微信后重试",
+            "re-snapshot" => "请重新创建快照",
+            "reinstall-package" => "请重新安装软件包",
+            "retry-materialization" => "请重试物化操作",
+            "re-materialize" => "请重新执行物化",
+            "confirm-account" => "请确认账号后再继续",
+            "choose-contact" => "请重新选择联系人",
+            "review-failures" => "请查看失败明细",
+            "use-supported-schema" => "请使用受支持的结构版本",
+            _ => null,
+        };
+        return (message, action);
+    }
 }
 
 internal sealed record DoctorReport(

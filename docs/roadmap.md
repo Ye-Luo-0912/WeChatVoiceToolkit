@@ -24,6 +24,23 @@
    raw SILK export.
 8. Export uses stable source keys, content-addressed paths, per-run flushed
    Journals, committed Manifests, hash verification, and repeat-run safe skips.
+   Each source BLOB is read once; run manifests inherit full materialization
+   provenance.
+9. Broker and worker binaries are trusted through split Development/Release
+   policies: release requires Authenticode + pinned publisher + hash-bound
+   publish manifests + a non-user-writable install directory, and the publish
+   smoke signs or fails closed. Private Broker staging is DACL-restricted to
+   SYSTEM and Administrators.
+10. Account identity is a confirmed candidate, never a silent path pick: the
+    detected account must be explicitly confirmed (`--account` or the
+    `IAccountConfirmation` port) before privileged materialization.
+11. Stable error codes (`ErrorCode` + `ErrorCatalog`) cross the Broker/CLI
+    boundary with `IsRetryable`/`SuggestedAction`/`NonSensitiveTechnicalContext`;
+    presentation layers own localized text.
+12. Workspace verification builds one `VerifiedFileIndex` shared by dataset
+    probing, provenance verification, and the adapter; maximum results merge
+    globally across message shards, and Name2Id reads stay bounded to the
+    resolved conversation.
 
 ## Next product work
 
@@ -34,10 +51,16 @@
    trust boundaries.
 3. Recover voice duration from verified message metadata, if evidence supports
    it, so scan and training-quality manifests can report duration accurately.
-4. Add packaged/self-contained win-x64 smoke tests and an installer that places
-   the Broker/Worker bundle in a normal-user non-writable directory.
+4. Add packaged/self-contained win-x64 installer/package that places the
+   Broker/Worker bundle in a normal-user non-writable directory and signs the
+   executables; the publish smoke and Release trust policy already enforce the
+   non-writable-directory and signature requirements at runtime.
 5. After raw SILK remains stable, add a batch or resident decoder worker and
    strict RIFF/PCM validation. WAV/RVC work remains a derived later phase.
+6. Wire account self-identity confirmation to a verified database field (not a
+   path) once schema evidence for a self-describing account record is supplied;
+   the `AccountIdentity.Confirmed` state and `ConfirmedBy` field are reserved
+   for that evidence.
 
 New Weixin versions require a new exact process/module Profile and schema
 evidence. There is no unknown-version heuristic fallback.

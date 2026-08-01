@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.KeyAcquisition.Models;
 using WeChatVoice.KeyAcquisition.Ports;
@@ -74,11 +75,15 @@ internal sealed class WeixinWindows41155Profile(
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        if (processes.Any(process => !Descriptor.ProductVersions.Contains(process.ProductVersion)
-            || !Descriptor.ImageSha256.Contains(process.ImageSha256)
+        if (processes.Any(process => !Descriptor.ProductVersions.Contains(process.ProductVersion)))
+        {
+            throw new AppFailureException(ErrorCode.UnsupportedWeixinVersion, "A verified process does not match the 4.1.11.55 version.");
+        }
+
+        if (processes.Any(process => !Descriptor.ImageSha256.Contains(process.ImageSha256)
             || !string.Equals(process.Architecture, Descriptor.Architecture, StringComparison.OrdinalIgnoreCase)))
         {
-            throw new InvalidDataException("A verified process does not match the 4.1.11.55 Profile.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "A verified process does not match the 4.1.11.55 Profile.");
         }
 
         await moduleIdentityVerifier.VerifyAsync(processes, cancellationToken).ConfigureAwait(false);
@@ -86,7 +91,7 @@ internal sealed class WeixinWindows41155Profile(
         var targets = await DatabaseGroupTarget.LoadAsync(snapshot, cancellationToken).ConfigureAwait(false);
         if (targets.Count == 0)
         {
-            throw new InvalidDataException("The verified Snapshot contains no database groups for Profile validation.");
+            throw new AppFailureException(ErrorCode.SnapshotInvalid, "The verified Snapshot contains no database groups for Profile validation.");
         }
 
         var validated = new Dictionary<string, ValidatedDatabaseKey>(StringComparer.Ordinal);
@@ -185,7 +190,7 @@ internal sealed class WeixinWindows41155Profile(
                 item.KeyMaterial.Dispose();
             }
 
-            throw new InvalidDataException($"The 4.1.11.55 Profile validated {validated.Count} of {targets.Count} database groups; materialization is refused.");
+            throw new AppFailureException(ErrorCode.KeyCandidateNotFound, $"The 4.1.11.55 Profile validated {validated.Count} of {targets.Count} database groups; materialization is refused.");
         }
 
         return validated.Values.ToArray();
@@ -209,13 +214,13 @@ internal sealed class VersionedWcdbModuleIdentityVerifier : IWeixinModuleIdentit
             .ToArray();
         if (imageDirectories.Length != 1)
         {
-            throw new InvalidDataException("The verified Weixin process tree did not resolve to one installation directory.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "The verified Weixin process tree did not resolve to one installation directory.");
         }
 
         var versions = processes.Select(static process => process.ProductVersion).Distinct(StringComparer.Ordinal).ToArray();
         if (versions.Length != 1 || !string.Equals(versions[0], WeixinWindows41155Profile.SupportedVersion, StringComparison.Ordinal))
         {
-            throw new InvalidDataException("The verified Weixin process tree did not resolve to the Profile's exact version directory.");
+            throw new AppFailureException(ErrorCode.UnsupportedWeixinVersion, "The verified Weixin process tree did not resolve to the Profile's exact version directory.");
         }
 
         // Current Weixin keeps the stable launcher at the installation root
@@ -228,12 +233,12 @@ internal sealed class VersionedWcdbModuleIdentityVerifier : IWeixinModuleIdentit
             : installationRoot + Path.DirectorySeparatorChar;
         if (!modulePath.StartsWith(requiredPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The exact WCDB module path escaped the verified Weixin installation directory.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "The exact WCDB module path escaped the verified Weixin installation directory.");
         }
 
         if (!File.Exists(modulePath) || (File.GetAttributes(modulePath) & FileAttributes.ReparsePoint) != 0)
         {
-            throw new InvalidDataException("The exact WCDB module required by the selected Profile was not found as a regular versioned file.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "The exact WCDB module required by the selected Profile was not found as a regular versioned file.");
         }
 
         await using var stream = new FileStream(
@@ -246,7 +251,7 @@ internal sealed class VersionedWcdbModuleIdentityVerifier : IWeixinModuleIdentit
         var hash = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
         if (!string.Equals(hash, WeixinWindows41155Profile.SupportedWcdbModuleSha256, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The adjacent WCDB module hash does not match the selected exact Profile.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "The adjacent WCDB module hash does not match the selected exact Profile.");
         }
     }
 }
@@ -356,22 +361,18 @@ internal sealed record DatabaseGroupTarget(
         int? shardNumber)
     {
         var basePath = main.RelativePath.Replace('\\', '/');
-        var group = files.Where(item => item.RelativePath.Replace('\\', '/').Equals(basePath, StringComparison.OrdinalIgnoreCase)
-            || item.RelativePath.Replace('\\', '/').Equals(basePath + "-wal", StringComparison.OrdinalIgnoreCase)
-            || item.RelativePath.Replace('\\', '/').Equals(basePath + "-shm", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(item => item.RelativePath, StringComparer.Ordinal)
-            .Select(item => item);
-        var canonical = string.Join('|',
+        var wal = files.FirstOrDefault(item => item.RelativePath.Replace('\\', '/').Equals(basePath + "-wal", StringComparison.OrdinalIgnoreCase));
+        var shm = files.FirstOrDefault(item => item.RelativePath.Replace('\\', '/').Equals(basePath + "-shm", StringComparison.OrdinalIgnoreCase));
+        return WeChatVoice.Core.Models.DatabaseGroupFingerprint.Compute(
             basePath,
             logicalRole,
-            shardNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
-            main.ByteLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            main.Sha256.ToLowerInvariant(),
-            group.FirstOrDefault(item => item.RelativePath.Replace('\\', '/').Equals(basePath + "-wal", StringComparison.OrdinalIgnoreCase))?.ByteLength.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
-            group.FirstOrDefault(item => item.RelativePath.Replace('\\', '/').Equals(basePath + "-wal", StringComparison.OrdinalIgnoreCase))?.Sha256.ToLowerInvariant() ?? string.Empty,
-            group.FirstOrDefault(item => item.RelativePath.Replace('\\', '/').Equals(basePath + "-shm", StringComparison.OrdinalIgnoreCase))?.ByteLength.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
-            group.FirstOrDefault(item => item.RelativePath.Replace('\\', '/').Equals(basePath + "-shm", StringComparison.OrdinalIgnoreCase))?.Sha256.ToLowerInvariant() ?? string.Empty);
-        return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+            shardNumber,
+            main.ByteLength,
+            main.Sha256,
+            wal?.ByteLength,
+            wal?.Sha256,
+            shm?.ByteLength,
+            shm?.Sha256);
     }
 
     private static (string Role, int? Shard) Classify(string fileName)

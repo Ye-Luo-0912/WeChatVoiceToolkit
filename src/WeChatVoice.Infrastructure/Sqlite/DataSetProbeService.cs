@@ -31,6 +31,13 @@ public sealed class DataSetProbeService
         string rootDirectory,
         DataSetProbeOptions? options,
         CancellationToken cancellationToken)
+        => await ProbeAsync(rootDirectory, options, precomputedIndex: null, cancellationToken).ConfigureAwait(false);
+
+    public async Task<DataSetProbe> ProbeAsync(
+        string rootDirectory,
+        DataSetProbeOptions? options,
+        VerifiedFileIndex? precomputedIndex,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         options ??= new DataSetProbeOptions();
@@ -43,7 +50,7 @@ public sealed class DataSetProbeService
         }
 
         var issues = new List<DataSetIssue>();
-        var snapshotFiles = await BuildSnapshotFileLookupAsync(root, options.SnapshotManifest, cancellationToken).ConfigureAwait(false);
+        var snapshotFiles = await BuildSnapshotFileLookupAsync(root, options.SnapshotManifest, precomputedIndex, cancellationToken).ConfigureAwait(false);
         var files = SnapshotFileCopier.EnumerateRegularFiles(root)
             .Where(static path => string.Equals(Path.GetExtension(path), ".db", StringComparison.OrdinalIgnoreCase))
             .Select(path => new DiscoveredDatabase(path, NormalizeRelativePath(root, path), Classify(Path.GetFileName(path))))
@@ -65,19 +72,24 @@ public sealed class DataSetProbeService
                 issues.Add(new DataSetIssue("incomplete-wal-pair", "warning", completenessIssue, file.RelativePath));
             }
 
-            var metadata = await FileHashing.ComputeMetadataAsync(localPath, cancellationToken).ConfigureAwait(false);
+            VerifiedFileEntry? indexEntry = null;
+            precomputedIndex?.TryGet(file.RelativePath, out indexEntry);
+            var metadata = indexEntry is null
+                ? await FileHashing.ComputeMetadataAsync(localPath, cancellationToken).ConfigureAwait(false)
+                : null;
             var mainRecord = snapshotFiles?.GetValueOrDefault(file.RelativePath);
-            var mainLength = mainRecord?.ByteLength ?? metadata.ByteLength;
-            var mainHash = mainRecord?.Sha256 ?? metadata.Sha256;
-            var walLength = walPresent ? (long?)new FileInfo(walPath).Length : null;
-            var shmLength = shmPresent ? (long?)new FileInfo(shmPath).Length : null;
+            var mainLength = mainRecord?.ByteLength ?? indexEntry?.ByteLength ?? metadata!.ByteLength;
+            var mainHash = mainRecord?.Sha256 ?? indexEntry?.Sha256 ?? metadata!.Sha256;
+            var hasPlainSqliteHeader = indexEntry?.HasPlainSqliteHeader ?? metadata!.HasPlainSqliteHeader;
+            var walLength = walPresent ? (long?)(indexEntry is not null ? LookupLength(precomputedIndex!, file.RelativePath + "-wal") : new FileInfo(walPath).Length) : null;
+            var shmLength = shmPresent ? (long?)(indexEntry is not null ? LookupLength(precomputedIndex!, file.RelativePath + "-shm") : new FileInfo(shmPath).Length) : null;
             var walRecord = snapshotFiles?.GetValueOrDefault(file.RelativePath + "-wal");
             var shmRecord = snapshotFiles?.GetValueOrDefault(file.RelativePath + "-shm");
             var walHash = walPresent
-                ? walRecord?.Sha256 ?? await FileHashing.ComputeSha256Async(walPath, cancellationToken).ConfigureAwait(false)
+                ? walRecord?.Sha256 ?? (indexEntry is not null ? LookupHash(precomputedIndex!, file.RelativePath + "-wal") : await FileHashing.ComputeSha256Async(walPath, cancellationToken).ConfigureAwait(false))
                 : null;
             var shmHash = shmPresent
-                ? shmRecord?.Sha256 ?? await FileHashing.ComputeSha256Async(shmPath, cancellationToken).ConfigureAwait(false)
+                ? shmRecord?.Sha256 ?? (indexEntry is not null ? LookupHash(precomputedIndex!, file.RelativePath + "-shm") : await FileHashing.ComputeSha256Async(shmPath, cancellationToken).ConfigureAwait(false))
                 : null;
             var groupFingerprint = ComputeDatabaseGroupFingerprint(
                 file.RelativePath,
@@ -90,7 +102,7 @@ public sealed class DataSetProbeService
                 shmLength,
                 shmHash);
             SchemaSnapshot schema;
-            if (!metadata.HasPlainSqliteHeader)
+            if (!hasPlainSqliteHeader)
             {
                 const string message = "The database does not have a plain SQLite header; it may be encrypted or use a proprietary container. No decryption is attempted.";
                 issues.Add(new DataSetIssue("encrypted-or-non-sqlite", "error", message, file.RelativePath));
@@ -206,6 +218,7 @@ public sealed class DataSetProbeService
     private static async Task<IReadOnlyDictionary<string, SnapshotFileRecord>?> BuildSnapshotFileLookupAsync(
         string root,
         SnapshotManifest? snapshotManifest,
+        VerifiedFileIndex? precomputedIndex,
         CancellationToken cancellationToken)
     {
         if (snapshotManifest is null)
@@ -237,7 +250,9 @@ public sealed class DataSetProbeService
             cancellationToken.ThrowIfCancellationRequested();
             var path = CombineUnderRoot(root, pair.Key);
             var info = new FileInfo(path);
-            var hash = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            var hash = precomputedIndex is not null
+                ? LookupHash(precomputedIndex, pair.Key)
+                : await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
             if (info.Length != pair.Value.ByteLength
                 || !string.Equals(hash, pair.Value.Sha256, StringComparison.OrdinalIgnoreCase))
             {
@@ -247,6 +262,12 @@ public sealed class DataSetProbeService
 
         return expected;
     }
+
+    private static long? LookupLength(VerifiedFileIndex index, string relativePath)
+        => index.TryGet(relativePath, out var entry) ? entry.ByteLength : null;
+
+    private static string? LookupHash(VerifiedFileIndex index, string relativePath)
+        => index.TryGet(relativePath, out var entry) ? entry.Sha256 : null;
 
     private static bool IsInternalMetadataPath(string root, string path)
     {
@@ -282,19 +303,7 @@ public sealed class DataSetProbeService
         string? walHash,
         long? shmLength,
         string? shmHash)
-    {
-        var canonical = string.Join('|',
-            relativePath,
-            logicalRole,
-            shardNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
-            mainLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            mainHash,
-            walLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
-            walHash ?? string.Empty,
-            shmLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
-            shmHash ?? string.Empty);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
-    }
+        => DatabaseGroupFingerprint.Compute(relativePath, logicalRole, shardNumber, mainLength, mainHash, walLength, walHash, shmLength, shmHash);
 
     private static SchemaSnapshot CreateUnavailableSchema(
         string localPath,

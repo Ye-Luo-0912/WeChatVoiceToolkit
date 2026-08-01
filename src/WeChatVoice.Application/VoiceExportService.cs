@@ -41,9 +41,9 @@ public sealed class VoiceExportService
         }
 
         var context = _voiceCatalog.Context;
-        // Export always requests a complete content hash. Scan defaults to a
-        // bounded header read, but persistence must verify source bytes.
-        query = query with { DeepScan = true };
+        // Export performs one streaming read of each source BLOB and computes
+        // its identity at commit time; a DeepScan pre-hash is deliberately not
+        // forced here so the source is never read twice.
         var runId = Guid.NewGuid().ToString("N");
         await using var journal = await _exportStore.BeginRunAsync(
             new VoiceExportRunContext(runId, context, DateTimeOffset.UtcNow),
@@ -113,7 +113,8 @@ public sealed class VoiceExportService
             context.AdapterVersion,
             context.DatabaseFingerprints,
             runStatus,
-            runStatus == ExportRunStatus.Cancelled);
+            runStatus == ExportRunStatus.Cancelled,
+            context.MaterializationProvenance);
 
         await AppendAsync(
             journal,

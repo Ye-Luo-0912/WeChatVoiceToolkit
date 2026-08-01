@@ -44,7 +44,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         return ValueTask.FromResult<IExportRunLease>(new FileSystemExportRunJournal(_exportRoot, context.RunId, stream));
     }
 
-    public ValueTask<IExportItemLease> BeginItemAsync(
+    public async ValueTask<IExportItemLease> BeginItemAsync(
         VoiceRecord record,
         ExistingArtifactPolicy policy,
         CancellationToken cancellationToken)
@@ -64,10 +64,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var originalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "original", prefix1, prefix2, $"{fileName}.silk");
         var decodedPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "decoded", prefix1, prefix2, $"{fileName}.wav");
 
-        var original = ReadExistingArtifact(originalPath, originalManifestPath);
-        var decoded = ReadExistingArtifact(decodedPath, decodedManifestPath);
+        var original = await ReadExistingArtifactAsync(originalPath, originalManifestPath, cancellationToken).ConfigureAwait(false);
+        var decoded = await ReadExistingArtifactAsync(decodedPath, decodedManifestPath, cancellationToken).ConfigureAwait(false);
         var originalState = GetOriginalState(original, record);
-        var decodedState = GetDecodedState(decoded, record, decodedPath);
+        var decodedState = await GetDecodedStateAsync(decoded, record, decodedPath, cancellationToken).ConfigureAwait(false);
 
         if (policy == ExistingArtifactPolicy.Fail
             && (originalState != ExportArtifactState.Missing || decodedState != ExportArtifactState.Missing))
@@ -75,17 +75,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             throw new ExistingArtifactConflictException($"An original artifact already exists for source key '{sourceStableKey}'.");
         }
 
-        if (policy is ExistingArtifactPolicy.SkipIfHashMatches or ExistingArtifactPolicy.VerifyOnly
-            && originalState == ExportArtifactState.Conflict)
+        if (policy == ExistingArtifactPolicy.VerifyOnly
+            && originalState == ExportArtifactState.PendingExisting)
         {
-            if (original is not null && string.IsNullOrWhiteSpace(record.PayloadSha256))
-            {
-                throw new ExistingArtifactNeedsHashException($"Existing artifact '{originalManifestPath}' cannot be safely reused because the source payload hash is unknown.");
-            }
+            throw new ExistingArtifactNeedsHashException($"Existing artifact '{originalManifestPath}' cannot be verified because the source payload hash is unknown.");
         }
 
         var replace = policy == ExistingArtifactPolicy.Replace;
-        var reserveOriginal = replace || originalState == ExportArtifactState.Missing;
+        var reserveOriginal = replace || originalState is ExportArtifactState.Missing or ExportArtifactState.PendingExisting;
         var reserveDecoded = replace || decodedState == ExportArtifactState.Missing;
         var reserved = new List<string>(2);
         try
@@ -104,7 +101,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
             Directory.CreateDirectory(Path.GetDirectoryName(originalPath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(decodedPath)!);
-            return ValueTask.FromResult<IExportItemLease>(new FileSystemExportItemLease(
+            return new FileSystemExportItemLease(
                 record,
                 originalManifestPath,
                 decodedManifestPath,
@@ -115,7 +112,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 original,
                 decoded,
                 replace,
-                () => Release(reserved)));
+                () => Release(reserved));
         }
         catch
         {
@@ -239,12 +236,13 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             journalContext?.AdapterVersion ?? fallback.AdapterVersion,
             journalContext?.DatabaseFingerprints ?? fallback.DatabaseFingerprints,
             runStatus,
-            runStatus == ExportRunStatus.Cancelled);
+            runStatus == ExportRunStatus.Cancelled,
+            journalContext?.MaterializationProvenance ?? fallback.Provenance);
     }
 
-    private static ExportArtifact? ReadExistingArtifact(string path, string relativePath)
+    private static async Task<ExportArtifact?> ReadExistingArtifactAsync(string path, string relativePath, CancellationToken cancellationToken)
         => File.Exists(path)
-            ? new ExportArtifact(relativePath, new FileInfo(path).Length, ComputeSha256(path))
+            ? new ExportArtifact(relativePath, new FileInfo(path).Length, await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false))
             : null;
 
     private static ExportArtifactState GetOriginalState(ExportArtifact? artifact, VoiceRecord record)
@@ -258,10 +256,22 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             ? false
             : string.Equals(artifact.Sha256, record.PayloadSha256, StringComparison.OrdinalIgnoreCase);
         var lengthMatches = record.PayloadByteLength is null || artifact.ByteLength == record.PayloadByteLength.Value;
-        return hashMatches && lengthMatches ? ExportArtifactState.VerifiedExisting : ExportArtifactState.Conflict;
+        if (hashMatches && lengthMatches)
+        {
+            return ExportArtifactState.VerifiedExisting;
+        }
+
+        if (string.IsNullOrWhiteSpace(record.PayloadSha256) && lengthMatches)
+        {
+            // The source hash is unknown, so identity can only be decided at
+            // commit time against the freshly computed source bytes.
+            return ExportArtifactState.PendingExisting;
+        }
+
+        return ExportArtifactState.Conflict;
     }
 
-    private static ExportArtifactState GetDecodedState(ExportArtifact? artifact, VoiceRecord record, string path)
+    private static async Task<ExportArtifactState> GetDecodedStateAsync(ExportArtifact? artifact, VoiceRecord record, string path, CancellationToken cancellationToken)
     {
         if (artifact is null)
         {
@@ -272,7 +282,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var hashMatches = !hasKnownHash
             || string.Equals(artifact.Sha256, record.DecodedSha256, StringComparison.OrdinalIgnoreCase);
         var lengthMatches = record.DecodedByteLength is null || artifact.ByteLength == record.DecodedByteLength.Value;
-        var wavValid = WavFileValidator.IsValid(path);
+        var wavValid = await WavFileValidator.IsValidAsync(path, cancellationToken).ConfigureAwait(false);
         return hashMatches && lengthMatches && (hasKnownHash || wavValid) ? ExportArtifactState.VerifiedExisting : ExportArtifactState.Conflict;
     }
 
@@ -282,13 +292,6 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         {
             throw new ExistingArtifactConflictException($"An export for source key '{sourceStableKey}' is already in progress.");
         }
-    }
-
-    private static string ComputeSha256(string path)
-    {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
-        using var hasher = SHA256.Create();
-        return Convert.ToHexString(hasher.ComputeHash(stream)).ToLowerInvariant();
     }
 
     private void Release(IEnumerable<string> paths)
@@ -305,6 +308,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         private readonly string _decodedPath;
         private readonly bool _replace;
         private readonly Action _release;
+        private ExportArtifactState _originalState;
         private ExportArtifactState _decodedState;
         private ExportArtifact? _existingDecodedArtifact;
         private string? _originalTemporaryPath;
@@ -331,7 +335,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             DecodedManifestPath = decodedManifestPath;
             _originalPath = originalPath;
             _decodedPath = decodedPath;
-            OriginalState = originalState;
+            _originalState = originalState;
             _decodedState = decodedState;
             ExistingOriginalArtifact = existingOriginalArtifact;
             _existingDecodedArtifact = existingDecodedArtifact;
@@ -340,7 +344,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
 
         public VoiceRecord Record { get; }
-        public ExportArtifactState OriginalState { get; }
+        public ExportArtifactState OriginalState => _originalState;
         public ExportArtifactState DecodedState => _decodedState;
         public ExportArtifact? ExistingOriginalArtifact { get; }
         public ExportArtifact? ExistingDecodedArtifact => _existingDecodedArtifact;
@@ -453,6 +457,30 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             var artifact = computedArtifact is null
                 ? await ComputeArtifactAsync(temporaryPath, manifestPath, cancellationToken).ConfigureAwait(false)
                 : ValidateComputedArtifact(temporaryPath, computedArtifact, manifestPath);
+
+            if (!isDecoded && !_replace && _originalState == ExportArtifactState.PendingExisting && ExistingOriginalArtifact is { } existing)
+            {
+                // The source hash was unknown when the lease began. The fresh
+                // source bytes were read exactly once into the temporary file
+                // and hashed; identity is now decided against the existing
+                // artifact without re-reading either file. Replace semantics
+                // intentionally bypass this decision.
+                DeleteTemporary(ref temporaryPath);
+                _originalTemporaryPath = null;
+                if (string.Equals(existing.Sha256, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    _originalState = ExportArtifactState.VerifiedExisting;
+                    return existing;
+                }
+
+                throw new SourceContentMismatchException(
+                    "original",
+                    existing.ByteLength,
+                    artifact.ByteLength,
+                    existing.Sha256,
+                    artifact.Sha256);
+            }
+
             var expectedHash = isDecoded ? Record.DecodedSha256 : Record.PayloadSha256;
             var expectedLength = isDecoded ? Record.DecodedByteLength : Record.PayloadByteLength;
             if ((expectedHash is not null && !string.Equals(expectedHash, artifact.Sha256, StringComparison.OrdinalIgnoreCase))

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Protocol;
 using WeChatVoice.Infrastructure.Materialization;
@@ -69,12 +70,18 @@ internal static class BrokerHost
             snapshotVerified = true;
             if (string.IsNullOrWhiteSpace(outputRoot) || string.IsNullOrWhiteSpace(workspaceOutput))
             {
+                var hostError = ErrorCatalog.Get(ErrorCode.MaterializationInvalid);
                 BrokerProtocol.Write(output, new BrokerResponse(
                     "failed",
                     request.RequestId,
                     null,
                     null,
-                    new BrokerError("profile_unavailable", "No materialization output was supplied to the one-shot Broker.")));
+                    new BrokerError(
+                        ErrorCode.MaterializationInvalid.ToString(),
+                        "No materialization output was supplied to the one-shot Broker.",
+                        hostError.IsRetryable,
+                        hostError.SuggestedAction,
+                        hostError.NonSensitiveTechnicalContext)));
                 return 3;
             }
 
@@ -128,12 +135,27 @@ internal static class BrokerHost
                 new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60), 1024L * 1024 * 1024, 256, allowExperimentalProfile),
                 new MaterializationOptions(Path.GetFullPath(outputRoot)),
                 cancellationToken).ConfigureAwait(false);
-            var accountId = WeixinWindowsAccountIdentity.TryDeriveCandidate(
-                verifiedSnapshot.Snapshot.Manifest.SourceDirectory);
-            var workspace = await new LocalWorkspaceCreator().CreateAsync(
-                materialization,
-                accountId,
-                cancellationToken).ConfigureAwait(false);
+            var sourceIdentity = SnapshotSourceIdentity.TryDerive(
+                verifiedSnapshot.Snapshot.Manifest.SourceDirectory,
+                verifiedSnapshot.Snapshot.Manifest.Files);
+            var accountId = sourceIdentity?.AccountCandidate;
+            LocalWorkspace workspace;
+            try
+            {
+                workspace = await new LocalWorkspaceCreator().CreateAsync(
+                    materialization,
+                    accountId,
+                    sourceIdentity,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (AppFailureException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                throw new AppFailureException(ErrorCode.WorkspaceInvalid, "The Broker could not create a verified local workspace.", exception);
+            }
             var workspacePath = Path.GetFullPath(workspaceOutput);
             Directory.CreateDirectory(Path.GetDirectoryName(workspacePath)!);
             await using (var workspaceStream = new FileStream(workspacePath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
@@ -165,27 +187,19 @@ internal static class BrokerHost
             BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_not_found", "The requested snapshot manifest was not found."));
             return 4;
         }
+        catch (AppFailureException exception)
+        {
+            return Fail(request, exception.Code, exception.Message, snapshotVerified, snapshotStaged, reportStage, output);
+        }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
         {
-            var noProfile = exception is InvalidDataException;
-            reportStage?.Invoke(new BrokerStageEvent(exception switch
-            {
-                InvalidDataException => "operation-failed-validation",
-                UnauthorizedAccessException => "operation-failed-access",
-                IOException => "operation-failed-io",
-                _ => "operation-failed-input",
-            }));
-            if (!snapshotVerified || !snapshotStaged)
-            {
-                BrokerProtocol.Write(output, Failed(request?.RequestId, "snapshot_invalid", "The snapshot could not be verified."));
-                return 4;
-            }
-
-            BrokerProtocol.Write(output, Failed(
-                request?.RequestId,
-                noProfile ? "profile_unavailable" : "materialization_failed",
-                noProfile ? "No running Weixin process matched the Profile, or no candidate key validated every database group." : "The Broker could not complete the verified materialization."));
-            return noProfile ? 3 : 1;
+            // Untyped validation/IO failures before the snapshot boundary are
+            // snapshot verification failures; afterwards they are materialization
+            // failures. AppFailureException sites carry their own precise code.
+            var code = !snapshotVerified || !snapshotStaged
+                ? ErrorCode.SnapshotInvalid
+                : ErrorCode.MaterializationInvalid;
+            return Fail(request, code, null, snapshotVerified, snapshotStaged, reportStage, output);
         }
         catch (OperationCanceledException)
         {
@@ -213,23 +227,60 @@ internal static class BrokerHost
         if (!string.Equals(Path.GetFileName(manifestPath), "snapshot-manifest.json", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(Path.GetFileName(Path.GetDirectoryName(manifestPath)), ".wechatvoice", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The broker accepts only a reserved snapshot manifest path.");
+            throw new AppFailureException(ErrorCode.SnapshotInvalid, "The broker accepts only a reserved snapshot manifest path.");
         }
 
         await using var stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         var manifest = await JsonSerializer.DeserializeAsync<SnapshotManifest>(stream, JsonOptions, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidDataException("The snapshot manifest was empty.");
+            ?? throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest was empty.");
         if (!string.Equals(manifest.SnapshotId, request.SnapshotId, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The requested SnapshotId does not match the manifest.");
+            throw new AppFailureException(ErrorCode.SnapshotInvalid, "The requested SnapshotId does not match the manifest.");
         }
 
         var metadataDirectory = Path.GetDirectoryName(manifestPath)!;
         var snapshotRoot = Directory.GetParent(metadataDirectory)?.FullName
-            ?? throw new InvalidDataException("The snapshot manifest has no snapshot root.");
+            ?? throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest has no snapshot root.");
         return await new RawSnapshotVerifier().VerifyAsync(new RawSnapshot(manifest, snapshotRoot), cancellationToken).ConfigureAwait(false);
     }
 
     private static BrokerResponse Failed(string? requestId, string code, string message) =>
         new("failed", requestId, null, null, new BrokerError(code, message));
+
+    private static BrokerResponse Failed(string? requestId, AppError error, string? message) =>
+        new("failed", requestId, null, null, new BrokerError(
+            error.Code.ToString(),
+            string.IsNullOrWhiteSpace(message) ? error.NonSensitiveTechnicalContext : message,
+            error.IsRetryable,
+            error.SuggestedAction,
+            error.NonSensitiveTechnicalContext));
+
+    private static int Fail(
+        BrokerRequest? request,
+        ErrorCode code,
+        string? message,
+        bool snapshotVerified,
+        bool snapshotStaged,
+        Action<BrokerStageEvent>? reportStage,
+        TextWriter output)
+    {
+        reportStage?.Invoke(new BrokerStageEvent(code switch
+        {
+            ErrorCode.SnapshotInvalid or ErrorCode.SnapshotInconsistent => "operation-failed-snapshot",
+            ErrorCode.WeixinNotRunning or ErrorCode.UnsupportedWeixinVersion
+                or ErrorCode.ProcessIdentityMismatch or ErrorCode.KeyCandidateNotFound => "operation-failed-acquisition",
+            ErrorCode.WorkerBundleUntrusted or ErrorCode.WorkerFailed => "operation-failed-worker",
+            ErrorCode.WorkspaceInvalid => "operation-failed-workspace",
+            _ => "operation-failed-materialization",
+        }));
+        var exitCode = code switch
+        {
+            ErrorCode.WeixinNotRunning or ErrorCode.UnsupportedWeixinVersion
+                or ErrorCode.ProcessIdentityMismatch or ErrorCode.KeyCandidateNotFound => 3,
+            ErrorCode.SnapshotInvalid or ErrorCode.SnapshotInconsistent when !snapshotStaged => 4,
+            _ => 1,
+        };
+        BrokerProtocol.Write(output, Failed(request?.RequestId, ErrorCatalog.Get(code), message));
+        return exitCode;
+    }
 }

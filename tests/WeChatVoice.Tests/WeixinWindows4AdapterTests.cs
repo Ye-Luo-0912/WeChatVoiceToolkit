@@ -29,6 +29,9 @@ public sealed class WeixinWindows4AdapterTests
         await using var catalog = await adapter.OpenAsync(verified, CancellationToken.None);
         Assert.Equal(AccountId, catalog.Context.AccountId);
         Assert.Equal("snapshot-test", catalog.Context.SnapshotId);
+        // The path-derived candidate was verified against contact and Name2Id
+        // but is not yet proven to be the account itself; hosts must confirm.
+        Assert.Equal(AccountIdentityState.Candidate, catalog.Context.AccountIdentity.State);
 
         var exactContacts = await CollectAsync(catalog.QueryContactsAsync(new ContactQuery(Username: ContactId), CancellationToken.None));
         var contact = Assert.Single(exactContacts);
@@ -78,6 +81,83 @@ public sealed class WeixinWindows4AdapterTests
         Assert.Equal(AccountId, sent.SpeakerId);
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1_700_000_060), sent.OccurredAtUtc);
     }
+
+    [Fact]
+    public async Task Adapter_without_deep_scan_reports_length_and_header_without_a_source_hash()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateFixtureAsync(root);
+        var verified = await CreateVerifiedWorkspaceAsync(root);
+        await using var catalog = await new WeixinWindows4Adapter().OpenAsync(verified, CancellationToken.None);
+
+        var shallow = await CollectAsync(catalog.QueryVoicesAsync(
+            StableQuery(VoiceDirection.Incoming, deepScan: false),
+            CancellationToken.None));
+        var linked = Assert.Single(shallow, static record => record.PayloadByteLength == 10);
+
+        // The export path must not pre-read the BLOB for a content hash: the
+        // single streaming read happens at commit time instead.
+        Assert.Equal(VoicePayloadState.Linked, linked.PayloadState);
+        Assert.Equal(10, linked.PayloadByteLength);
+        Assert.Null(linked.PayloadSha256);
+    }
+
+    [Fact]
+    public async Task Adapter_merges_message_shards_under_a_global_maximum_results()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateSecondMessageShardAsync(root);
+        await CreateFixtureAsync(root);
+        var verified = await CreateVerifiedWorkspaceAsync(root);
+        await using var catalog = await new WeixinWindows4Adapter().OpenAsync(verified, CancellationToken.None);
+
+        // Global incoming times: shard0@0, shard1@30, shard1@80, shard0@120,
+        // ... (fixture local 11 is outgoing). A global limit of 3 must span
+        // both shards and stop immediately instead of reading every shard to
+        // completion.
+        var limitedQuery = new VoiceQuery(
+            ContactId,
+            VoiceDirection.Incoming,
+            MaximumResults: 3,
+            ContactUsername: ContactId,
+            ContactId: ContactId);
+        var limited = await CollectAsync(catalog.QueryVoicesAsync(limitedQuery, CancellationToken.None));
+
+        Assert.Equal(3, limited.Count);
+        Assert.Equal([1_700_000_000, 1_700_000_030, 1_700_000_080], limited.Select(static record => record.OccurredAtUtc.ToUnixTimeSeconds()).ToArray());
+        Assert.Equal([0, 1, 1], limited.Select(static record => record.ShardNumber).ToArray());
+    }
+
+    private static async Task CreateSecondMessageShardAsync(string root)
+    {
+        await InitializeProviderAsync(root);
+        var messagePath = Path.Combine(root, "databases", "message", "message_1.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(messagePath)!);
+        var tableName = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(ContactId))).ToLowerInvariant();
+        await ExecuteAsync(messagePath, $$"""
+            CREATE TABLE Name2Id (user_name TEXT PRIMARY KEY, is_session INTEGER);
+            INSERT INTO Name2Id (rowid, user_name, is_session) VALUES
+                (1, 'wxid_owner', 1), (2, 'wxid_peer', 1);
+            CREATE TABLE "{{tableName}}" (
+                local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, sort_seq INTEGER, real_sender_id INTEGER,
+                create_time INTEGER, status INTEGER, upload_status INTEGER, download_status INTEGER,
+                server_seq INTEGER, origin_source INTEGER, source TEXT, message_content TEXT, compress_content TEXT,
+                packed_info_data BLOB, WCDB_CT_message_content INTEGER DEFAULT NULL, WCDB_CT_source INTEGER DEFAULT NULL
+            );
+            CREATE INDEX "{{tableName}}_TYPE_SEQ" ON "{{tableName}}"(local_type, sort_seq);
+            CREATE INDEX "{{tableName}}_SORTSEQ" ON "{{tableName}}"(sort_seq);
+            CREATE INDEX "{{tableName}}_SERVERID" ON "{{tableName}}"(server_id);
+            CREATE INDEX "{{tableName}}_SENDERID" ON "{{tableName}}"(real_sender_id);
+            INSERT INTO "{{tableName}}"
+                (local_id, server_id, local_type, sort_seq, real_sender_id, create_time, status, upload_status,
+                 download_status, server_seq, origin_source)
+            VALUES
+                (20, 200, 34, 1, 2, 1700000030, 3, 0, 0, 1, 2),
+                (21, 201, 34, 2, 2, 1700000080, 3, 0, 0, 2, 2),
+                (22, 202, 34, 3, 2, 1700000140, 3, 0, 0, 3, 2);
+            """);    }
 
     [Fact]
     public async Task Adapter_refuses_workspace_without_stable_account_identity()

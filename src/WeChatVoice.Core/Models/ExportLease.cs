@@ -11,7 +11,12 @@ public enum ExistingArtifactPolicy
 public enum ExportArtifactState
 {
     Missing,
+
+    /// <summary>An existing artifact is present but the source hash is unknown.</summary>
+    PendingExisting,
+
     VerifiedExisting,
+
     Conflict,
 }
 

@@ -4,25 +4,25 @@ namespace WeChatVoice.Infrastructure.Export;
 
 internal static class WavFileValidator
 {
-    internal static bool IsValid(string path)
+    internal static async Task<bool> IsValidAsync(string path, CancellationToken cancellationToken)
     {
         try
         {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.SequentialScan);
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
             if (stream.Length < 12)
             {
                 return false;
             }
 
-            Span<byte> header = stackalloc byte[12];
-            if (stream.Read(header) != header.Length
-                || !header[..4].SequenceEqual("RIFF"u8)
-                || !header[8..12].SequenceEqual("WAVE"u8))
+            var header = new byte[12];
+            if (await stream.ReadAsync(header.AsMemory(0, header.Length), cancellationToken).ConfigureAwait(false) != header.Length
+                || !header.AsSpan(0, 4).SequenceEqual("RIFF"u8)
+                || !header.AsSpan(8, 4).SequenceEqual("WAVE"u8))
             {
                 return false;
             }
 
-            var riffSize = BinaryPrimitives.ReadUInt32LittleEndian(header[4..8]);
+            var riffSize = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(4, 4));
             if (riffSize + 8UL > (ulong)stream.Length)
             {
                 return false;
@@ -33,31 +33,26 @@ internal static class WavFileValidator
             var chunkHeader = new byte[8];
             while (stream.Position + 8 <= stream.Length)
             {
-                if (stream.Read(chunkHeader, 0, chunkHeader.Length) != chunkHeader.Length)
+                if (await stream.ReadAsync(chunkHeader.AsMemory(0, chunkHeader.Length), cancellationToken).ConfigureAwait(false) != chunkHeader.Length)
                 {
                     return false;
                 }
 
-                var chunkSize = BinaryPrimitives.ReadUInt32LittleEndian(chunkHeader[4..8]);
+                var chunkSize = BinaryPrimitives.ReadUInt32LittleEndian(chunkHeader.AsSpan(4, 4));
                 if (chunkSize > stream.Length - stream.Position)
                 {
                     return false;
                 }
 
-                if (chunkHeader[..4].SequenceEqual("fmt "u8))
+                if (chunkHeader.AsSpan(0, 4).SequenceEqual("fmt "u8))
                 {
-                    if (chunkSize < 16)
-                    {
-                        return false;
-                    }
-
-                    if (chunkSize > 1024 * 1024)
+                    if (chunkSize < 16 || chunkSize > 1024 * 1024)
                     {
                         return false;
                     }
 
                     var format = new byte[checked((int)chunkSize)];
-                    if (stream.Read(format, 0, format.Length) != format.Length)
+                    if (await stream.ReadAsync(format.AsMemory(0, format.Length), cancellationToken).ConfigureAwait(false) != format.Length)
                     {
                         return false;
                     }
@@ -73,7 +68,7 @@ internal static class WavFileValidator
                         && bitsPerSample is 8 or 16 or 24 or 32
                         && blockAlign > 0;
                 }
-                else if (chunkHeader[..4].SequenceEqual("data"u8))
+                else if (chunkHeader.AsSpan(0, 4).SequenceEqual("data"u8))
                 {
                     hasData = chunkSize > 0;
                     stream.Position += chunkSize;

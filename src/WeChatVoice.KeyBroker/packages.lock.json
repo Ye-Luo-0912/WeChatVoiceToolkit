@@ -2,6 +2,15 @@
   "version": 2,
   "dependencies": {
     "net10.0": {
+      "System.IO.FileSystem.AccessControl": {
+        "type": "Direct",
+        "requested": "[6.0.0-preview.5.21301.5, )",
+        "resolved": "6.0.0-preview.5.21301.5",
+        "contentHash": "ACAy/tBXovW06UatGYPoqR0EB6FCH65uGuMOurGHiWyt/3Lngq3vSQW+yZkWQ1UW7MzMJoP6xGvP2XzSLeUuWw==",
+        "dependencies": {
+          "System.Security.Principal.Windows": "6.0.0-preview.5.21301.5"
+        }
+      },
       "System.IO.Pipes.AccessControl": {
         "type": "Direct",
         "requested": "[6.0.0-preview.5.21301.5, )",

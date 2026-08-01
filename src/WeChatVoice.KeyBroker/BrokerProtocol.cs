@@ -91,7 +91,12 @@ internal sealed record BrokerResponse(
     string? MaterializationId,
     BrokerError? Error);
 
-internal sealed record BrokerError(string Code, string Message);
+internal sealed record BrokerError(
+    string Code,
+    string Message,
+    bool IsRetryable = false,
+    string? SuggestedAction = null,
+    string? NonSensitiveTechnicalContext = null);
 
 internal sealed record BrokerStageEvent(
     string Stage,

@@ -210,7 +210,7 @@ public sealed class WindowsWeixinProcessIdentityReader : IWeixinProcessIdentityR
         var version = FileVersionInfo.GetVersionInfo(imagePath).ProductVersion
             ?? throw new InvalidDataException("The Weixin product version was unavailable.");
         var imageSha256 = ComputeSha256(imagePath);
-        var (trusted, signer) = VerifySignature(imagePath);
+        var signature = AuthenticodeVerifier.Instance.Verify(imagePath);
         return new WeixinProcessIdentityEvidence(
             process.Id,
             process.ProcessName,
@@ -218,8 +218,8 @@ public sealed class WindowsWeixinProcessIdentityReader : IWeixinProcessIdentityR
             Path.GetFullPath(imagePath),
             imageSha256,
             version,
-            trusted,
-            signer,
+            signature.Trusted,
+            signature.Publisher ?? string.Empty,
             ReadOwnerSid(handle),
             process.SessionId,
             ReadArchitecture(handle));
@@ -283,51 +283,5 @@ public sealed class WindowsWeixinProcessIdentityReader : IWeixinProcessIdentityR
             0x014C => "x86",
             _ => "unknown",
         };
-    }
-
-    private static (bool Trusted, string Subject) VerifySignature(string path)
-    {
-        var pathPointer = Marshal.StringToCoTaskMemUni(path);
-        var fileInfoPointer = nint.Zero;
-        var action = new Guid("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
-        try
-        {
-            var fileInfo = new WinTrustFileInfo
-            {
-                Size = checked((uint)Marshal.SizeOf<WinTrustFileInfo>()),
-                FilePath = pathPointer,
-            };
-            fileInfoPointer = Marshal.AllocHGlobal(Marshal.SizeOf<WinTrustFileInfo>());
-            Marshal.StructureToPtr(fileInfo, fileInfoPointer, false);
-            var data = new WinTrustData
-            {
-                Size = checked((uint)Marshal.SizeOf<WinTrustData>()),
-                UiChoice = 2,
-                RevocationChecks = 0,
-                UnionChoice = 1,
-                FileInfo = fileInfoPointer,
-                StateAction = 0,
-                ProviderFlags = 0x00000010,
-            };
-            var trusted = NativeMethods.WinVerifyTrust(0, ref action, ref data) == 0;
-            if (!trusted)
-            {
-                return (false, string.Empty);
-            }
-
-            // WinVerifyTrust authenticates the complete image. CompanyName is
-            // then read from the authenticated image as the publisher binding
-            // used by the exact Profile policy.
-            return (true, FileVersionInfo.GetVersionInfo(path).CompanyName ?? string.Empty);
-        }
-        finally
-        {
-            if (fileInfoPointer != 0)
-            {
-                Marshal.FreeHGlobal(fileInfoPointer);
-            }
-
-            Marshal.FreeCoTaskMem(pathPointer);
-        }
     }
 }

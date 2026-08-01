@@ -1,3 +1,4 @@
+using WeChatVoice.Core.Errors;
 using WeChatVoice.KeyAcquisition.Ports;
 using WeChatVoice.Windows;
 
@@ -29,7 +30,7 @@ internal sealed class ProcessIdentityVerifier(IWeixinProcessIdentityReader reade
             !string.Equals(before.ImagePath, after.ImagePath, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(before.ImageSha256, after.ImageSha256, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The Weixin process identity changed while it was being verified.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "The Weixin process identity changed while it was being verified.");
         }
 
         return new VerifiedWeixinProcess(
@@ -47,18 +48,22 @@ internal sealed class ProcessIdentityVerifier(IWeixinProcessIdentityReader reade
     {
         if (evidence.ProcessId <= 0 || !string.Equals(evidence.ProcessName, "Weixin", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The target is not the fixed Weixin process.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "The target is not the fixed Weixin process.");
         }
 
-        if (!string.Equals(evidence.ProductVersion, policy.ProductVersion, StringComparison.Ordinal) ||
-            !string.Equals(evidence.ImageSha256, policy.ImageSha256, StringComparison.OrdinalIgnoreCase) ||
+        if (!string.Equals(evidence.ProductVersion, policy.ProductVersion, StringComparison.Ordinal))
+        {
+            throw new AppFailureException(ErrorCode.UnsupportedWeixinVersion, "The verified Weixin version does not match the selected Profile.");
+        }
+
+        if (!string.Equals(evidence.ImageSha256, policy.ImageSha256, StringComparison.OrdinalIgnoreCase) ||
             !evidence.HasTrustedSignature ||
             !evidence.SignerSubject.Contains(policy.SignerSubjectFragment, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(evidence.OwnerSid, policy.OwnerSid, StringComparison.Ordinal) ||
             evidence.SessionId != policy.SessionId ||
             !string.Equals(evidence.Architecture, policy.Architecture, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The Weixin process did not satisfy the selected profile identity policy.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "The Weixin process did not satisfy the selected profile identity policy.");
         }
     }
 }

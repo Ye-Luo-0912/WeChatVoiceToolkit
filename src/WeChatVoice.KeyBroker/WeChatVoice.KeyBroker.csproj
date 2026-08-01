@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="System.IO.Pipes.AccessControl" />
+    <PackageReference Include="System.IO.FileSystem.AccessControl" />
     <ProjectReference Include="..\WeChatVoice.Core\WeChatVoice.Core.csproj" />
     <ProjectReference Include="..\WeChatVoice.Infrastructure\WeChatVoice.Infrastructure.csproj" />
     <ProjectReference Include="..\WeChatVoice.KeyAcquisition\WeChatVoice.KeyAcquisition.csproj" />
@@ -20,6 +21,10 @@
 
   <Target Name="GenerateSqlCipherWorkerBundleManifest" AfterTargets="Build">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\build\GenerateWorkerBundleManifest.ps1&quot; -Directory &quot;$(TargetDir)&quot;" />
+  </Target>
+
+  <Target Name="GenerateBrokerBundleManifest" AfterTargets="Build">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\build\GenerateBrokerBundleManifest.ps1&quot; -Directory &quot;$(TargetDir)&quot;" />
   </Target>
 
 </Project>

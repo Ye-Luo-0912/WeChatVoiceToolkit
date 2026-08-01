@@ -2,11 +2,16 @@ using System.Security.Cryptography;
 
 namespace WeChatVoice.Infrastructure.Serialization;
 
-internal static class FileHashing
+/// <summary>
+/// The single authoritative file hashing path. Verification, materialization,
+/// workspace validation, and the CLI trust policies all reuse it so hashes
+/// are computed exactly one way.
+/// </summary>
+public static class FileHashing
 {
     private const int BufferSize = 128 * 1024;
 
-    internal static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)
+    public static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
@@ -21,7 +26,7 @@ internal static class FileHashing
         return await ComputeSha256Async(stream, cancellationToken).ConfigureAwait(false);
     }
 
-    internal static async Task<string> ComputeSha256Async(Stream stream, CancellationToken cancellationToken)
+    public static async Task<string> ComputeSha256Async(Stream stream, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(stream);
 
@@ -37,7 +42,7 @@ internal static class FileHashing
         return Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant();
     }
 
-    internal static async Task<FileHashMetadata> ComputeMetadataAsync(string path, CancellationToken cancellationToken)
+    public static async Task<FileHashMetadata> ComputeMetadataAsync(string path, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, BufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
@@ -67,4 +72,4 @@ internal static class FileHashing
     }
 }
 
-internal sealed record FileHashMetadata(long ByteLength, string Sha256, bool HasPlainSqliteHeader);
+public sealed record FileHashMetadata(long ByteLength, string Sha256, bool HasPlainSqliteHeader);

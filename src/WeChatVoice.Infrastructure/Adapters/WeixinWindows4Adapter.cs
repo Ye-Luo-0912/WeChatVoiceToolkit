@@ -211,7 +211,8 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             dataSet.Databases.Select(static artifact => artifact.DatabaseGroupFingerprint ?? artifact.MainSha256).ToArray(),
             workspace.Workspace.Provenance?.SourceSnapshotId ?? dataSet.SnapshotId,
             WeixinWindows4Adapter.AdapterId,
-            workspace.Workspace.Provenance);
+            workspace.Workspace.Provenance,
+            AccountIdentity.CandidateOnly);
     }
 
     public VoiceCatalogContext Context { get; }
@@ -280,26 +281,18 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             throw new ArgumentException("The exact Weixin adapter accepts only incoming, outgoing, or no direction filter.", nameof(query));
         }
 
-        var messageRows = new List<MessageRow>();
+        var shardRows = new List<IReadOnlyList<MessageRow>>(_messages.Count);
         foreach (var artifact in _messages)
         {
-            await ReadMessageRowsAsync(artifact, username, query, messageRows, cancellationToken).ConfigureAwait(false);
+            var rows = new List<MessageRow>();
+            await ReadMessageRowsAsync(artifact, username, query, rows, cancellationToken).ConfigureAwait(false);
+            shardRows.Add(rows);
         }
 
-        var ordered = messageRows
-            .OrderBy(static row => row.CreateTime)
-            .ThenBy(static row => row.ShardNumber)
-            .ThenBy(static row => row.LocalId)
-            .ThenBy(static row => row.ServerId);
-        if (query.MaximumResults is not null)
-        {
-            ordered = ordered.Take(query.MaximumResults.Value).OrderBy(static row => row.CreateTime)
-                .ThenBy(static row => row.ShardNumber)
-                .ThenBy(static row => row.LocalId)
-                .ThenBy(static row => row.ServerId);
-        }
-
-        var selected = ordered.ToArray();
+        // Each shard already applies an ordered per-shard LIMIT; the k-way
+        // merge stops at the global MaximumResults instead of materializing
+        // shardCount * N rows and re-sorting.
+        var selected = MergeMessageRows(shardRows, query.MaximumResults).ToArray();
         if (selected.Where(static message => message.OriginSource == 2)
             .Select(message => message.SpeakerId ?? username)
             .Distinct(StringComparer.Ordinal)
@@ -421,7 +414,6 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         }
 
         await using var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(artifact, cancellationToken).ConfigureAwait(false);
-        var speakers = await ReadNameMapAsync(connection, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         var where = new List<string> { "local_type = 34" };
         if (query.Direction is not null)
@@ -454,19 +446,37 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             ORDER BY create_time, local_id, server_id
             {(query.MaximumResults is null ? string.Empty : "LIMIT $limit")};
             """;
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        var rows = new List<MessageRow>();
+        var senderIds = new HashSet<long>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            var senderId = reader.IsDBNull(3) ? (long?)null : reader.GetInt64(3);
-            destination.Add(new MessageRow(
-                artifact,
-                artifact.ShardNumber,
-                tableName,
-                reader.GetInt64(0),
-                reader.GetInt64(1),
-                reader.GetInt64(2),
-                reader.GetInt64(4),
-                senderId is null ? null : speakers.GetValueOrDefault(senderId.Value)));
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var senderRowId = reader.IsDBNull(3) ? (long?)null : reader.GetInt64(3);
+                if (senderRowId is { } senderId)
+                {
+                    senderIds.Add(senderId);
+                }
+
+                rows.Add(new MessageRow(
+                    artifact,
+                    artifact.ShardNumber,
+                    tableName,
+                    reader.GetInt64(0),
+                    reader.GetInt64(1),
+                    reader.GetInt64(2),
+                    reader.GetInt64(4),
+                    senderRowId,
+                    SpeakerId: null));
+            }
+        }
+
+        // One-to-one chats only ever need the two rowids in Name2Id that
+        // resolve this conversation; the full map is never loaded.
+        var speakers = await ReadNameMapAsync(connection, senderIds, cancellationToken).ConfigureAwait(false);
+        foreach (var row in rows)
+        {
+            destination.Add(row with { SpeakerId = row.SenderRowId is { } sid ? speakers.GetValueOrDefault(sid) : null });
         }
     }
 
@@ -601,15 +611,34 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
 
     private static async Task<IReadOnlyDictionary<long, string>> ReadNameMapAsync(
         SqliteConnection connection,
+        IReadOnlyCollection<long> senderIds,
         CancellationToken cancellationToken)
     {
         var result = new Dictionary<long, string>();
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT rowid, user_name FROM Name2Id WHERE user_name IS NOT NULL AND user_name <> '';";
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        if (senderIds.Count == 0)
         {
-            result[reader.GetInt64(0)] = reader.GetString(1);
+            return result;
+        }
+
+        foreach (var batch in senderIds.Chunk(128))
+        {
+            await using var command = connection.CreateCommand();
+            var placeholders = string.Join(',', batch.Select((_, index) => $"$sender{index}"));
+            for (var index = 0; index < batch.Length; index++)
+            {
+                command.Parameters.AddWithValue($"$sender{index}", batch[index]);
+            }
+
+            command.CommandText = $"""
+                SELECT rowid, user_name
+                FROM Name2Id
+                WHERE rowid IN ({placeholders});
+                """;
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                result[reader.GetInt64(0)] = reader.GetString(1);
+            }
         }
 
         return result;
@@ -653,9 +682,93 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         long ServerId,
         long CreateTime,
         long OriginSource,
-        string? SpeakerId);
+        long? SenderRowId = null,
+        string? SpeakerId = null);
 
     private sealed record MediaRow(long RowId, long ByteLength, string? Sha256, VoicePayloadState State);
+
+    /// <summary>
+    /// Merges per-shard ordered rows into one global order and stops at the
+    /// global MaximumResults. Each shard already applied an ordered per-shard
+    /// LIMIT, so memory stays bounded by shardCount * N and rows beyond the
+    /// global N are never read from any shard.
+    /// </summary>
+    private static IEnumerable<MessageRow> MergeMessageRows(
+        IReadOnlyList<IReadOnlyList<MessageRow>> shards,
+        int? maximum)
+    {
+        var queue = new PriorityQueue<MessageRow, MessageRowKey>(new MessageRowKeyComparer());
+        var cursor = new int[shards.Count];
+        for (var index = 0; index < shards.Count; index++)
+        {
+            if (shards[index].Count > 0)
+            {
+                queue.Enqueue(shards[index][0], MessageRowKey.Create(shards[index][0], index));
+                cursor[index] = 1;
+            }
+        }
+
+        var emitted = 0;
+        while (queue.TryDequeue(out var row, out var key))
+        {
+            yield return row;
+            emitted++;
+            if (maximum is not null && emitted >= maximum.Value)
+            {
+                yield break;
+            }
+
+            var shardIndex = key.ShardOrdinal;
+            if (cursor[shardIndex] < shards[shardIndex].Count)
+            {
+                var next = shards[shardIndex][cursor[shardIndex]++];
+                queue.Enqueue(next, MessageRowKey.Create(next, shardIndex));
+            }
+        }
+    }
+
+    private readonly record struct MessageRowKey(
+        long CreateTime,
+        int? ShardNumber,
+        long LocalId,
+        long ServerId,
+        int ShardOrdinal)
+    {
+        internal static MessageRowKey Create(MessageRow row, int ordinal)
+            => new(row.CreateTime, row.ShardNumber, row.LocalId, row.ServerId, ordinal);
+    }
+
+    private sealed class MessageRowKeyComparer : IComparer<MessageRowKey>
+    {
+        public int Compare(MessageRowKey x, MessageRowKey y)
+        {
+            var result = x.CreateTime.CompareTo(y.CreateTime);
+            if (result != 0)
+            {
+                return result;
+            }
+
+            result = Nullable.Compare(x.ShardNumber, y.ShardNumber);
+            if (result != 0)
+            {
+                return result;
+            }
+
+            result = x.LocalId.CompareTo(y.LocalId);
+            if (result != 0)
+            {
+                return result;
+            }
+
+            result = x.ServerId.CompareTo(y.ServerId);
+            if (result != 0)
+            {
+                return result;
+            }
+
+            return x.ShardOrdinal.CompareTo(y.ShardOrdinal);
+        }
+    }
 
     private readonly record struct AssociationKey(long LocalId, long ServerId, long CreateTime);
 

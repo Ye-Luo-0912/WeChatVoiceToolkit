@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.KeyAcquisition.Models;
 using WeChatVoice.KeyAcquisition.Ports;
@@ -49,8 +50,11 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
             ?? throw new UnauthorizedAccessException("The current Windows user SID was unavailable.");
         reportStage?.Invoke(new BrokerStageEvent("process-locating"));
         var matches = new List<(IWeixinKeyExtractionProfile Profile, WeChatProcessInfo Process, WeixinProcessIdentityEvidence Evidence)>();
+        var anyLocated = false;
+        WeixinProcessIdentityEvidence? firstEvidence = null;
         foreach (var process in processLocator.LocateTrustedProcessTree())
         {
+            anyLocated = true;
             cancellationToken.ThrowIfCancellationRequested();
             WeixinProcessIdentityEvidence evidence;
             try
@@ -61,6 +65,8 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
             {
                 continue;
             }
+
+            firstEvidence ??= evidence;
 
             foreach (var profile in profiles)
             {
@@ -82,7 +88,21 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
 
         if (matches.Count == 0)
         {
-            throw new InvalidDataException("No running Weixin process matched the requested exact key-extraction Profile.");
+            if (!anyLocated)
+            {
+                throw new AppFailureException(ErrorCode.WeixinNotRunning, "No verified Weixin process is running in the current session.");
+            }
+
+            // A Weixin process is running but none satisfied the exact
+            // Profile. Prefer the version mismatch code when the first
+            // readable evidence points at an unsupported build.
+            var expectedVersions = profiles.SelectMany(static profile => profile.Descriptor.ProductVersions).ToHashSet(StringComparer.Ordinal);
+            if (firstEvidence is not null && !expectedVersions.Contains(firstEvidence.ProductVersion))
+            {
+                throw new AppFailureException(ErrorCode.UnsupportedWeixinVersion, "The running Weixin build is not supported by the selected Profile.");
+            }
+
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "The running Weixin process did not satisfy the selected Profile identity.");
         }
 
         reportStage?.Invoke(new BrokerStageEvent("process-matched"));
@@ -90,7 +110,7 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
         var profileGroups = matches.GroupBy(static match => match.Profile.Id, StringComparer.Ordinal).ToArray();
         if (profileGroups.Length != 1)
         {
-            throw new InvalidDataException("More than one key-extraction Profile matched the verified Weixin process tree.");
+            throw new AppFailureException(ErrorCode.ProcessIdentityMismatch, "More than one key-extraction Profile matched the verified Weixin process tree.");
         }
 
         var profileMatches = profileGroups[0].ToArray();

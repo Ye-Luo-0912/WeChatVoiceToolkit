@@ -228,4 +228,135 @@ public sealed class FileSystemVoiceExportStoreTests
         Assert.True(File.Exists(Path.Combine(store.ExportRoot, "runs", "recover-run.manifest.json")));
     }
 
+    [Fact]
+    public async Task RecoverRunAsync_preserves_the_full_materialization_provenance()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var store = new FileSystemVoiceExportStore(temporary.GetPath("export"));
+        var provenance = new MaterializationProvenance(
+            "snapshot-test",
+            "materialized-test",
+            "sqlcipher-e_sqlcipher-worker",
+            "e_sqlcipher-2.1.11-worker-v1",
+            new string('b', 64),
+            new string('c', 64),
+            "weixin-windows-4.1.11.55-wcdb-protected-spec-v2",
+            "4.1.11.55",
+            new string('d', 64),
+            new string('e', 64),
+            new string('f', 64));
+        var context = new VoiceCatalogContext("dataset", "adapter", "1", "account", ["db-fingerprint"], MaterializationProvenance: provenance);
+        string journalPath;
+        await using (var journal = await store.BeginRunAsync(new VoiceExportRunContext("recover-provenance", context, DateTimeOffset.UtcNow), CancellationToken.None))
+        {
+            journalPath = Path.Combine(store.ExportRoot, "runs", "recover-provenance.jsonl");
+            await journal.AppendAsync(new VoiceExportJournalEvent("run-started", "recover-provenance", DateTimeOffset.UtcNow, Context: context), CancellationToken.None);
+        }
+
+        var recovered = await store.RecoverRunAsync(journalPath, CancellationToken.None);
+
+        Assert.NotNull(recovered.Provenance);
+        Assert.Equal("weixin-windows-4.1.11.55-wcdb-protected-spec-v2", recovered.Provenance.KeyExtractionProfileId);
+        Assert.Equal("4.1.11.55", recovered.Provenance.ProcessVersion);
+        Assert.Equal(new string('d', 64), recovered.Provenance.ProcessImageSha256);
+        Assert.Equal(new string('e', 64), recovered.Provenance.WcdbModuleSha256);
+    }
+
+    [Fact]
+    public async Task BeginItemAsync_reports_pending_existing_when_the_source_hash_is_unknown()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var store = new FileSystemVoiceExportStore(temporary.GetPath("export"));
+        var record = CreateRecord("pending-1");
+        await using (var first = await store.BeginItemAsync(record, ExistingArtifactPolicy.Replace, CancellationToken.None))
+        {
+            await using (var original = await first.OpenOriginalWriteAsync(CancellationToken.None))
+            {
+                await original.WriteAsync(new byte[] { 1, 2, 3 });
+            }
+
+            await first.CommitOriginalAsync(CancellationToken.None);
+        }
+
+        await using var second = await store.BeginItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, CancellationToken.None);
+
+        Assert.Equal(ExportArtifactState.PendingExisting, second.OriginalState);
+        Assert.NotNull(second.ExistingOriginalArtifact);
+    }
+
+    [Fact]
+    public async Task Commit_with_a_matching_computed_artifact_skips_and_cleans_the_temporary_file()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var store = new FileSystemVoiceExportStore(temporary.GetPath("export"));
+        var record = CreateRecord("pending-2");
+        await using (var first = await store.BeginItemAsync(record, ExistingArtifactPolicy.Replace, CancellationToken.None))
+        {
+            await using (var original = await first.OpenOriginalWriteAsync(CancellationToken.None))
+            {
+                await original.WriteAsync(new byte[] { 4, 5, 6 });
+            }
+
+            await first.CommitOriginalAsync(CancellationToken.None);
+        }
+
+        await using var second = await store.BeginItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, CancellationToken.None);
+        await using (var replacement = await second.OpenOriginalWriteAsync(CancellationToken.None))
+        {
+            await replacement.WriteAsync(new byte[] { 4, 5, 6 });
+        }
+
+        var artifact = new ExportArtifact(second.OriginalManifestPath, 3, Hash(new byte[] { 4, 5, 6 }));
+        var committed = await second.CommitOriginalAsync(artifact, CancellationToken.None);
+
+        Assert.Equal(ExportArtifactState.VerifiedExisting, second.OriginalState);
+        Assert.Equal(Hash(new byte[] { 4, 5, 6 }), committed.Sha256);
+        Assert.Equal([4, 5, 6], await File.ReadAllBytesAsync(Path.Combine(store.ExportRoot, committed.RelativePath.Replace('/', Path.DirectorySeparatorChar))));
+        Assert.Empty(Directory.EnumerateFiles(store.ExportRoot, "*.tmp", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task Commit_with_a_different_computed_artifact_reports_a_source_conflict_without_residue()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var store = new FileSystemVoiceExportStore(temporary.GetPath("export"));
+        var record = CreateRecord("pending-3");
+        await using (var first = await store.BeginItemAsync(record, ExistingArtifactPolicy.Replace, CancellationToken.None))
+        {
+            await using (var original = await first.OpenOriginalWriteAsync(CancellationToken.None))
+            {
+                await original.WriteAsync(new byte[] { 1, 1, 1 });
+            }
+
+            await first.CommitOriginalAsync(CancellationToken.None);
+        }
+
+        await using var second = await store.BeginItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, CancellationToken.None);
+        var originalManifestPath = second.OriginalManifestPath;
+        await using (var replacement = await second.OpenOriginalWriteAsync(CancellationToken.None))
+        {
+            await replacement.WriteAsync(new byte[] { 2, 2, 2 });
+        }
+
+        var artifact = new ExportArtifact(second.OriginalManifestPath, 3, Hash(new byte[] { 2, 2, 2 }));
+
+        await Assert.ThrowsAsync<SourceContentMismatchException>(() => second.CommitOriginalAsync(artifact, CancellationToken.None));
+
+        Assert.Empty(Directory.EnumerateFiles(store.ExportRoot, "*.tmp", SearchOption.AllDirectories));
+        Assert.Equal([1, 1, 1], await File.ReadAllBytesAsync(Path.Combine(store.ExportRoot, originalManifestPath.Replace('/', Path.DirectorySeparatorChar))));
+    }
+
+    private static string Hash(byte[] bytes)
+        => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static VoiceRecord CreateRecord(string messageId) => new(
+        messageId,
+        "contact@example",
+        DateTimeOffset.UtcNow,
+        VoiceDirection.Incoming,
+        new VoicePayloadLocator("media", 0, messageId),
+        AdapterId: "adapter",
+        AccountId: "account",
+        ShardId: "0");
+
 }

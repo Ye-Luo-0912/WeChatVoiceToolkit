@@ -16,7 +16,8 @@ public sealed record LocalWorkspace
         DateTimeOffset CreatedAtUtc,
         IReadOnlyList<DataSetIssue>? Issues = null,
         IReadOnlyList<AdapterCandidate>? AdapterCandidates = null,
-        MaterializationProvenance? Provenance = null)
+        MaterializationProvenance? Provenance = null,
+        SnapshotSourceIdentity? SourceIdentity = null)
     {
         if (string.IsNullOrWhiteSpace(WorkspaceId))
         {
@@ -41,6 +42,7 @@ public sealed record LocalWorkspace
         this.Issues = Freeze(Issues);
         this.AdapterCandidates = Freeze(AdapterCandidates);
         this.Provenance = Provenance;
+        this.SourceIdentity = SourceIdentity;
     }
 
     public string WorkspaceId { get; }
@@ -56,6 +58,8 @@ public sealed record LocalWorkspace
     public IReadOnlyList<AdapterCandidate> AdapterCandidates { get; }
 
     public MaterializationProvenance? Provenance { get; }
+
+    public SnapshotSourceIdentity? SourceIdentity { get; }
 
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T>? values)
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());

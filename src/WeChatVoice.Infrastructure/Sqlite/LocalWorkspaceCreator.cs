@@ -38,7 +38,7 @@ public sealed class LocalWorkspaceCreator
     public Task<LocalWorkspace> CreateAsync(VerifiedMaterialization materialization, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(materialization);
-        return CreateFromMaterializationAsync(materialization, accountId: null, cancellationToken);
+        return CreateFromMaterializationAsync(materialization, accountId: null, sourceIdentity: null, cancellationToken);
     }
 
     public Task<LocalWorkspace> CreateAsync(
@@ -47,12 +47,23 @@ public sealed class LocalWorkspaceCreator
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(materialization);
-        return CreateFromMaterializationAsync(materialization, accountId, cancellationToken);
+        return CreateFromMaterializationAsync(materialization, accountId, sourceIdentity: null, cancellationToken);
+    }
+
+    public Task<LocalWorkspace> CreateAsync(
+        VerifiedMaterialization materialization,
+        string? accountId,
+        SnapshotSourceIdentity? sourceIdentity,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(materialization);
+        return CreateFromMaterializationAsync(materialization, accountId, sourceIdentity, cancellationToken);
     }
 
     private async Task<LocalWorkspace> CreateFromMaterializationAsync(
         VerifiedMaterialization materialization,
         string? accountId,
+        SnapshotSourceIdentity? sourceIdentity,
         CancellationToken cancellationToken)
     {
         var probe = await _probeService.ProbeAsync(
@@ -89,7 +100,8 @@ public sealed class LocalWorkspaceCreator
             DateTimeOffset.UtcNow,
             probe.Issues,
             probe.AdapterCandidates,
-            provenance);
+            provenance,
+            sourceIdentity);
     }
 
     private static string ComputeWorkspaceId(string sourceRoot, string dataSetId)

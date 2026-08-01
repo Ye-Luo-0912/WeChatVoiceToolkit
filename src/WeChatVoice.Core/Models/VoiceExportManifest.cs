@@ -20,7 +20,8 @@ public sealed record VoiceExportManifest
         string? AdapterVersion = null,
         IReadOnlyList<string>? DatabaseFingerprints = null,
         ExportRunStatus RunStatus = ExportRunStatus.Completed,
-        bool Cancelled = false)
+        bool Cancelled = false,
+        MaterializationProvenance? Provenance = null)
     {
         this.GeneratedAtUtc = GeneratedAtUtc.ToUniversalTime();
         this.Entries = Freeze(Entries);
@@ -34,6 +35,7 @@ public sealed record VoiceExportManifest
         this.DatabaseFingerprints = Freeze(DatabaseFingerprints);
         this.RunStatus = RunStatus;
         this.Cancelled = Cancelled || RunStatus == ExportRunStatus.Cancelled;
+        this.Provenance = Provenance;
     }
 
     public DateTimeOffset GeneratedAtUtc { get; }
@@ -59,6 +61,14 @@ public sealed record VoiceExportManifest
     public ExportRunStatus RunStatus { get; }
 
     public bool Cancelled { get; }
+
+    /// <summary>
+    /// Full workspace materialization provenance (key-extraction Profile,
+    /// Weixin version, module hashes, backend bundle). The final voice data
+    /// manifest inherits the entire workspace provenance so a later consumer
+    /// can audit exactly which verified source produced the voices.
+    /// </summary>
+    public MaterializationProvenance? Provenance { get; }
 
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T>? values)
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());

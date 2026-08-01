@@ -108,6 +108,112 @@ public sealed class VoiceExportServiceTests
         Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.tmp", SearchOption.AllDirectories));
     }
 
+    [Fact]
+    public async Task ExportAsync_reads_the_source_blob_exactly_once_for_a_first_export()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payload = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 };
+        var record = CreateRecord("voice-once");
+        var exportRoot = temporary.GetPath("export");
+        var counting = new CountingStream(new MemoryStream(payload, writable: false));
+        var service = new VoiceExportService(
+            new TestVoiceCatalog([(record, () => counting)]),
+            new FileSystemVoiceExportStore(exportRoot));
+
+        var manifest = await service.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        var entry = Assert.Single(manifest.Entries);
+        Assert.False(entry.WasSkipped);
+        // The DeepScan pre-hash is gone: the source BLOB is consumed exactly
+        // once while streaming into the temporary file.
+        Assert.Equal(payload.Length, counting.BytesRead);
+        Assert.Empty(manifest.Failures);
+    }
+
+    [Fact]
+    public async Task ExportAsync_skips_an_existing_item_when_the_source_hash_is_unknown()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payload = new byte[] { 0x0a, 0x0b, 0x0c };
+        var record = CreateRecord("voice-pending");
+        var exportRoot = temporary.GetPath("export");
+        var store = new FileSystemVoiceExportStore(exportRoot);
+
+        var first = new VoiceExportService(new TestVoiceCatalog([(record, () => new MemoryStream(payload, writable: false))]), store);
+        var firstManifest = await first.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+        Assert.False(Assert.Single(firstManifest.Entries).WasSkipped);
+
+        var secondPayload = new CountingStream(new MemoryStream(payload, writable: false));
+        var second = new VoiceExportService(new TestVoiceCatalog([(record, () => secondPayload)]), store);
+        var secondManifest = await second.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        var entry = Assert.Single(secondManifest.Entries);
+        Assert.True(entry.WasSkipped);
+        Assert.Empty(secondManifest.Failures);
+        Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.tmp", SearchOption.AllDirectories));
+        // The identity decision read the source once and found a match.
+        Assert.Equal(payload.Length, secondPayload.BytesRead);
+    }
+
+    [Fact]
+    public async Task ExportAsync_skips_without_opening_the_source_when_the_adapter_hash_is_known()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payload = new byte[] { 0x11, 0x22, 0x33 };
+        var record = CreateRecord(
+            "voice-known-hash",
+            Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant(),
+            payload.Length);
+        var exportRoot = temporary.GetPath("export");
+        var store = new FileSystemVoiceExportStore(exportRoot);
+
+        var first = new VoiceExportService(new TestVoiceCatalog([(record, () => new MemoryStream(payload, writable: false))]), store);
+        await first.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        var secondPayload = new CountingStream(new MemoryStream(payload, writable: false));
+        var second = new VoiceExportService(new TestVoiceCatalog([(record, () => secondPayload)]), store);
+        var secondManifest = await second.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        var entry = Assert.Single(secondManifest.Entries);
+        Assert.True(entry.WasSkipped);
+        // A trusted source hash lets the store verify the existing artifact
+        // without opening the source BLOB at all.
+        Assert.Equal(0, secondPayload.BytesRead);
+    }
+
+    [Fact]
+    public async Task ExportAsync_manifest_inherits_the_full_materialization_provenance()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payload = new byte[] { 0x51, 0x52, 0x53 };
+        var record = CreateRecord("voice-provenance");
+        var exportRoot = temporary.GetPath("export");
+        var provenance = new MaterializationProvenance(
+            "snapshot-test",
+            "materialized-test",
+            "sqlcipher-e_sqlcipher-worker",
+            "e_sqlcipher-2.1.11-worker-v1",
+            new string('b', 64),
+            new string('c', 64),
+            "weixin-windows-4.1.11.55-wcdb-protected-spec-v2",
+            "4.1.11.55",
+            new string('d', 64),
+            new string('e', 64),
+            new string('f', 64));
+        var service = new VoiceExportService(
+            new TestVoiceCatalog([(record, () => new MemoryStream(payload, writable: false))], provenance),
+            new FileSystemVoiceExportStore(exportRoot));
+
+        var manifest = await service.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        Assert.NotNull(manifest.Provenance);
+        Assert.Equal("weixin-windows-4.1.11.55-wcdb-protected-spec-v2", manifest.Provenance.KeyExtractionProfileId);
+        Assert.Equal("4.1.11.55", manifest.Provenance.ProcessVersion);
+        Assert.Equal(new string('d', 64), manifest.Provenance.ProcessImageSha256);
+        Assert.Equal(new string('e', 64), manifest.Provenance.WcdbModuleSha256);
+        Assert.Equal(new string('b', 64), manifest.Provenance.BackendBundleSha256);
+    }
+
     private static VoiceRecord CreateRecord(string messageId, string? payloadSha256 = null, long? payloadByteLength = null) => new(
         messageId,
         "contact@example",
@@ -128,12 +234,13 @@ public sealed class VoiceExportServiceTests
     {
         private readonly IReadOnlyList<(VoiceRecord Record, Func<Stream> CreateStream)> _records;
 
-        public TestVoiceCatalog(IReadOnlyList<(VoiceRecord Record, Func<Stream> CreateStream)> records)
+        public TestVoiceCatalog(IReadOnlyList<(VoiceRecord Record, Func<Stream> CreateStream)> records, MaterializationProvenance? provenance = null)
         {
             _records = records;
+            Context = new VoiceCatalogContext("dataset", "adapter", "1", "account", ["db-fingerprint"], "snapshot", MaterializationProvenance: provenance);
         }
 
-        public VoiceCatalogContext Context { get; } = new("dataset", "adapter", "1", "account", ["db-fingerprint"], "snapshot");
+        public VoiceCatalogContext Context { get; }
 
         public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(
             ContactQuery query,
@@ -202,6 +309,43 @@ public sealed class VoiceExportServiceTests
 
             return stream.ToArray();
         }
+    }
+
+    private sealed class CountingStream(Stream inner) : Stream
+    {
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => inner.CanRead;
+
+        public override bool CanSeek => inner.CanSeek;
+
+        public override bool CanWrite => inner.CanWrite;
+
+        public override long Length => inner.Length;
+
+        public override long Position { get => inner.Position; set => inner.Position = value; }
+
+        public override void Flush() => inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = inner.Read(buffer, offset, count);
+            BytesRead += read;
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            BytesRead += read;
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+
+        public override void SetLength(long value) => inner.SetLength(value);
+
+        public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
     }
 
     private sealed class FaultingReadStream : Stream

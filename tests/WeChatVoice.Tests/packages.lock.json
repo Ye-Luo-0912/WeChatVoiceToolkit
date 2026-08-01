@@ -160,6 +160,7 @@
       "wechatvoice.keybroker": {
         "type": "Project",
         "dependencies": {
+          "System.IO.FileSystem.AccessControl": "[6.0.0-preview.5.21301.5, )",
           "System.IO.Pipes.AccessControl": "[6.0.0-preview.5.21301.5, )",
           "WeChatVoice.Core": "[1.0.0, )",
           "WeChatVoice.Infrastructure": "[1.0.0, )",
@@ -231,6 +232,15 @@
         "requested": "[2.0.10, )",
         "resolved": "2.0.10",
         "contentHash": "6i1D6/U3i1f/PiXTt9pDvbJwdXEe0F2DZPup6BHzeIu5yPk/lkFzgtrJnPbj54JWUh8Y9vJeKG/TZIT6MkF8TA=="
+      },
+      "System.IO.FileSystem.AccessControl": {
+        "type": "CentralTransitive",
+        "requested": "[6.0.0-preview.5.21301.5, )",
+        "resolved": "6.0.0-preview.5.21301.5",
+        "contentHash": "ACAy/tBXovW06UatGYPoqR0EB6FCH65uGuMOurGHiWyt/3Lngq3vSQW+yZkWQ1UW7MzMJoP6xGvP2XzSLeUuWw==",
+        "dependencies": {
+          "System.Security.Principal.Windows": "6.0.0-preview.5.21301.5"
+        }
       },
       "System.IO.Pipes.AccessControl": {
         "type": "CentralTransitive",

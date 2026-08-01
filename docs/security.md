@@ -41,3 +41,51 @@ The fixed module path is `<verified-install-root>/4.1.11.55/Weixin.dll`; the
 Broker does not search `PATH` or arbitrary directories. One exact migration
 auxiliary database may be recorded as intentionally ignored, but required
 message, media, and contact databases must all materialize successfully.
+
+## Broker binary trust
+
+Before the CLI elevates the Key Broker, the adjacent
+`WeChatVoice.KeyBroker.exe` must pass one of two exclusive trust policies.
+There is no silent fallback: a build that fails the Release policy is refused
+unless the user explicitly opts into the development policy.
+
+- **ReleaseBrokerTrustPolicy (default, fail-closed)** requires, in order:
+  1. a regular, non-reparse-point file in the fixed CLI install directory;
+  2. a `WeChatVoice.KeyBroker.bundle.json` publish manifest whose `publisherThumbprint`
+     is pinned non-empty and whose EXE hash binds the actual binary;
+  3. full Authenticode verification of the EXE via `WinVerifyTrust`
+     (`AuthenticodeVerifier` is the single authoritative implementation);
+  4. the signer certificate SHA-256 digest equal to the pinned publisher
+     thumbprint;
+  5. an install directory the invoking user cannot write to (Program Files /
+     MSIX-style containers satisfy this).
+  Any missing or mismatched check denies elevation.
+- **DevelopmentBrokerTrustPolicy** is never the default. It requires the
+  explicit `--allow-development-broker` CLI flag **and** that the Broker is a
+  regular file inside a verified repository build output (`src/*/bin` or
+  `artifacts/`). It accepts an unsigned binary and prints an explicit warning
+  that the build is development-only.
+- `scripts/publish-smoke.ps1` now generates and verifies both the worker and
+  the Broker bundle manifests; `scripts/sign-release.ps1` signs and verifies
+  the three published executables when a certificate is supplied, and the
+  publish smoke fails in CI when the output is unsigned.
+
+## Private staging hardening
+
+Broker-created private copies (the staged snapshot and the materialization
+staging directory) are restricted to SYSTEM and local Administrators only,
+without inherited rules, whenever the Broker runs elevated. Ordinary
+same-user processes cannot replace or modify the temporary copies. Setting the
+DACL fails closed; non-elevated development/test runs skip the restriction so
+the surrounding flow remains testable.
+
+## Export integrity
+
+An export run performs one streaming read of each source BLOB and decides the
+artifact identity at commit time: a repeated export reuses a verified existing
+artifact without re-reading the source when the adapter supplied a trusted
+hash, and otherwise reads the source once and compares it against the existing
+artifact. `latest.manifest.json` and each run manifest inherit the full
+materialization provenance (key-extraction Profile, Weixin version, module
+hashes, backend bundle), so a training or dataset consumer can audit exactly
+which verified source produced the voices.

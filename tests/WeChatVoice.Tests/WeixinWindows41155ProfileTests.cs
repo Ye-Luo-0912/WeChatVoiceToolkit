@@ -164,7 +164,7 @@ public sealed class WeixinWindows41155ProfileTests
         var process = new VerifiedWeixinProcess(42, DateTimeOffset.UnixEpoch, "C:\\Weixin.exe", WeixinWindows41155Profile.SupportedImageSha256, WeixinWindows41155Profile.SupportedVersion, "S-1-5-21-test", 1, "x64");
         var profile = new WeixinWindows41155Profile(new RejectingValidator(), new FakeMemorySourceFactory(Encoding.ASCII.GetBytes($"x'{new string('a', 64)}'")), new AcceptingModuleIdentityVerifier());
 
-        await Assert.ThrowsAsync<InvalidDataException>(() => profile.AcquireAsync(process, verified, new KeyAcquisitionBudget(TimeSpan.FromSeconds(30), 64 * 1024 * 1024, 256), CancellationToken.None));
+        await Assert.ThrowsAsync<WeChatVoice.Core.Errors.AppFailureException>(() => profile.AcquireAsync(process, verified, new KeyAcquisitionBudget(TimeSpan.FromSeconds(30), 64 * 1024 * 1024, 256), CancellationToken.None));
     }
 
     [Fact]
@@ -219,10 +219,11 @@ public sealed class WeixinWindows41155ProfileTests
             1,
             "x64");
 
-        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+        var exception = await Assert.ThrowsAsync<WeChatVoice.Core.Errors.AppFailureException>(
             () => new VersionedWcdbModuleIdentityVerifier().VerifyAsync([process], CancellationToken.None));
 
         Assert.Contains("module hash", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(WeChatVoice.Core.Errors.ErrorCode.ProcessIdentityMismatch, exception.Code);
     }
 
     private static byte[] BuildPage(byte[] key, uint pageNumber)

@@ -2,9 +2,10 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using WeChatVoice.Cli.Services.BrokerTrust;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Protocol;
 
@@ -15,6 +16,10 @@ internal sealed class KeyBrokerClient
     private const string PipePrefix = "WeChatVoice.KeyBroker.";
     private static readonly TimeSpan ConnectionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan OperationTimeout = TimeSpan.FromMinutes(20);
+    private readonly IBrokerTrustPolicy _trustPolicy;
+
+    internal KeyBrokerClient(IBrokerTrustPolicy? trustPolicy = null)
+        => _trustPolicy = trustPolicy ?? new ReleaseBrokerTrustPolicy();
 
     internal async Task<KeyBrokerResult> AcquireAndMaterializeAsync(
         VerifiedRawSnapshot snapshot,
@@ -31,7 +36,7 @@ internal sealed class KeyBrokerClient
             throw new FileNotFoundException("The fixed WeChatVoice.KeyBroker.exe was not installed next to the CLI.", brokerPath);
         }
 
-        VerifyBrokerBinary(brokerPath);
+        VerifyBrokerBinary(brokerPath, _trustPolicy);
 
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         var requestId = Guid.NewGuid().ToString("N");
@@ -119,25 +124,14 @@ internal sealed class KeyBrokerClient
         }
     }
 
-    private static void VerifyBrokerBinary(string path)
+    private static void VerifyBrokerBinary(string path, IBrokerTrustPolicy trustPolicy)
     {
-        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0
-            || !string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+        var result = trustPolicy.Verify(path);
+        if (!result.Verified)
         {
-            throw new InvalidDataException("The Key Broker must be a regular file in the fixed CLI installation directory.");
-        }
-
-        try
-        {
-            using var certificate = X509CertificateLoader.LoadCertificateFromFile(path);
-            if (string.IsNullOrWhiteSpace(certificate.Subject))
-            {
-                throw new InvalidDataException("The Key Broker Authenticode certificate has no Subject.");
-            }
-        }
-        catch (CryptographicException exception)
-        {
-            throw new InvalidDataException("The Key Broker is not Authenticode-signed; refusing to elevate an untrusted binary.", exception);
+            throw new AppFailureException(
+                ErrorCode.WorkerBundleUntrusted,
+                $"The Key Broker failed trust verification: {result.NonSensitiveReason}");
         }
     }
 
@@ -192,7 +186,12 @@ internal sealed record KeyBrokerResult(
     string? MaterializationId,
     KeyBrokerError? Error);
 
-internal sealed record KeyBrokerError(string Code, string Message);
+internal sealed record KeyBrokerError(
+    string Code,
+    string Message,
+    bool IsRetryable = false,
+    string? SuggestedAction = null,
+    string? NonSensitiveTechnicalContext = null);
 
 internal sealed record KeyBrokerStage(
     string Stage,
@@ -204,7 +203,11 @@ internal sealed record KeyBrokerStage(
     int? TotalDatabases,
     int? FirstUnvalidatedGroupOrdinal);
 
-internal sealed class KeyBrokerOperationException(string code, string message) : InvalidOperationException(message)
+internal sealed class KeyBrokerOperationException(string code, string message, bool isRetryable = false, string? suggestedAction = null) : InvalidOperationException(message)
 {
     internal string Code { get; } = code;
+
+    internal bool IsRetryable { get; } = isRetryable;
+
+    internal string? SuggestedAction { get; } = suggestedAction;
 }

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Serialization;
 using WeChatVoice.Infrastructure.Snapshots;
@@ -77,6 +78,11 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         Directory.CreateDirectory(parent);
         var staging = Path.Combine(parent, $".{Path.GetFileName(options.OutputDirectory)}.{Guid.NewGuid():N}.tmp");
         Directory.CreateDirectory(staging);
+        if (BrokerDirectorySecurity.IsElevated())
+        {
+            BrokerDirectorySecurity.RestrictToSystemAndAdministrators(staging);
+        }
+
         checkpoint?.Invoke("materialization-staging-created");
         Exception? primaryFailure = null;
         try
@@ -106,10 +112,15 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                     throw new FileNotFoundException("A bound database disappeared from the verified Snapshot.", inputPath);
                 }
 
-                var sourceMetadata = targetByPath[normalizedBindingPath];
-                await VerifySourceFileAsync(inputPath, sourceMetadata, cancellationToken).ConfigureAwait(false);
-                await using var sourceLocks = await OpenSourceLocksAsync(inputPath, cancellationToken).ConfigureAwait(false);
-                await VerifySourceFileAsync(inputPath, sourceMetadata, cancellationToken).ConfigureAwait(false);
+                // The whole DB/WAL/SHM group is opened read-only with no write
+                // or delete share, and re-verified through the open handles
+                // against the staged group fingerprint before the worker runs.
+                if (!groupTargetByPath.TryGetValue(normalizedBindingPath, out var groupTarget))
+                {
+                    throw new AppFailureException(ErrorCode.DatabaseGroupUncovered, "A key binding did not resolve to a verified database group target.");
+                }
+
+                await using var sourceLease = await VerifiedDatabaseGroupLease.OpenAsync(inputPath, groupTarget, cancellationToken).ConfigureAwait(false);
 
                 var outputRelative = NormalizeRelative(Path.Combine("databases", binding.RelativeDatabasePath));
                 var outputPath = CombineUnderRoot(staging, outputRelative);
@@ -171,7 +182,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 if (!WeixinWindows41155DatabasePolicy.CanIntentionallyIgnore(unboundPath)
                     || !groupTargetByPath.TryGetValue(unboundPath, out var target))
                 {
-                    throw new InvalidDataException("The verified key acquisition did not cover every required source database.");
+                    throw new AppFailureException(ErrorCode.DatabaseGroupUncovered, "The verified key acquisition did not cover every required source database.");
                 }
 
                 materialized.Add(new MaterializedDatabase(
@@ -291,7 +302,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         startInfo.ArgumentList.Add("--encryption-profile");
         startInfo.ArgumentList.Add(encryptionProfileId);
         checkpoint?.Invoke("worker-starting");
-        using var process = Process.Start(startInfo) ?? throw new IOException("The SQLCipher worker could not be started.");
+        using var process = Process.Start(startInfo) ?? throw new AppFailureException(ErrorCode.WorkerFailed, "The SQLCipher worker could not be started.");
         checkpoint?.Invoke("worker-started");
         var envelope = new byte[ProtocolHeaderSize + WorkerKeySize];
         try
@@ -310,7 +321,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             checkpoint?.Invoke("worker-exited");
             if (process.ExitCode != 0)
             {
-                throw new IOException("The SQLCipher worker rejected the verified key or database.");
+                throw new AppFailureException(ErrorCode.WorkerFailed, "The SQLCipher worker rejected the verified key or database.");
             }
 
             checkpoint?.Invoke("worker-succeeded");
@@ -327,62 +338,23 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         }
     }
 
-    private static async Task VerifySourceFileAsync(string path, SnapshotFileRecord expected, CancellationToken cancellationToken)
+    private async Task<string> VerifyWorkerBundleAsync(CancellationToken cancellationToken)
     {
-        var info = new FileInfo(path);
-        if (info.Length != expected.ByteLength)
-        {
-            throw new InvalidDataException("A source database changed length before the fixed worker started.");
-        }
-
-        var actual = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(actual, expected.Sha256, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException("A source database hash changed before the fixed worker started.");
-        }
-    }
-
-    private static async Task<IAsyncDisposable> OpenSourceLocksAsync(string mainPath, CancellationToken cancellationToken)
-    {
-        var streams = new List<FileStream>();
         try
         {
-            foreach (var path in new[] { mainPath, mainPath + "-wal", mainPath + "-shm" })
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!File.Exists(path))
-                {
-                    continue;
-                }
-
-                streams.Add(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan));
-            }
-
-            return new SourceLockSet(streams);
+            return await VerifyWorkerBundleCoreAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (AppFailureException)
         {
-            foreach (var stream in streams)
-            {
-                await stream.DisposeAsync().ConfigureAwait(false);
-            }
-
             throw;
         }
-    }
-
-    private sealed class SourceLockSet(IReadOnlyList<FileStream> streams) : IAsyncDisposable
-    {
-        public async ValueTask DisposeAsync()
+        catch (Exception exception) when (exception is InvalidDataException or FileNotFoundException or IOException)
         {
-            foreach (var stream in streams)
-            {
-                await stream.DisposeAsync().ConfigureAwait(false);
-            }
+            throw new AppFailureException(ErrorCode.WorkerBundleUntrusted, "The SQLCipher worker bundle failed trust verification.", exception);
         }
     }
 
-    private async Task<string> VerifyWorkerBundleAsync(CancellationToken cancellationToken)
+    private async Task<string> VerifyWorkerBundleCoreAsync(CancellationToken cancellationToken)
     {
         var workerHash = await FileHashing.ComputeSha256Async(workerPath, cancellationToken).ConfigureAwait(false);
         if (allowDevelopmentWorker)
@@ -474,7 +446,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
 
         if (read != header.Length || !header.AsSpan().SequenceEqual("SQLite format 3\0"u8))
         {
-            throw new InvalidDataException("The SQLCipher worker did not produce a plaintext SQLite database.");
+            throw new AppFailureException(ErrorCode.MaterializationInvalid, "The SQLCipher worker did not produce a plaintext SQLite database.");
         }
 
         checkpoint?.Invoke("plaintext-header-verified");
@@ -496,7 +468,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             System.Globalization.CultureInfo.InvariantCulture);
         if (!string.Equals(result, "ok", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("The SQLCipher worker output failed an independent SQLite quick_check.");
+            throw new AppFailureException(ErrorCode.MaterializationInvalid, "The SQLCipher worker output failed an independent SQLite quick_check.");
         }
 
         checkpoint?.Invoke("plaintext-quick-check-verified");

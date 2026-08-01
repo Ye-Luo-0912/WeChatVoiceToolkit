@@ -29,6 +29,30 @@ and database formats are extensible through reviewed registries, while the
 permanent floor remains no arbitrary privileged command, no writable process
 access, no raw-key output/persistence, and no unknown-version heuristic.
 
+## Broker binary trust
+
+The CLI verifies the Broker binary before elevation with one of two exclusive
+policies. Release policy is the default and fails closed: the Broker must be a
+regular adjacent file, its `WeChatVoice.KeyBroker.bundle.json` must pin a
+non-empty publisher thumbprint and hash-bound the binary, `WinVerifyTrust`
+must accept the complete image (`AuthenticodeVerifier` is the single
+implementation shared with Weixin process identity checks), the signer
+certificate SHA-256 must equal the pinned thumbprint, and the install
+directory must not be user-writable. Development policy requires the explicit
+`--allow-development-broker` flag and a verified repository build directory,
+and never applies to released installs. The Broker's own private staging and
+materialization directories are DACL-restricted to SYSTEM and Administrators
+when elevated.
+
+## Account identity confirmation
+
+The account candidate is derived from the verified source layout
+(`wxid_*_<hex>\db_storage`) and only proven to exist in the account's contact
+and Name2Id indexes — not to be the account itself. Hosts must surface the
+detected account for explicit user confirmation (`--account` or the
+`IAccountConfirmation` port) before a privileged materialization proceeds;
+the workspace never silently selects an account.
+
 ## Exact identity evidence
 
 Read-only inspection of the supported installation on 2026-08-01 established:

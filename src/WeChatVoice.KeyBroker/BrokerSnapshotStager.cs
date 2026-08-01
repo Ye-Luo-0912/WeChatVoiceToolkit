@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Security.Cryptography;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Snapshots;
 
@@ -21,14 +22,14 @@ internal static class BrokerSnapshotStager
         ArgumentException.ThrowIfNullOrWhiteSpace(stagingParent);
         if (verifiedSnapshot.Snapshot.Manifest.PotentiallyInconsistent)
         {
-            throw new InvalidDataException("Potentially inconsistent live-source snapshots cannot be materialized by the Key Broker.");
+            throw new AppFailureException(ErrorCode.SnapshotInconsistent, "Potentially inconsistent live-source snapshots cannot be materialized by the Key Broker.");
         }
 
         var parent = Path.GetFullPath(stagingParent);
         Directory.CreateDirectory(parent);
         if ((File.GetAttributes(parent) & FileAttributes.ReparsePoint) != 0)
         {
-            throw new InvalidDataException("The Broker snapshot staging parent cannot be a reparse point.");
+            throw new AppFailureException(ErrorCode.SnapshotInvalid, "The Broker snapshot staging parent cannot be a reparse point.");
         }
 
         var staging = Path.Combine(parent, $".wechatvoice-broker-snapshot-{Guid.NewGuid():N}");
@@ -38,6 +39,11 @@ internal static class BrokerSnapshotStager
         }
 
         Directory.CreateDirectory(staging);
+        if (BrokerDirectorySecurity.IsElevated())
+        {
+            BrokerDirectorySecurity.RestrictToSystemAndAdministrators(staging);
+        }
+
         try
         {
             var sourceRoot = Path.GetFullPath(verifiedSnapshot.Snapshot.SnapshotDirectory);
@@ -94,7 +100,7 @@ internal static class BrokerSnapshotStager
                 || source.Length != expected.ByteLength
                 || !string.Equals(actualHash, expected.Sha256, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidDataException($"The snapshot source changed while staging '{expected.RelativePath}'.");
+                throw new AppFailureException(ErrorCode.SnapshotInconsistent, $"The snapshot source changed while staging '{expected.RelativePath}'.");
             }
         }
         finally

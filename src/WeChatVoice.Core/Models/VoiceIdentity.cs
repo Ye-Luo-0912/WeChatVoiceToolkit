@@ -17,7 +17,8 @@ public sealed record VoiceCatalogContext
         IReadOnlyList<string> DatabaseFingerprints,
         string? SnapshotId = null,
         string? AdapterFamily = null,
-        MaterializationProvenance? MaterializationProvenance = null)
+        MaterializationProvenance? MaterializationProvenance = null,
+        AccountIdentity? AccountIdentity = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(DatasetId);
         ArgumentException.ThrowIfNullOrWhiteSpace(AdapterId);
@@ -41,6 +42,7 @@ public sealed record VoiceCatalogContext
         this.DatabaseFingerprints = new ReadOnlyCollection<string>(fingerprints);
         this.SnapshotId = string.IsNullOrWhiteSpace(SnapshotId) ? null : SnapshotId;
         this.MaterializationProvenance = MaterializationProvenance;
+        this.AccountIdentity = AccountIdentity ?? AccountIdentity.CandidateOnly;
     }
 
     public string DatasetId { get; }
@@ -58,6 +60,12 @@ public sealed record VoiceCatalogContext
     public IReadOnlyList<string> DatabaseFingerprints { get; }
 
     public MaterializationProvenance? MaterializationProvenance { get; }
+
+    /// <summary>
+    /// How strongly the account identity is established. Hosts must surface a
+    /// confirmation prompt while this is <see cref="Models.AccountIdentityState.Candidate"/>.
+    /// </summary>
+    public AccountIdentity AccountIdentity { get; }
 }
 
 /// <summary>

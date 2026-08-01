@@ -51,9 +51,15 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
             EnsureNoReparsePointsOnPath(sourceRoot, actualPath);
         }
 
+        // A single file index is built once and shared by the dataset probe,
+        // the database-group comparison, and the provenance verification so no
+        // file is hashed twice in one verification pass.
+        var fileIndex = await FileIndexBuilder.BuildAsync(sourceRoot, cancellationToken).ConfigureAwait(false);
+
         var probe = await _probeService.ProbeAsync(
             sourceRoot,
             new DataSetProbeOptions(IncludeLocalPaths: true),
+            fileIndex,
             cancellationToken).ConfigureAwait(false);
         if (!string.Equals(workspace.DataSet.DataSetId, probe.DataSet.DataSetId, StringComparison.OrdinalIgnoreCase))
         {
@@ -85,7 +91,7 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
             }
         }
 
-        await VerifyMaterializationProvenanceAsync(workspace, sourceRoot, cancellationToken).ConfigureAwait(false);
+        await VerifyMaterializationProvenanceAsync(workspace, sourceRoot, fileIndex, cancellationToken).ConfigureAwait(false);
 
         return new VerifiedLocalWorkspace(workspace, DateTimeOffset.UtcNow);
     }
@@ -93,6 +99,7 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
     private static async Task VerifyMaterializationProvenanceAsync(
         LocalWorkspace workspace,
         string sourceRoot,
+        VerifiedFileIndex fileIndex,
         CancellationToken cancellationToken)
     {
         if (workspace.Provenance is null)
@@ -108,7 +115,9 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
 
         EnsureNoReparsePointsOnPath(sourceRoot, manifestPath);
 
-        var manifestHash = await FileHashing.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
+        var manifestHash = fileIndex.TryGet(".wechatvoice/materialization-manifest.json", out var manifestEntry)
+            ? manifestEntry.Sha256
+            : await FileHashing.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(manifestHash, workspace.Provenance.MaterializationManifestSha256, StringComparison.OrdinalIgnoreCase))
         {
             throw new WorkspaceVerificationException("The materialization manifest hash no longer matches workspace provenance.");
@@ -143,7 +152,9 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
             }
 
             var info = new FileInfo(outputPath);
-            var hash = await FileHashing.ComputeSha256Async(outputPath, cancellationToken).ConfigureAwait(false);
+            var hash = fileIndex.TryGet(file.OutputRelativePath, out var entry)
+                ? entry.Sha256
+                : await FileHashing.ComputeSha256Async(outputPath, cancellationToken).ConfigureAwait(false);
             if (info.Length != file.ByteLength || !string.Equals(hash, file.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new WorkspaceVerificationException($"A materialization output file changed: '{file.OutputRelativePath}'.");

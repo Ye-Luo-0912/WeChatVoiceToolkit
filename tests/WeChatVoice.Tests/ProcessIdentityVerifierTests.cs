@@ -1,3 +1,4 @@
+using WeChatVoice.Core.Errors;
 using WeChatVoice.KeyBroker;
 using WeChatVoice.Windows;
 
@@ -38,15 +39,16 @@ public sealed class ProcessIdentityVerifierTests
             Architecture = architecture,
         };
 
-        Assert.Throws<InvalidDataException>(() => new ProcessIdentityVerifier(new FakeReader(evidence)).Verify(42, Policy));
+        Assert.Throws<AppFailureException>(() => new ProcessIdentityVerifier(new FakeReader(evidence)).Verify(42, Policy));
     }
 
     [Fact]
     public void Verify_rejects_version_hash_and_pid_reuse_changes()
     {
-        Assert.Throws<InvalidDataException>(() => new ProcessIdentityVerifier(new FakeReader(ValidEvidence() with { ProductVersion = "4.1.12.1" })).Verify(42, Policy));
-        Assert.Throws<InvalidDataException>(() => new ProcessIdentityVerifier(new FakeReader(ValidEvidence() with { ImageSha256 = new string('b', 64) })).Verify(42, Policy));
-        Assert.Throws<InvalidDataException>(() => new ProcessIdentityVerifier(new FakeReader(ValidEvidence(), ValidEvidence() with { StartedAtUtc = DateTimeOffset.UnixEpoch.AddSeconds(2) })).Verify(42, Policy));
+        var versionFailure = Assert.Throws<AppFailureException>(() => new ProcessIdentityVerifier(new FakeReader(ValidEvidence() with { ProductVersion = "4.1.12.1" })).Verify(42, Policy));
+        Assert.Equal(ErrorCode.UnsupportedWeixinVersion, versionFailure.Code);
+        Assert.Throws<AppFailureException>(() => new ProcessIdentityVerifier(new FakeReader(ValidEvidence() with { ImageSha256 = new string('b', 64) })).Verify(42, Policy));
+        Assert.Throws<AppFailureException>(() => new ProcessIdentityVerifier(new FakeReader(ValidEvidence(), ValidEvidence() with { StartedAtUtc = DateTimeOffset.UnixEpoch.AddSeconds(2) })).Verify(42, Policy));
     }
 
     [Fact]
