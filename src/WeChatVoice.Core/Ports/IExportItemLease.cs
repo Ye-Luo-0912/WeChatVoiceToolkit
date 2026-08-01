@@ -28,6 +28,14 @@ public interface IExportItemLease : IAsyncDisposable
 
     Task<ExportArtifact> CommitOriginalAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Commits using the artifact computed while the caller copied the source
+    /// stream. Stores may still validate the temporary file length; they do not
+    /// need to reread it solely to calculate the same hash.
+    /// </summary>
+    Task<ExportArtifact> CommitOriginalAsync(ExportArtifact computedArtifact, CancellationToken cancellationToken)
+        => CommitOriginalAsync(cancellationToken);
+
     ValueTask<Stream> OpenDecodedWriteAsync(CancellationToken cancellationToken);
 
     Task<ExportArtifact> CommitDecodedAsync(CancellationToken cancellationToken);

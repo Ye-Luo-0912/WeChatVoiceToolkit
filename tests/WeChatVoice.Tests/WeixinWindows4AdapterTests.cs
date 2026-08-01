@@ -41,13 +41,15 @@ public sealed class WeixinWindows4AdapterTests
         Assert.Contains(searched, item => item.ContactId == ContactId);
 
         var incoming = await CollectAsync(catalog.QueryVoicesAsync(
-            StableQuery(VoiceDirection.Incoming),
+            StableQuery(VoiceDirection.Incoming, deepScan: true),
             CancellationToken.None));
-        Assert.Equal(3, incoming.Count);
+        Assert.Equal(4, incoming.Count);
         var linked = Assert.Single(incoming, static record => record.PayloadByteLength == 10);
         var empty = Assert.Single(incoming, static record => record.PayloadByteLength == 0);
-        var unlinked = Assert.Single(incoming, static record => !record.MediaLinked);
-        Assert.True(empty.MediaLinked);
+        var unlinked = Assert.Single(incoming, static record => record.PayloadState == VoicePayloadState.Missing);
+        var invalid = Assert.Single(incoming, static record => record.PayloadState == VoicePayloadState.InvalidHeader);
+        Assert.False(empty.MediaLinked);
+        Assert.False(invalid.MediaLinked);
         Assert.Null(unlinked.PayloadLocator);
         Assert.Null(unlinked.SourceStableKey);
         Assert.NotNull(linked.PayloadLocator);
@@ -63,12 +65,13 @@ public sealed class WeixinWindows4AdapterTests
         Assert.Equal(expectedPayload, payloadCopy.ToArray());
 
         var scan = await new VoiceScanService(catalog).ScanAsync(StableQuery(VoiceDirection.Incoming));
-        Assert.Equal(3, scan.MatchedVoiceCount);
+        Assert.Equal(4, scan.MatchedVoiceCount);
         Assert.Equal(1, scan.UnassociatedMediaCount);
         Assert.Equal(1, scan.EmptyBlobCount);
+        Assert.Equal(1, scan.InvalidHeaderCount);
 
         var outgoing = await CollectAsync(catalog.QueryVoicesAsync(
-            StableQuery(VoiceDirection.Outgoing),
+            StableQuery(VoiceDirection.Outgoing, deepScan: true),
             CancellationToken.None));
         var sent = Assert.Single(outgoing);
         Assert.True(sent.MediaLinked);
@@ -92,12 +95,13 @@ public sealed class WeixinWindows4AdapterTests
         Assert.Contains("stable Weixin account ID", exception.Message, StringComparison.Ordinal);
     }
 
-    private static VoiceQuery StableQuery(VoiceDirection direction)
+    private static VoiceQuery StableQuery(VoiceDirection direction, bool deepScan = false)
         => new(
             ContactId,
             direction,
             ContactUsername: ContactId,
-            ContactId: ContactId);
+            ContactId: ContactId,
+            DeepScan: deepScan);
 
     private static async Task<VerifiedLocalWorkspace> CreateVerifiedWorkspaceAsync(string root)
     {
@@ -108,6 +112,18 @@ public sealed class WeixinWindows4AdapterTests
             local.DataSet.Databases,
             "snapshot-test",
             local.DataSet.AdapterId);
+        var provenance = new MaterializationProvenance(
+            "snapshot-test",
+            "materialized-test",
+            "sqlcipher-e_sqlcipher-worker",
+            "e_sqlcipher-test",
+            "backend-hash",
+            "manifest-hash",
+            "weixin-windows-4.1.11.55-wcdb-protected-spec-v2",
+            "4.1.11.55",
+            "ac599744a7ce7b65640ebe18c939c0d4e4a06cd039d89cddee7f1e9afc56875d",
+            "ab925b9428239def44b252d970c337034d75e66b27eb5529633dc10669fc796a",
+            "sid-fingerprint");
         var withAccount = new LocalWorkspace(
             local.WorkspaceId,
             local.SourceRoot,
@@ -115,8 +131,8 @@ public sealed class WeixinWindows4AdapterTests
             local.CreatedAtUtc,
             local.Issues,
             local.AdapterCandidates,
-            local.Provenance);
-        return await new LocalWorkspaceVerifier().VerifyAsync(withAccount, CancellationToken.None);
+            provenance);
+        return new VerifiedLocalWorkspace(withAccount, DateTimeOffset.UtcNow);
     }
 
     private static async Task CreateFixtureAsync(string root)
@@ -130,12 +146,13 @@ public sealed class WeixinWindows4AdapterTests
 
         await ExecuteAsync(contactPath, """
             CREATE TABLE contact (
-                id INTEGER, username TEXT, local_type INTEGER, alias TEXT, encrypt_username TEXT, flag INTEGER,
+                id INTEGER PRIMARY KEY, username TEXT, local_type INTEGER, alias TEXT, encrypt_username TEXT, flag INTEGER,
                 delete_flag INTEGER, verify_flag INTEGER, remark TEXT, remark_quan_pin TEXT,
                 remark_pin_yin_initial TEXT, nick_name TEXT, pin_yin_initial TEXT, quan_pin TEXT,
                 big_head_url TEXT, small_head_url TEXT, head_img_md5 TEXT, chat_room_notify INTEGER,
                 is_in_chat_room INTEGER, description TEXT, extra_buffer BLOB, chat_room_type INTEGER
             );
+            CREATE INDEX contact_localType ON contact(local_type);
             INSERT INTO contact (id, username, alias, remark, nick_name) VALUES
                 (1, 'wxid_owner', 'owner_alias', '', 'Owner'),
                 (2, 'wxid_peer', 'peer_alias', 'Peer Remark', 'Peer Nick');
@@ -143,15 +160,19 @@ public sealed class WeixinWindows4AdapterTests
 
         var tableName = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(ContactId))).ToLowerInvariant();
         await ExecuteAsync(messagePath, $$"""
-            CREATE TABLE Name2Id (user_name TEXT, is_session INTEGER);
+            CREATE TABLE Name2Id (user_name TEXT PRIMARY KEY, is_session INTEGER);
             INSERT INTO Name2Id (rowid, user_name, is_session) VALUES
                 (1, 'wxid_owner', 1), (2, 'wxid_peer', 1);
             CREATE TABLE "{{tableName}}" (
-                local_id INTEGER, server_id INTEGER, local_type INTEGER, sort_seq INTEGER, real_sender_id INTEGER,
+                local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, sort_seq INTEGER, real_sender_id INTEGER,
                 create_time INTEGER, status INTEGER, upload_status INTEGER, download_status INTEGER,
-                server_seq INTEGER, origin_source INTEGER, source TEXT, message_content TEXT, compress_content BLOB,
-                packed_info_data BLOB, WCDB_CT_message_content BLOB, WCDB_CT_source BLOB
+                server_seq INTEGER, origin_source INTEGER, source TEXT, message_content TEXT, compress_content TEXT,
+                packed_info_data BLOB, WCDB_CT_message_content INTEGER DEFAULT NULL, WCDB_CT_source INTEGER DEFAULT NULL
             );
+            CREATE INDEX "{{tableName}}_TYPE_SEQ" ON "{{tableName}}"(local_type, sort_seq);
+            CREATE INDEX "{{tableName}}_SORTSEQ" ON "{{tableName}}"(sort_seq);
+            CREATE INDEX "{{tableName}}_SERVERID" ON "{{tableName}}"(server_id);
+            CREATE INDEX "{{tableName}}_SENDERID" ON "{{tableName}}"(real_sender_id);
             INSERT INTO "{{tableName}}"
                 (local_id, server_id, local_type, sort_seq, real_sender_id, create_time, status, upload_status,
                  download_status, server_seq, origin_source)
@@ -160,16 +181,19 @@ public sealed class WeixinWindows4AdapterTests
                 (11, 101, 34, 2, 1, 1700000060, 4, 0, 0, 2, 5),
                 (12, 102, 34, 3, 2, 1700000120, 3, 0, 0, 3, 2),
                 (13, 103, 1,  4, 2, 1700000180, 3, 0, 0, 4, 2),
-                (14, 104, 34, 5, 2, 1700000240, 3, 0, 0, 5, 2);
+                (14, 104, 34, 5, 2, 1700000240, 3, 0, 0, 5, 2),
+                (15, 105, 34, 6, 2, 1700000300, 3, 0, 0, 6, 2);
             """);
 
         await ExecuteAsync(mediaPath, """
-            CREATE TABLE Name2Id (user_name TEXT);
+            CREATE TABLE Name2Id (user_name TEXT PRIMARY KEY);
             INSERT INTO Name2Id (rowid, user_name) VALUES (1, 'wxid_peer');
             CREATE TABLE VoiceInfo (
                 chat_name_id INTEGER, create_time INTEGER, local_id INTEGER, svr_id INTEGER,
-                voice_data BLOB, data_index TEXT
+                voice_data BLOB, data_index TEXT DEFAULT '0'
             );
+            CREATE UNIQUE INDEX VoiceInfo_UNIQUE_INDEX ON VoiceInfo(chat_name_id, create_time, local_id, data_index);
+            CREATE INDEX VoiceInfo_INDEX ON VoiceInfo(chat_name_id, svr_id);
             CREATE TABLE TimeStamp (timestamp INTEGER);
             """);
         await using var media = await OpenAsync(mediaPath);
@@ -187,6 +211,7 @@ public sealed class WeixinWindows4AdapterTests
         await InsertMediaAsync(insert, 1_700_000_060, 11, 101, Encoding.ASCII.GetBytes("#!SILK_V3\nout"));
         await InsertMediaAsync(insert, 1_700_000_120, 12, 999, Encoding.ASCII.GetBytes("#!SILK_V3\nwrong"));
         await InsertMediaAsync(insert, 1_700_000_240, 14, 104, []);
+        await InsertMediaAsync(insert, 1_700_000_300, 15, 105, Encoding.ASCII.GetBytes("not-silk"));
     }
 
     private static async Task InsertMediaAsync(SqliteCommand command, long time, long local, long server, byte[] payload)

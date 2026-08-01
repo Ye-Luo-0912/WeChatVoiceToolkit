@@ -48,6 +48,8 @@ internal static class BrokerPipeServer
             await pipe.WaitForConnectionAsync(connectionTimeout.Token).ConfigureAwait(false);
         }
 
+        BrokerClientIdentityVerifier.Verify(pipe.SafePipeHandle);
+
         // The UAC/pipe connection budget is deliberately not reused for the
         // expensive memory scan and materialization operation.
         using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

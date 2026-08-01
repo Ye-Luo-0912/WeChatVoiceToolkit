@@ -122,7 +122,12 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
             || !string.Equals(manifest.SourceSnapshotId, provenance.SourceSnapshotId, StringComparison.Ordinal)
             || !string.Equals(manifest.BackendId, provenance.BackendId, StringComparison.Ordinal)
             || !string.Equals(manifest.BackendVersion, provenance.BackendVersion, StringComparison.Ordinal)
-            || !string.Equals(manifest.BackendSha256, provenance.BackendBundleSha256, StringComparison.OrdinalIgnoreCase))
+            || !string.Equals(manifest.BackendSha256, provenance.BackendBundleSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(manifest.KeyExtractionProfileId, provenance.KeyExtractionProfileId, StringComparison.Ordinal)
+            || !string.Equals(manifest.ProcessVersion, provenance.ProcessVersion, StringComparison.Ordinal)
+            || !string.Equals(manifest.ProcessImageSha256, provenance.ProcessImageSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(manifest.WcdbModuleSha256, provenance.WcdbModuleSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(manifest.AccountSidFingerprint, provenance.AccountSidFingerprint, StringComparison.OrdinalIgnoreCase))
         {
             throw new WorkspaceVerificationException("The materialization manifest provenance does not match the workspace.");
         }
@@ -152,6 +157,13 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
 
         foreach (var database in manifest.Databases.Where(static item => item.Status is MaterializationDatabaseStatus.Materialized or MaterializationDatabaseStatus.CopiedAsPlaintext))
         {
+            if (database.Status == MaterializationDatabaseStatus.Materialized
+                && !string.IsNullOrWhiteSpace(manifest.KeyExtractionProfileId)
+                && string.IsNullOrWhiteSpace(database.EncryptionProfileId))
+            {
+                throw new WorkspaceVerificationException($"Materialized database '{database.OutputRelativePath}' lacks its encryption Profile provenance.");
+            }
+
             var outputPath = CombineUnderRoot(sourceRoot, database.OutputRelativePath);
             if (!verifiedFiles.Contains(database.OutputRelativePath.Replace('\\', '/')))
             {

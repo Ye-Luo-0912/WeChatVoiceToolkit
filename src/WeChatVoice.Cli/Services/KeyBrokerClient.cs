@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using WeChatVoice.Core.Models;
@@ -29,6 +30,8 @@ internal sealed class KeyBrokerClient
         {
             throw new FileNotFoundException("The fixed WeChatVoice.KeyBroker.exe was not installed next to the CLI.", brokerPath);
         }
+
+        VerifyBrokerBinary(brokerPath);
 
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         var requestId = Guid.NewGuid().ToString("N");
@@ -71,6 +74,7 @@ internal sealed class KeyBrokerClient
                 operationTimeout.CancelAfter(OperationTimeout);
                 await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
                 using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, leaveOpen: true);
+                using var framedReader = new BoundedLineReader(reader, 16 * 1024);
                 var requestJson = JsonSerializer.Serialize(new
                 {
                     protocolVersion = 1,
@@ -83,7 +87,7 @@ internal sealed class KeyBrokerClient
                 KeyBrokerResult? response = null;
                 while (response is null)
                 {
-                    var responseLine = await BoundedLineReader.ReadAsync(reader, 16 * 1024, operationTimeout.Token).ConfigureAwait(false)
+                    var responseLine = await framedReader.ReadAsync(operationTimeout.Token).ConfigureAwait(false)
                         ?? throw new InvalidDataException("The Key Broker closed without a response.");
                     using var document = JsonDocument.Parse(responseLine);
                     if (document.RootElement.TryGetProperty("stage", out _))
@@ -112,6 +116,28 @@ internal sealed class KeyBrokerClient
                 TryKill(process);
                 throw;
             }
+        }
+    }
+
+    private static void VerifyBrokerBinary(string path)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0
+            || !string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("The Key Broker must be a regular file in the fixed CLI installation directory.");
+        }
+
+        try
+        {
+            using var certificate = X509CertificateLoader.LoadCertificateFromFile(path);
+            if (string.IsNullOrWhiteSpace(certificate.Subject))
+            {
+                throw new InvalidDataException("The Key Broker Authenticode certificate has no Subject.");
+            }
+        }
+        catch (CryptographicException exception)
+        {
+            throw new InvalidDataException("The Key Broker is not Authenticode-signed; refusing to elevate an untrusted binary.", exception);
         }
     }
 

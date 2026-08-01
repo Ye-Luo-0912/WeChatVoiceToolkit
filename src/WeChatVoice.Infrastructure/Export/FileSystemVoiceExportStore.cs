@@ -364,6 +364,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         public Task<ExportArtifact> CommitOriginalAsync(CancellationToken cancellationToken)
             => CommitAsync(isDecoded: false, cancellationToken);
 
+        public Task<ExportArtifact> CommitOriginalAsync(ExportArtifact computedArtifact, CancellationToken cancellationToken)
+            => CommitAsync(isDecoded: false, cancellationToken, computedArtifact);
+
         public ValueTask<Stream> OpenDecodedWriteAsync(CancellationToken cancellationToken)
             => OpenWriteAsync(isDecoded: true, cancellationToken);
 
@@ -433,7 +436,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             return ValueTask.FromResult(stream);
         }
 
-        private async Task<ExportArtifact> CommitAsync(bool isDecoded, CancellationToken cancellationToken)
+        private async Task<ExportArtifact> CommitAsync(
+            bool isDecoded,
+            CancellationToken cancellationToken,
+            ExportArtifact? computedArtifact = null)
         {
             EnsureUsable();
             cancellationToken.ThrowIfCancellationRequested();
@@ -444,7 +450,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
 
             var manifestPath = isDecoded ? DecodedManifestPath : OriginalManifestPath;
-            var artifact = await ComputeArtifactAsync(temporaryPath, manifestPath, cancellationToken).ConfigureAwait(false);
+            var artifact = computedArtifact is null
+                ? await ComputeArtifactAsync(temporaryPath, manifestPath, cancellationToken).ConfigureAwait(false)
+                : ValidateComputedArtifact(temporaryPath, computedArtifact, manifestPath);
             var expectedHash = isDecoded ? Record.DecodedSha256 : Record.PayloadSha256;
             var expectedLength = isDecoded ? Record.DecodedByteLength : Record.PayloadByteLength;
             if ((expectedHash is not null && !string.Equals(expectedHash, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
@@ -483,6 +491,22 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
 
             return artifact;
+        }
+
+        private static ExportArtifact ValidateComputedArtifact(string path, ExportArtifact computedArtifact, string relativePath)
+        {
+            var length = new FileInfo(path).Length;
+            if (length != computedArtifact.ByteLength)
+            {
+                throw new SourceContentMismatchException(
+                    "original",
+                    computedArtifact.ByteLength,
+                    length,
+                    computedArtifact.Sha256,
+                    "length-mismatch");
+            }
+
+            return new ExportArtifact(relativePath, computedArtifact.ByteLength, computedArtifact.Sha256);
         }
 
         private void InvalidateDecodedArtifact()

@@ -44,7 +44,8 @@ internal static class BrokerHost
         string? line;
         try
         {
-            line = await BoundedLineReader.ReadAsync(input, BrokerProtocol.MaximumRequestLength, cancellationToken).ConfigureAwait(false);
+            using var framedInput = new BoundedLineReader(input, BrokerProtocol.MaximumRequestLength);
+            line = await framedInput.ReadAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidDataException)
         {
@@ -76,6 +77,16 @@ internal static class BrokerHost
                     new BrokerError("profile_unavailable", "No materialization output was supplied to the one-shot Broker.")));
                 return 3;
             }
+
+            var snapshotRoot = Path.GetDirectoryName(Path.GetFullPath(snapshotManifestPath)) is { } metadata
+                ? Directory.GetParent(metadata)?.FullName
+                : null;
+            if (snapshotRoot is null)
+            {
+                throw new InvalidDataException("The snapshot root could not be determined.");
+            }
+
+            PathOverlapGuard.EnsureDisjoint(snapshotRoot, outputRoot, Path.GetFullPath(workspaceOutput));
 
             await using var stagedSnapshot = await BrokerSnapshotStager.StageAsync(
                 verifiedSnapshot,

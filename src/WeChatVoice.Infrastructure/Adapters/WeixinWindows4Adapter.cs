@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,29 +16,12 @@ namespace WeChatVoice.Infrastructure.Adapters;
 public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
 {
     internal const string AdapterId = "weixin-windows-4";
-    internal const string AdapterVersion = "4.1.11.55-schema-v1";
-
-    private static readonly string[] ContactColumns =
-    [
-        "id", "username", "local_type", "alias", "encrypt_username", "flag", "delete_flag", "verify_flag",
-        "remark", "remark_quan_pin", "remark_pin_yin_initial", "nick_name", "pin_yin_initial", "quan_pin",
-        "big_head_url", "small_head_url", "head_img_md5", "chat_room_notify", "is_in_chat_room", "description",
-        "extra_buffer", "chat_room_type",
-    ];
-
-    private static readonly string[] MessageNameColumns = ["user_name", "is_session"];
-    private static readonly string[] MessageColumns =
-    [
-        "local_id", "server_id", "local_type", "sort_seq", "real_sender_id", "create_time", "status",
-        "upload_status", "download_status", "server_seq", "origin_source", "source", "message_content",
-        "compress_content", "packed_info_data", "WCDB_CT_message_content", "WCDB_CT_source",
-    ];
-
-    private static readonly string[] MediaNameColumns = ["user_name"];
-    private static readonly string[] MediaColumns =
-    [
-        "chat_name_id", "create_time", "local_id", "svr_id", "voice_data", "data_index",
-    ];
+    internal const string AdapterVersion = Weixin41155SchemaSignature.Id;
+    private const string MaterializationBackendId = "sqlcipher-e_sqlcipher-worker";
+    private const string KeyExtractionProfileId = "weixin-windows-4.1.11.55-wcdb-protected-spec-v2";
+    private const string ProcessVersion = "4.1.11.55";
+    private const string ProcessImageSha256 = "ac599744a7ce7b65640ebe18c939c0d4e4a06cd039d89cddee7f1e9afc56875d";
+    private const string WcdbModuleSha256 = "ab925b9428239def44b252d970c337034d75e66b27eb5529633dc10669fc796a";
 
     public string Id => AdapterId;
 
@@ -83,6 +67,17 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
         if (string.IsNullOrWhiteSpace(dataSet.AccountId))
         {
             throw new InvalidDataException("The verified local workspace does not contain a stable Weixin account ID.");
+        }
+
+        var provenance = workspace.Workspace.Provenance;
+        if (provenance is null
+            || !string.Equals(provenance.KeyExtractionProfileId, KeyExtractionProfileId, StringComparison.Ordinal)
+            || !string.Equals(provenance.ProcessVersion, ProcessVersion, StringComparison.Ordinal)
+            || !string.Equals(provenance.ProcessImageSha256, ProcessImageSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(provenance.WcdbModuleSha256, WcdbModuleSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(provenance.BackendId, MaterializationBackendId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The verified workspace lacks complete materialization provenance for the exact Weixin adapter.");
         }
 
         WindowsSqliteProvider.EnsureInitialized();
@@ -157,28 +152,18 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
     }
 
     private static bool IsContactArtifact(DatabaseArtifact artifact)
-        => RoleEquals(artifact, "contact") && HasTable(artifact.Schema, "contact", ContactColumns);
+        => RoleEquals(artifact, "contact") && Weixin41155SchemaSignature.MatchesContact(artifact.Schema);
 
     private static bool IsMediaArtifact(DatabaseArtifact artifact)
         => RoleEquals(artifact, "media")
-            && HasTable(artifact.Schema, "Name2Id", MediaNameColumns)
-            && HasTable(artifact.Schema, "VoiceInfo", MediaColumns);
+            && Weixin41155SchemaSignature.MatchesMediaName(artifact.Schema)
+            && Weixin41155SchemaSignature.MatchesMedia(artifact.Schema);
 
     private static bool IsMessageArtifact(DatabaseArtifact artifact)
         => RoleEquals(artifact, "message")
-            && HasTable(artifact.Schema, "Name2Id", MessageNameColumns)
-            && artifact.Schema.Objects.Any(static schemaObject => IsMessageTable(schemaObject) && HasColumns(schemaObject, MessageColumns));
-
-    internal static bool HasTable(SchemaSnapshot schema, string tableName, IReadOnlyCollection<string> columns)
-        => schema.Objects.Any(schemaObject => schemaObject.Kind == SchemaObjectKind.Table
-            && string.Equals(schemaObject.Name, tableName, StringComparison.OrdinalIgnoreCase)
-            && HasColumns(schemaObject, columns));
-
-    private static bool HasColumns(SchemaObjectSnapshot schemaObject, IReadOnlyCollection<string> columns)
-    {
-        var actual = schemaObject.Columns.Select(static column => column.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return columns.All(actual.Contains);
-    }
+            && Weixin41155SchemaSignature.MatchesMessageName(artifact.Schema)
+            && artifact.Schema.Objects.Any(schemaObject => IsMessageTable(schemaObject)
+                && Weixin41155SchemaSignature.MatchesMessageTable(artifact.Schema, schemaObject.Name));
 
     internal static bool IsMessageTable(SchemaObjectSnapshot schemaObject)
     {
@@ -190,7 +175,9 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
             return false;
         }
 
-        return schemaObject.Name.AsSpan(prefix.Length).IndexOfAnyExcept("0123456789abcdef") < 0;
+        var normalized = Weixin41155SchemaSignature.NormalizeMessageTableName(schemaObject.Name);
+        return normalized.Length == prefix.Length + 32
+            && normalized.AsSpan(prefix.Length).IndexOfAnyExcept("0123456789abcdef") < 0;
     }
 
     private static bool RoleEquals(DatabaseArtifact artifact, string role)
@@ -223,7 +210,8 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             dataSet.AccountId,
             dataSet.Databases.Select(static artifact => artifact.DatabaseGroupFingerprint ?? artifact.MainSha256).ToArray(),
             workspace.Workspace.Provenance?.SourceSnapshotId ?? dataSet.SnapshotId,
-            WeixinWindows4Adapter.AdapterId);
+            WeixinWindows4Adapter.AdapterId,
+            workspace.Workspace.Provenance);
     }
 
     public VoiceCatalogContext Context { get; }
@@ -236,7 +224,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         ArgumentNullException.ThrowIfNull(query);
         await using var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(_contact, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        var where = new List<string> { "username IS NOT NULL", "username <> ''" };
+        var where = new List<string> { "username IS NOT NULL", "username <> ''", "username NOT LIKE '%@chatroom'" };
         if (query.Username is not null)
         {
             where.Add("username = $username");
@@ -312,7 +300,17 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         }
 
         var selected = ordered.ToArray();
-        var payloads = await ReadMediaRowsAsync(username, cancellationToken).ConfigureAwait(false);
+        if (selected.Where(static message => message.OriginSource == 2)
+            .Select(message => message.SpeakerId ?? username)
+            .Distinct(StringComparer.Ordinal)
+            .Any(speaker => !string.Equals(speaker, username, StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("A one-to-one incoming export resolved more than one speaker; group-chat association is refused.");
+        }
+        var requestedKeys = selected
+            .Select(static message => new AssociationKey(message.LocalId, message.ServerId, message.CreateTime))
+            .ToHashSet();
+        var payloads = await ReadMediaRowsAsync(username, requestedKeys, query.DeepScan, cancellationToken).ConfigureAwait(false);
         foreach (var message in selected)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -331,7 +329,9 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
                 username,
                 DateTimeOffset.FromUnixTimeSeconds(message.CreateTime),
                 direction,
-                payload is null ? null : new VoicePayloadLocator("media", _media.ShardNumber, payload.RowId.ToString(CultureInfo.InvariantCulture)),
+                payload is { State: VoicePayloadState.Linked }
+                    ? new VoicePayloadLocator("media", _media.ShardNumber, payload.RowId.ToString(CultureInfo.InvariantCulture))
+                    : null,
                 message.Artifact.DatabasePath,
                 message.ShardNumber,
                 message.ShardNumber?.ToString(CultureInfo.InvariantCulture) ?? message.Artifact.DatabasePath,
@@ -341,7 +341,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
                 messagePrimaryKey,
                 payload?.Sha256,
                 payload?.ByteLength,
-                MediaLinked: payload is not null,
+                MediaLinked: payload?.State == VoicePayloadState.Linked,
                 SpeakerId: direction == VoiceDirection.Outgoing ? Context.AccountId : message.SpeakerId ?? username,
                 DataSetId: Context.DatasetId,
                 AdapterVersion: Context.AdapterVersion,
@@ -350,7 +350,10 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
                 AccountStableId: Context.AccountId,
                 ConversationStableId: username,
                 MessagePrimaryKey: messagePrimaryKey,
-                MediaPrimaryKey: payload is null ? null : $"media:{_media.ShardNumber}:{payload.RowId}");
+                MediaPrimaryKey: payload is null or { State: VoicePayloadState.Ambiguous }
+                    ? null
+                    : $"media:{username}:{message.LocalId}:{message.ServerId}:{message.CreateTime}",
+                PayloadState: payload?.State ?? VoicePayloadState.Missing);
         }
     }
 
@@ -408,7 +411,10 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         CancellationToken cancellationToken)
     {
         var tableName = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(username))).ToLowerInvariant();
-        var schemaTable = artifact.Schema.Objects.SingleOrDefault(schemaObject => string.Equals(schemaObject.Name, tableName, StringComparison.Ordinal));
+        var schemaTable = artifact.Schema.Objects.SingleOrDefault(schemaObject => string.Equals(
+            Weixin41155SchemaSignature.NormalizeMessageTableName(schemaObject.Name),
+            tableName,
+            StringComparison.Ordinal));
         if (schemaTable is null || !WeixinWindows4Adapter.IsMessageTable(schemaTable))
         {
             return;
@@ -436,10 +442,17 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             command.Parameters.AddWithValue("$to", query.ToUtc.Value.ToUnixTimeSeconds());
         }
 
+        if (query.MaximumResults is not null)
+        {
+            command.Parameters.AddWithValue("$limit", query.MaximumResults.Value);
+        }
+
         command.CommandText = $"""
             SELECT local_id, server_id, create_time, real_sender_id, origin_source
             FROM "{tableName}"
-            WHERE {string.Join(" AND ", where)};
+            WHERE {string.Join(" AND ", where)}
+            ORDER BY create_time, local_id, server_id
+            {(query.MaximumResults is null ? string.Empty : "LIMIT $limit")};
             """;
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -459,36 +472,120 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
 
     private async Task<IReadOnlyDictionary<AssociationKey, MediaRow>> ReadMediaRowsAsync(
         string username,
+        IReadOnlyCollection<AssociationKey> requestedKeys,
+        bool deepScan,
         CancellationToken cancellationToken)
     {
         var result = new Dictionary<AssociationKey, MediaRow>();
-        await using var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(_media, cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT v.rowid, v.local_id, v.svr_id, v.create_time, length(v.voice_data), v.voice_data
-            FROM VoiceInfo AS v
-            INNER JOIN Name2Id AS n ON n.rowid = v.chat_name_id
-            WHERE n.user_name = $username;
-            """;
-        command.Parameters.AddWithValue("$username", username);
-        await using var reader = await command.ExecuteReaderAsync(System.Data.CommandBehavior.SequentialAccess, cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        if (requestedKeys.Count == 0)
         {
-            var key = new AssociationKey(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
-            var rowId = reader.GetInt64(0);
-            if (reader.IsDBNull(4) || reader.IsDBNull(5))
+            return result;
+        }
+
+        await using var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(_media, cancellationToken).ConfigureAwait(false);
+        foreach (var batch in requestedKeys.Chunk(128))
+        {
+            await using var command = connection.CreateCommand();
+            var values = new StringBuilder();
+            for (var index = 0; index < batch.Length; index++)
             {
-                AddMediaRow(result, key, new MediaRow(rowId, 0, EmptyPayloadSha256));
-                continue;
+                if (index > 0)
+                {
+                    values.Append(',');
+                }
+
+                values.Append($"($local{index}, $server{index}, $time{index})");
+                command.Parameters.AddWithValue($"$local{index}", batch[index].LocalId);
+                command.Parameters.AddWithValue($"$server{index}", batch[index].ServerId);
+                command.Parameters.AddWithValue($"$time{index}", batch[index].CreateTime);
             }
 
-            var length = reader.GetInt64(4);
-            await using var stream = reader.GetStream(5);
-            var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
-            AddMediaRow(result, key, new MediaRow(rowId, length, sha256));
+            command.CommandText = $"""
+                WITH requested(local_id, server_id, create_time) AS (VALUES {values})
+                SELECT v.rowid, v.local_id, v.svr_id, v.create_time, length(v.voice_data), v.voice_data
+                FROM VoiceInfo AS v
+                INNER JOIN Name2Id AS n ON n.rowid = v.chat_name_id
+                INNER JOIN requested AS r
+                    ON r.local_id = v.local_id
+                   AND r.server_id = v.svr_id
+                   AND r.create_time = v.create_time
+                WHERE n.user_name = $username;
+                """;
+            command.Parameters.AddWithValue("$username", username);
+            await using var reader = await command.ExecuteReaderAsync(System.Data.CommandBehavior.SequentialAccess, cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var key = new AssociationKey(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
+                var payload = await ReadMediaPayloadAsync(reader, deepScan, cancellationToken).ConfigureAwait(false);
+                AddMediaRow(result, key, payload);
+            }
         }
 
         return result;
+    }
+
+    private static async Task<MediaRow> ReadMediaPayloadAsync(
+        SqliteDataReader reader,
+        bool deepScan,
+        CancellationToken cancellationToken)
+    {
+        var rowId = reader.GetInt64(0);
+        if (reader.IsDBNull(4) || reader.IsDBNull(5) || reader.GetInt64(4) == 0)
+        {
+            return new MediaRow(rowId, 0, null, VoicePayloadState.Empty);
+        }
+
+        var length = reader.GetInt64(4);
+        await using var stream = reader.GetStream(5);
+        var prefix = new byte[SilkHeader.MaxLength];
+        var prefixLength = 0;
+        while (prefixLength < prefix.Length)
+        {
+            var read = await stream.ReadAsync(prefix.AsMemory(prefixLength), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            prefixLength += read;
+        }
+
+        if (!SilkHeader.IsValid(prefix.AsSpan(0, prefixLength)))
+        {
+            return new MediaRow(rowId, length, null, VoicePayloadState.InvalidHeader);
+        }
+
+        if (!deepScan)
+        {
+            return new MediaRow(rowId, length, null, VoicePayloadState.Linked);
+        }
+
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(prefix.AsSpan(0, prefixLength));
+        var buffer = ArrayPool<byte>.Shared.Rent(81_920);
+        try
+        {
+            while (true)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                hash.AppendData(buffer.AsSpan(0, read));
+            }
+
+            return new MediaRow(
+                rowId,
+                length,
+                Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(),
+                VoicePayloadState.Linked);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
     }
 
     private static void AddMediaRow(
@@ -498,7 +595,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
     {
         if (!rows.TryAdd(key, row))
         {
-            throw new InvalidDataException("The media database contains more than one payload for the same verified association key.");
+            rows[key] = new MediaRow(0, 0, null, VoicePayloadState.Ambiguous);
         }
     }
 
@@ -529,6 +626,11 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             throw new ArgumentException("Voice queries require one exact, consistently bound ContactUsername, ContactId, and ConversationId.", nameof(query));
         }
 
+        if (query.ContactUsername.EndsWith("@chatroom", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Group and @chatroom contacts are not supported by the first exact adapter.");
+        }
+
         return query.ContactUsername;
     }
 
@@ -553,11 +655,21 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         long OriginSource,
         string? SpeakerId);
 
-    private sealed record MediaRow(long RowId, long ByteLength, string Sha256);
+    private sealed record MediaRow(long RowId, long ByteLength, string? Sha256, VoicePayloadState State);
 
     private readonly record struct AssociationKey(long LocalId, long ServerId, long CreateTime);
 
-    private const string EmptyPayloadSha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    private static class SilkHeader
+    {
+        internal const int MaxLength = 10;
+        private static readonly byte[] Raw = "#!SILK_V3"u8.ToArray();
+
+        internal static bool IsValid(ReadOnlySpan<byte> prefix)
+            => prefix.StartsWith(Raw)
+                || prefix.Length >= Raw.Length + 1
+                    && prefix[0] == 0x02
+                    && prefix[1..].StartsWith(Raw);
+    }
 }
 
 internal sealed class OwnedPayloadStream : Stream

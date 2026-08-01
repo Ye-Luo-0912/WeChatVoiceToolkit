@@ -68,7 +68,12 @@ public sealed class LocalWorkspaceCreator
             materialization.Result.BackendId,
             materialization.Result.BackendVersion,
             materialization.Result.BackendSha256,
-            manifestHash);
+            manifestHash,
+            materialization.Result.KeyExtractionProfileId,
+            materialization.Result.ProcessVersion,
+            materialization.Result.ProcessImageSha256,
+            materialization.Result.WcdbModuleSha256,
+            materialization.Result.AccountSidFingerprint);
         var dataSet = string.IsNullOrWhiteSpace(accountId)
             ? probe.DataSet
             : new WeChatDataSet(

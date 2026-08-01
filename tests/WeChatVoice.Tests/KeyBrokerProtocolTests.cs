@@ -109,7 +109,7 @@ public sealed class KeyBrokerProtocolTests
             token,
             manifestPath,
             temporary.GetPath("materialized"),
-            temporary.GetPath("materialized", ".wechatvoice", "local-workspace.json"),
+            temporary.GetPath("workspace", "local-workspace.json"),
             timeout.Token);
 
         await using var client = new NamedPipeClientStream(

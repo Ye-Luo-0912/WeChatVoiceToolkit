@@ -16,7 +16,8 @@ public sealed record VoiceCatalogContext
         string? AccountId,
         IReadOnlyList<string> DatabaseFingerprints,
         string? SnapshotId = null,
-        string? AdapterFamily = null)
+        string? AdapterFamily = null,
+        MaterializationProvenance? MaterializationProvenance = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(DatasetId);
         ArgumentException.ThrowIfNullOrWhiteSpace(AdapterId);
@@ -39,6 +40,7 @@ public sealed record VoiceCatalogContext
         this.AccountId = string.IsNullOrWhiteSpace(AccountId) ? null : AccountId;
         this.DatabaseFingerprints = new ReadOnlyCollection<string>(fingerprints);
         this.SnapshotId = string.IsNullOrWhiteSpace(SnapshotId) ? null : SnapshotId;
+        this.MaterializationProvenance = MaterializationProvenance;
     }
 
     public string DatasetId { get; }
@@ -54,6 +56,8 @@ public sealed record VoiceCatalogContext
     public string? AccountId { get; }
 
     public IReadOnlyList<string> DatabaseFingerprints { get; }
+
+    public MaterializationProvenance? MaterializationProvenance { get; }
 }
 
 /// <summary>

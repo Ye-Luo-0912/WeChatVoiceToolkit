@@ -13,18 +13,19 @@ public sealed class VoiceScanServiceTests
         var records = new[]
         {
             new VoiceRecord("one", "conversation", DateTimeOffset.UtcNow.AddMinutes(-2), VoiceDirection.Incoming, new VoicePayloadLocator("media", 0, "one"), ShardId: "0", DurationMs: 1200, PayloadSha256: "same", PayloadByteLength: 4, AdapterId: "adapter", AccountId: "account"),
-            new VoiceRecord("two", "conversation", DateTimeOffset.UtcNow.AddMinutes(-1), VoiceDirection.Incoming, null, ShardId: "1", DurationMs: 800, PayloadSha256: "same", PayloadByteLength: 0, MediaLinked: false, AdapterId: "adapter", AccountId: "account"),
+            new VoiceRecord("two", "conversation", DateTimeOffset.UtcNow.AddMinutes(-1), VoiceDirection.Incoming, null, ShardId: "1", DurationMs: 800, MediaLinked: false, AdapterId: "adapter", AccountId: "account"),
+            new VoiceRecord("three", "conversation", DateTimeOffset.UtcNow, VoiceDirection.Incoming, null, ShardId: "1", PayloadByteLength: 0, MediaLinked: false, PayloadState: VoicePayloadState.Empty, AdapterId: "adapter", AccountId: "account"),
         };
 
         var report = await new VoiceScanService(new FakeCatalog(records)).ScanAsync(new VoiceQuery(Direction: VoiceDirection.Incoming));
 
-        Assert.Equal(2, report.MatchedVoiceCount);
+        Assert.Equal(3, report.MatchedVoiceCount);
         Assert.Equal(2000, report.TotalDurationMs);
         Assert.Equal(1, report.UnassociatedMediaCount);
         Assert.Equal(1, report.EmptyBlobCount);
-        Assert.Equal(1, report.SuspectedDuplicateCount);
+        Assert.Equal(0, report.SuspectedDuplicateCount);
         Assert.Equal(1, report.ShardCounts["0"]);
-        Assert.Equal(1, report.ShardCounts["1"]);
+        Assert.Equal(2, report.ShardCounts["1"]);
     }
 
     private sealed class FakeCatalog(IReadOnlyList<VoiceRecord> records) : IVoiceCatalog

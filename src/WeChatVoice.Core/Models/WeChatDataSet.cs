@@ -260,7 +260,8 @@ public sealed record VoiceRecord
         string? MessagePrimaryKey = null,
         string? MediaPrimaryKey = null,
         string? DecodedSha256 = null,
-        long? DecodedByteLength = null)
+        long? DecodedByteLength = null,
+        VoicePayloadState? PayloadState = null)
     {
         if (string.IsNullOrWhiteSpace(MessageId))
         {
@@ -272,12 +273,13 @@ public sealed record VoiceRecord
             throw new ArgumentException("A conversation identifier is required.", nameof(ConversationId));
         }
 
-        if (MediaLinked && PayloadLocator is null)
+        var resolvedPayloadState = PayloadState ?? (MediaLinked ? VoicePayloadState.Linked : VoicePayloadState.Missing);
+        if (resolvedPayloadState == VoicePayloadState.Linked && PayloadLocator is null)
         {
             throw new ArgumentException("A linked voice record must provide a payload locator.", nameof(PayloadLocator));
         }
 
-        if (!MediaLinked && PayloadLocator is not null)
+        if (resolvedPayloadState != VoicePayloadState.Linked && PayloadLocator is not null)
         {
             throw new ArgumentException("An unassociated voice record must not provide a payload locator.", nameof(PayloadLocator));
         }
@@ -297,7 +299,8 @@ public sealed record VoiceRecord
         this.PayloadSha256 = PayloadSha256;
         this.PayloadByteLength = PayloadByteLength;
         this.DurationMs = DurationMs;
-        this.MediaLinked = MediaLinked;
+        this.PayloadState = resolvedPayloadState;
+        this.MediaLinked = resolvedPayloadState == VoicePayloadState.Linked;
         this.SpeakerId = SpeakerId;
         this.DataSetId = string.IsNullOrWhiteSpace(DataSetId) ? null : DataSetId;
         this.AdapterVersion = string.IsNullOrWhiteSpace(AdapterVersion) ? null : AdapterVersion;
@@ -351,6 +354,8 @@ public sealed record VoiceRecord
     public long? DurationMs { get; }
 
     public bool MediaLinked { get; }
+
+    public VoicePayloadState PayloadState { get; }
 
     public string? SpeakerId { get; }
 

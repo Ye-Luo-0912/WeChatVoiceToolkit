@@ -18,12 +18,15 @@ public sealed class VoiceScanService
         ArgumentNullException.ThrowIfNull(query);
         var shardCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var payloadHashes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var payloadStates = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var count = 0;
         long duration = 0;
         DateTimeOffset? earliest = null;
         DateTimeOffset? latest = null;
         var unassociated = 0;
         var empty = 0;
+        var invalidHeader = 0;
+        var ambiguous = 0;
 
         await foreach (var record in _catalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
         {
@@ -37,14 +40,26 @@ public sealed class VoiceScanService
             latest = latest is null || record.OccurredAtUtc > latest ? record.OccurredAtUtc : latest;
             var shard = record.ShardId ?? record.SourceDatabase ?? "unknown";
             shardCounts[shard] = shardCounts.TryGetValue(shard, out var shardCount) ? shardCount + 1 : 1;
-            if (!record.MediaLinked)
+            var stateName = record.PayloadState.ToString();
+            payloadStates[stateName] = payloadStates.TryGetValue(stateName, out var stateCount) ? stateCount + 1 : 1;
+            if (record.PayloadState == VoicePayloadState.Missing)
             {
                 unassociated++;
             }
 
-            if (record.PayloadByteLength == 0)
+            if (record.PayloadState == VoicePayloadState.Empty)
             {
                 empty++;
+            }
+
+            if (record.PayloadState == VoicePayloadState.InvalidHeader)
+            {
+                invalidHeader++;
+            }
+
+            if (record.PayloadState == VoicePayloadState.Ambiguous)
+            {
+                ambiguous++;
             }
 
             if (!string.IsNullOrWhiteSpace(record.PayloadSha256))
@@ -54,6 +69,18 @@ public sealed class VoiceScanService
         }
 
         var duplicates = payloadHashes.Values.Where(static value => value > 1).Sum(static value => value - 1);
-        return new VoiceScanReport(count, duration, earliest, latest, shardCounts, unassociated, empty, duplicates);
+        return new VoiceScanReport(
+            count,
+            duration,
+            earliest,
+            latest,
+            shardCounts,
+            unassociated,
+            empty,
+            duplicates,
+            invalidHeader,
+            ambiguous,
+            payloadStates,
+            query.DeepScan);
     }
 }

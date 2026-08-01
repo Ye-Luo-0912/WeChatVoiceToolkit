@@ -80,7 +80,11 @@ public sealed class VerifiedKeyAcquisition : IDisposable
         string SnapshotId,
         string ProfileId,
         IReadOnlyList<DatabaseKeyBinding> Bindings,
-        DateTimeOffset AcquiredAtUtc)
+        DateTimeOffset AcquiredAtUtc,
+        string? ProcessVersion = null,
+        string? ProcessImageSha256 = null,
+        string? WcdbModuleSha256 = null,
+        string? AccountSidFingerprint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(AcquisitionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(SnapshotId);
@@ -91,6 +95,10 @@ public sealed class VerifiedKeyAcquisition : IDisposable
         this.ProfileId = ProfileId;
         this.Bindings = Bindings.ToArray();
         this.AcquiredAtUtc = AcquiredAtUtc.ToUniversalTime();
+        this.ProcessVersion = ProcessVersion;
+        this.ProcessImageSha256 = ProcessImageSha256;
+        this.WcdbModuleSha256 = WcdbModuleSha256;
+        this.AccountSidFingerprint = AccountSidFingerprint;
         try
         {
             ValidateBindings(this.Bindings);
@@ -115,6 +123,14 @@ public sealed class VerifiedKeyAcquisition : IDisposable
     public IReadOnlyList<DatabaseKeyBinding> Bindings { get; }
 
     public DateTimeOffset AcquiredAtUtc { get; }
+
+    public string? ProcessVersion { get; }
+
+    public string? ProcessImageSha256 { get; }
+
+    public string? WcdbModuleSha256 { get; }
+
+    public string? AccountSidFingerprint { get; }
 
     public void Dispose()
     {

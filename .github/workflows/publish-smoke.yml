@@ -1,0 +1,22 @@
+name: publish-smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish-smoke:
+    runs-on: windows-latest
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore locked
+        run: dotnet restore WeChatVoice.slnx --locked-mode
+      - name: Publish self-contained win-x64
+        shell: pwsh
+        run: ./scripts/publish-smoke.ps1

@@ -72,7 +72,8 @@ public sealed record MaterializedDatabase(
     long ByteLength,
     string SchemaFingerprint,
     MaterializationDatabaseStatus Status = MaterializationDatabaseStatus.Materialized,
-    string? Error = null);
+    string? Error = null,
+    string? EncryptionProfileId = null);
 
 public sealed record MaterializationFile(
     string OutputRelativePath,
@@ -86,7 +87,12 @@ public sealed record MaterializationManifest(
     string BackendVersion,
     string BackendSha256,
     IReadOnlyList<MaterializedDatabase> Databases,
-    IReadOnlyList<MaterializationFile> Files);
+    IReadOnlyList<MaterializationFile> Files,
+    string? KeyExtractionProfileId = null,
+    string? ProcessVersion = null,
+    string? ProcessImageSha256 = null,
+    string? WcdbModuleSha256 = null,
+    string? AccountSidFingerprint = null);
 
 /// <summary>
 /// Fixed output contract emitted by a materialization backend. The backend,
@@ -118,7 +124,12 @@ public sealed record MaterializationResult
         string OutputRoot,
         IReadOnlyList<MaterializedDatabase> Databases,
         IReadOnlyList<MaterializationFile> Files,
-        string ManifestPath)
+        string ManifestPath,
+        string? KeyExtractionProfileId = null,
+        string? ProcessVersion = null,
+        string? ProcessImageSha256 = null,
+        string? WcdbModuleSha256 = null,
+        string? AccountSidFingerprint = null)
     {
         if (string.IsNullOrWhiteSpace(WorkspaceId))
         {
@@ -150,6 +161,11 @@ public sealed record MaterializationResult
         this.Databases = new ReadOnlyCollection<MaterializedDatabase>(Databases.ToArray());
         this.Files = new ReadOnlyCollection<MaterializationFile>(Files.ToArray());
         this.ManifestPath = Path.GetFullPath(ManifestPath);
+        this.KeyExtractionProfileId = KeyExtractionProfileId;
+        this.ProcessVersion = ProcessVersion;
+        this.ProcessImageSha256 = ProcessImageSha256;
+        this.WcdbModuleSha256 = WcdbModuleSha256;
+        this.AccountSidFingerprint = AccountSidFingerprint;
     }
 
     public string WorkspaceId { get; }
@@ -169,4 +185,14 @@ public sealed record MaterializationResult
     public IReadOnlyList<MaterializationFile> Files { get; }
 
     public string ManifestPath { get; }
+
+    public string? KeyExtractionProfileId { get; }
+
+    public string? ProcessVersion { get; }
+
+    public string? ProcessImageSha256 { get; }
+
+    public string? WcdbModuleSha256 { get; }
+
+    public string? AccountSidFingerprint { get; }
 }

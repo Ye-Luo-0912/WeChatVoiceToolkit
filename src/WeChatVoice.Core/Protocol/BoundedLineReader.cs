@@ -4,16 +4,20 @@ using System.Text;
 namespace WeChatVoice.Core.Protocol;
 
 /// <summary>
-/// Reads one newline-delimited protocol message without ever buffering more
-/// than the configured maximum. It is shared by the unprivileged client and
-/// the elevated broker so both sides enforce the same framing contract.
+/// Stateful bounded newline framing shared by the Broker and its CLI client.
+/// A single underlying read may contain multiple messages; unread characters
+/// remain in the instance for the next call.
 /// </summary>
-public static class BoundedLineReader
+public sealed class BoundedLineReader : IDisposable
 {
-    public static async ValueTask<string?> ReadAsync(
-        TextReader reader,
-        int maximumLength,
-        CancellationToken cancellationToken = default)
+    private readonly TextReader _reader;
+    private readonly int _maximumLength;
+    private readonly char[] _buffer;
+    private int _offset;
+    private int _available;
+    private bool _disposed;
+
+    public BoundedLineReader(TextReader reader, int maximumLength)
     {
         ArgumentNullException.ThrowIfNull(reader);
         if (maximumLength <= 0)
@@ -21,15 +25,23 @@ public static class BoundedLineReader
             throw new ArgumentOutOfRangeException(nameof(maximumLength));
         }
 
-        var buffer = ArrayPool<char>.Shared.Rent(Math.Min(4096, maximumLength + 1));
-        var builder = new StringBuilder(Math.Min(maximumLength, 4096));
-        try
+        _reader = reader;
+        _maximumLength = maximumLength;
+        _buffer = ArrayPool<char>.Shared.Rent(Math.Min(4096, maximumLength + 1));
+    }
+
+    public async ValueTask<string?> ReadAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var builder = new StringBuilder(Math.Min(_maximumLength, 4096));
+        while (true)
         {
-            while (true)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_offset >= _available)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
-                if (read == 0)
+                _offset = 0;
+                _available = await _reader.ReadAsync(_buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+                if (_available == 0)
                 {
                     if (builder.Length == 0)
                     {
@@ -38,20 +50,12 @@ public static class BoundedLineReader
 
                     throw new InvalidDataException("The protocol line ended before a newline delimiter.");
                 }
+            }
 
-                var newline = buffer.AsSpan(0, read).IndexOf('\n');
-                var count = newline >= 0 ? newline : read;
-                if (builder.Length + count > maximumLength)
-                {
-                    throw new InvalidDataException("The protocol line exceeded its fixed limit.");
-                }
-
-                if (count > 0)
-                {
-                    builder.Append(buffer, 0, count);
-                }
-
-                if (newline >= 0)
+            while (_offset < _available)
+            {
+                var character = _buffer[_offset++];
+                if (character == '\n')
                 {
                     if (builder.Length > 0 && builder[^1] == '\r')
                     {
@@ -60,11 +64,25 @@ public static class BoundedLineReader
 
                     return builder.ToString();
                 }
+
+                if (builder.Length >= _maximumLength)
+                {
+                    throw new InvalidDataException("The protocol line exceeded its fixed limit.");
+                }
+
+                builder.Append(character);
             }
         }
-        finally
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
         {
-            ArrayPool<char>.Shared.Return(buffer, clearArray: true);
+            return;
         }
+
+        _disposed = true;
+        ArrayPool<char>.Shared.Return(_buffer, clearArray: true);
     }
 }

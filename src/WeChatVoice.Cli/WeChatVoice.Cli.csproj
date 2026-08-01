@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseAppHost>true</UseAppHost>
+    <KeyBrokerOutputPath>..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\</KeyBrokerOutputPath>
+    <KeyBrokerOutputPath Condition="'$(RuntimeIdentifier)' != ''">..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\$(RuntimeIdentifier)\</KeyBrokerOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,16 +24,16 @@
     <ProjectReference Include="..\WeChatVoice.Windows\WeChatVoice.Windows.csproj" />
   </ItemGroup>
 
-  <Target Name="BuildKeyBroker" BeforeTargets="CopyKeyBroker">
-    <MSBuild Projects="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" Targets="Build" Properties="Configuration=$(Configuration)" />
+  <Target Name="BuildKeyBroker" BeforeTargets="CopyKeyBroker" Condition="'$(RuntimeIdentifier)' == ''">
+    <MSBuild Projects="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" Targets="Build" Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
   </Target>
 
-  <Target Name="CopyKeyBroker" AfterTargets="Build">
+  <Target Name="CopyKeyBroker" AfterTargets="Build" Condition="'$(RuntimeIdentifier)' == ''">
     <ItemGroup>
-      <KeyBrokerFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\WeChatVoice.KeyBroker*" />
-      <SqlCipherWorkerFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\WeChatVoice.SqlCipherWorker*" />
-      <SqlCipherProviderFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\SQLitePCLRaw.provider.e_sqlcipher.dll" />
-      <SqlCipherNativeFiles Include="..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\runtimes\win-x64\native\e_sqlcipher.dll" />
+      <KeyBrokerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.KeyBroker*" />
+      <SqlCipherWorkerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.SqlCipherWorker*" />
+      <SqlCipherProviderFiles Include="$(KeyBrokerOutputPath)SQLitePCLRaw.provider.e_sqlcipher.dll" />
+      <SqlCipherNativeFiles Include="$(KeyBrokerOutputPath)runtimes\win-x64\native\e_sqlcipher.dll" />
     </ItemGroup>
     <Copy SourceFiles="@(KeyBrokerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SqlCipherWorkerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />

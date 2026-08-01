@@ -12,7 +12,8 @@ public sealed record VoiceQuery
         DateTimeOffset? ToUtc = null,
         int? MaximumResults = null,
         string? ContactUsername = null,
-        string? ContactId = null)
+        string? ContactId = null,
+        bool DeepScan = false)
     {
         if (MaximumResults is <= 0)
         {
@@ -33,6 +34,7 @@ public sealed record VoiceQuery
         this.MaximumResults = MaximumResults;
         this.ContactUsername = string.IsNullOrWhiteSpace(ContactUsername) ? null : ContactUsername;
         this.ContactId = string.IsNullOrWhiteSpace(ContactId) ? null : ContactId;
+        this.DeepScan = DeepScan;
     }
 
     public string? ConversationId { get; }
@@ -52,4 +54,10 @@ public sealed record VoiceQuery
     /// this over display names or a possibly changed username.
     /// </summary>
     public string? ContactId { get; }
+
+    /// <summary>
+    /// When true, the catalog may read and hash complete payload BLOBs. The
+    /// default scan path reads only a bounded SILK header prefix.
+    /// </summary>
+    public bool DeepScan { get; init; }
 }

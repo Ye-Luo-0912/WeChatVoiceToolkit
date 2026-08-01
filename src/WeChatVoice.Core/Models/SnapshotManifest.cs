@@ -34,6 +34,14 @@ public sealed record SnapshotRequest
 
         this.SourceDirectory = Path.GetFullPath(SourceDirectory);
         this.OutputDirectory = Path.GetFullPath(OutputDirectory);
+        try
+        {
+            PathOverlapGuard.EnsureDisjoint(this.SourceDirectory, this.OutputDirectory);
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new ArgumentException(exception.Message, nameof(OutputDirectory), exception);
+        }
         this.AllowLiveSource = AllowLiveSource;
         this.MaxAttempts = MaxAttempts;
     }

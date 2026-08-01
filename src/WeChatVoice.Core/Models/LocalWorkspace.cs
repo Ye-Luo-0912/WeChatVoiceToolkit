@@ -67,4 +67,9 @@ public sealed record MaterializationProvenance(
     string BackendId,
     string BackendVersion,
     string BackendBundleSha256,
-    string MaterializationManifestSha256);
+    string MaterializationManifestSha256,
+    string? KeyExtractionProfileId = null,
+    string? ProcessVersion = null,
+    string? ProcessImageSha256 = null,
+    string? WcdbModuleSha256 = null,
+    string? AccountSidFingerprint = null);

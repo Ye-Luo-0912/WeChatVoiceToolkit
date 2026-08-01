@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 
@@ -40,6 +41,9 @@ public sealed class VoiceExportService
         }
 
         var context = _voiceCatalog.Context;
+        // Export always requests a complete content hash. Scan defaults to a
+        // bounded header read, but persistence must verify source bytes.
+        query = query with { DeepScan = true };
         var runId = Guid.NewGuid().ToString("N");
         await using var journal = await _exportStore.BeginRunAsync(
             new VoiceExportRunContext(runId, context, DateTimeOffset.UtcNow),
@@ -166,9 +170,18 @@ public sealed class VoiceExportService
                 return;
             }
 
-            if (!record.MediaLinked || record.PayloadLocator is null)
+            if (record.PayloadState != VoicePayloadState.Linked
+                || record.PayloadLocator is null
+                || record.PayloadByteLength is <= 0)
             {
-                await RecordFailureAsync(record, "association", "The voice record has no associated media payload.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
+                var stage = record.PayloadState switch
+                {
+                    VoicePayloadState.Empty => "payload-empty",
+                    VoicePayloadState.InvalidHeader => "payload-invalid-header",
+                    VoicePayloadState.Ambiguous => "payload-ambiguous",
+                    _ => "association",
+                };
+                await RecordFailureAsync(record, stage, $"The voice payload state is {record.PayloadState} and is not exportable.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -298,6 +311,8 @@ public sealed class VoiceExportService
         }
 
         var buffer = ArrayPool<byte>.Shared.Rent(CopyBufferSize);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long length = 0;
         try
         {
             await using (var output = await lease.OpenOriginalWriteAsync(cancellationToken).ConfigureAwait(false))
@@ -311,12 +326,18 @@ public sealed class VoiceExportService
                     }
 
                     await output.WriteAsync(buffer.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+                    hash.AppendData(buffer, 0, count);
+                    length = checked(length + count);
                 }
 
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            return await lease.CommitOriginalAsync(cancellationToken).ConfigureAwait(false);
+            var artifact = new ExportArtifact(
+                lease.OriginalManifestPath,
+                length,
+                Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
+            return await lease.CommitOriginalAsync(artifact, cancellationToken).ConfigureAwait(false);
         }
         finally
         {

@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Text;
 using WeChatVoice.Core.Models;
 using WeChatVoice.KeyAcquisition.Models;
 using WeChatVoice.KeyAcquisition.Ports;
@@ -145,7 +147,11 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
                 snapshot.Snapshot.SnapshotId,
                 match.Profile.Id,
                 bindings,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                match.Evidence.ProductVersion,
+                match.Evidence.ImageSha256,
+                match.Profile is WeixinWindows41155Profile ? WeixinWindows41155Profile.SupportedWcdbModuleSha256 : null,
+                ComputeSidFingerprint(match.Evidence.OwnerSid));
             return acquisition;
         }
         catch
@@ -157,5 +163,11 @@ internal sealed class ProfileDrivenKeyAcquisitionService(
 
             throw;
         }
+    }
+
+    private static string ComputeSidFingerprint(string sid)
+    {
+        var bytes = Encoding.UTF8.GetBytes("WeChatVoiceToolkit:SID:v1:" + sid);
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 }

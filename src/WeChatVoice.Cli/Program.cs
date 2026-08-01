@@ -624,7 +624,11 @@ static Command CreateWorkspaceCommand()
             var manifest = await ReadJsonFileAsync<SnapshotManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
             var rawSnapshot = new RawSnapshot(manifest, snapshotRoot);
             var verifiedSnapshot = await new RawSnapshotVerifier().VerifyAsync(rawSnapshot, cancellationToken).ConfigureAwait(false);
-            var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(output, ".wechatvoice", "local-workspace.json"));
+            var outputRoot = Path.GetFullPath(output);
+            var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(
+                Path.GetDirectoryName(outputRoot) ?? throw new InvalidDataException("The materialization output must have a parent directory."),
+                Path.GetFileName(outputRoot) + ".workspace.json"));
+            PathOverlapGuard.EnsureDisjoint(snapshotRoot, outputRoot, localWorkspacePath);
             if (decryptor is null)
             {
                 if (!string.Equals(backendId, "weixin-windows-4", StringComparison.OrdinalIgnoreCase))
@@ -635,7 +639,7 @@ static Command CreateWorkspaceCommand()
                 var brokerResult = await new KeyBrokerClient().AcquireAndMaterializeAsync(
                     verifiedSnapshot,
                     manifestPath,
-                    Path.GetFullPath(output),
+                    outputRoot,
                     localWorkspacePath,
                     cancellationToken,
                     ReportBrokerStage).ConfigureAwait(false);

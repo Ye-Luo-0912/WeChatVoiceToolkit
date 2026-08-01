@@ -106,6 +106,11 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                     throw new FileNotFoundException("A bound database disappeared from the verified Snapshot.", inputPath);
                 }
 
+                var sourceMetadata = targetByPath[normalizedBindingPath];
+                await VerifySourceFileAsync(inputPath, sourceMetadata, cancellationToken).ConfigureAwait(false);
+                await using var sourceLocks = await OpenSourceLocksAsync(inputPath, cancellationToken).ConfigureAwait(false);
+                await VerifySourceFileAsync(inputPath, sourceMetadata, cancellationToken).ConfigureAwait(false);
+
                 var outputRelative = NormalizeRelative(Path.Combine("databases", binding.RelativeDatabasePath));
                 var outputPath = CombineUnderRoot(staging, outputRelative);
                 Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
@@ -153,7 +158,10 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                     binding.ShardNumber,
                     hash,
                     info.Length,
-                    schema.SchemaFingerprint ?? string.Empty));
+                    schema.SchemaFingerprint ?? string.Empty,
+                    MaterializationDatabaseStatus.Materialized,
+                    null,
+                    binding.EncryptionProfileId));
                 completed++;
                 progress?.Invoke(completed, acquisition.Bindings.Count);
             }
@@ -190,7 +198,12 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 "e_sqlcipher-2.1.11-worker-v1",
                 backendSha256,
                 materialized.OrderBy(static item => item.SourceRelativePath, StringComparer.OrdinalIgnoreCase).ToArray(),
-                files);
+                files,
+                acquisition.ProfileId,
+                acquisition.ProcessVersion,
+                acquisition.ProcessImageSha256,
+                acquisition.WcdbModuleSha256,
+                acquisition.AccountSidFingerprint);
             await using (var stream = new FileStream(manifestPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
                 await JsonSerializer.SerializeAsync(stream, manifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
@@ -208,7 +221,12 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 options.OutputDirectory,
                 materialized,
                 files,
-                movedManifestPath), DateTimeOffset.UtcNow);
+                movedManifestPath,
+                acquisition.ProfileId,
+                acquisition.ProcessVersion,
+                acquisition.ProcessImageSha256,
+                acquisition.WcdbModuleSha256,
+                acquisition.AccountSidFingerprint), DateTimeOffset.UtcNow);
         }
         catch (Exception exception)
         {
@@ -306,6 +324,61 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         {
             CryptographicOperations.ZeroMemory(envelope);
             checkpoint?.Invoke("worker-envelope-cleared");
+        }
+    }
+
+    private static async Task VerifySourceFileAsync(string path, SnapshotFileRecord expected, CancellationToken cancellationToken)
+    {
+        var info = new FileInfo(path);
+        if (info.Length != expected.ByteLength)
+        {
+            throw new InvalidDataException("A source database changed length before the fixed worker started.");
+        }
+
+        var actual = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(actual, expected.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("A source database hash changed before the fixed worker started.");
+        }
+    }
+
+    private static async Task<IAsyncDisposable> OpenSourceLocksAsync(string mainPath, CancellationToken cancellationToken)
+    {
+        var streams = new List<FileStream>();
+        try
+        {
+            foreach (var path in new[] { mainPath, mainPath + "-wal", mainPath + "-shm" })
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+
+                streams.Add(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan));
+            }
+
+            return new SourceLockSet(streams);
+        }
+        catch
+        {
+            foreach (var stream in streams)
+            {
+                await stream.DisposeAsync().ConfigureAwait(false);
+            }
+
+            throw;
+        }
+    }
+
+    private sealed class SourceLockSet(IReadOnlyList<FileStream> streams) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            foreach (var stream in streams)
+            {
+                await stream.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
