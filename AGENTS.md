@@ -6,7 +6,13 @@ user-supplied, lawfully accessible WeChat data source.
 - Do not guess database schemas, table names, key derivation, or encryption
   settings. Add a schema adapter only after the user supplies verified schema
   metadata and test data.
-- Do not add UI in this phase.
+- Thin UI hosts are allowed and expected (the Avalonia Desktop is the current
+  host alongside the CLI), but a UI must never bypass a Verified boundary
+  (VerifiedRawSnapshot / VerifiedMaterialization / VerifiedLocalWorkspace), a
+  security protocol (Broker binary trust, named-pipe process identity, no
+  direct SQLite/process-memory access from UI code), or an Application Workflow
+  (WeChatVoice.Workflows). UI code composes workflows and ports only; it does
+  not re-implement verification, materialization, or key handling.
 - Keep database inspection read-only.
 - Preserve original SILK media; decoded WAV files are derived artifacts and
   must never overwrite them.
@@ -21,6 +27,10 @@ user-supplied, lawfully accessible WeChat data source.
   a `--key-file`.
 - Treat snapshots, exports, logs, and manifests as potentially sensitive.
   Keep them out of source control.
+- Ordinary logs must never record contact usernames, key material, memory
+  contents, or database data. Recent-workspace metadata is persisted only under
+  LocalApplicationData. Desktop diagnostics show stages, error codes, and
+  durations only.
 - A snapshot is valid only after group-level before/after inventory checks over
   database, WAL, SHM, and related files. Keep snapshot metadata in the reserved
   `.wechatvoice/` directory and exclude it from source enumeration.
@@ -61,3 +71,8 @@ user-supplied, lawfully accessible WeChat data source.
 - New code must fit the existing composition root and lifecycle contracts. Do
   not add hidden global state, duplicate registries, implicit provider changes,
   or compatibility shims unless a concrete migration requirement exists.
+- WeChatVoice.Workflows is the composition boundary shared by the CLI and the
+  Desktop host. Product flows live there as workflows (EnvironmentAssessment,
+  Snapshot, Materialization, Workspace, ContactDiscovery, VoiceScan,
+  VoiceExport); hosts map OperationProgress/OperationError to their own
+  presentation and never inline Infrastructure composition.

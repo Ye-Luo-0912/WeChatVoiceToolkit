@@ -1,8 +1,13 @@
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 
-namespace WeChatVoice.Cli.Services;
+namespace WeChatVoice.Workflows.Workspaces;
 
+/// <summary>
+/// Resolves exactly one stable 1:1 contact by its internal username. The
+/// adapter's stable-contact requirement (username == contact id ==
+/// conversation id, no chatroom) is enforced here and again at query time.
+/// </summary>
 public sealed class ContactResolver
 {
     public async Task<ContactRecord> ResolveExactAsync(
@@ -13,7 +18,7 @@ public sealed class ContactResolver
         ArgumentNullException.ThrowIfNull(catalog);
         if (string.IsNullOrWhiteSpace(username))
         {
-            throw new ArgumentException("--contact-username is required for the audited voice path.");
+            throw new ArgumentException("A stable contact username is required for the audited voice path.");
         }
 
         var contacts = new List<ContactRecord>();

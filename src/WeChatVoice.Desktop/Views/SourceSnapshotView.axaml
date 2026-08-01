@@ -1,0 +1,30 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
+             xmlns:conv="using:Avalonia.Data.Converters"
+             x:Class="WeChatVoice.Desktop.Views.SourceSnapshotView"
+             x:DataType="vm:SourceSnapshotViewModel">
+  <DockPanel Margin="24">
+    <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,16,0,0">
+      <ProgressBar IsVisible="{Binding RunHost.IsRunning}" IsIndeterminate="True" />
+      <TextBlock Text="{Binding RunHost.StageMessage}" />
+      <TextBlock Text="{Binding RunHost.LastError}" Foreground="Red" />
+    </StackPanel>
+
+    <StackPanel Spacing="16">
+      <TextBlock FontSize="20" FontWeight="SemiBold" Text="创建源快照" />
+      <TextBlock Text="源目录为 Weixin 账号目录下的 db_storage（如 …\wxid_xxx_16hex\db_storage）。快照是后续所有步骤的可信输入。" TextWrapping="Wrap" />
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBox Width="420" PlaceholderText="源目录（db_storage）" Text="{Binding SourceDirectory}" />
+        <TextBox Width="420" PlaceholderText="输出目录" Text="{Binding OutputDirectory}" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="16">
+        <CheckBox Content="允许活动源（potentiallyInconsistent）" IsChecked="{Binding AllowLiveSource}" />
+        <Button Content="创建快照" Command="{Binding CreateSnapshotCommand}" />
+      </StackPanel>
+      <TextBlock Text="{Binding SnapshotSummary}" FontWeight="SemiBold" />
+      <TextBlock IsVisible="{Binding AccountCandidate, Converter={x:Static conv:ObjectConverters.IsNotNull}}"
+                 Text="{Binding AccountCandidate, StringFormat='检测到账号候选：{0}'}" />
+    </StackPanel>
+  </DockPanel>
+</UserControl>

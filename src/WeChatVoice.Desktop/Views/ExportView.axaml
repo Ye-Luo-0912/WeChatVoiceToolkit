@@ -1,0 +1,58 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
+             xmlns:models="using:WeChatVoice.Core.Models"
+             x:Class="WeChatVoice.Desktop.Views.ExportView"
+             x:DataType="vm:ExportViewModel">
+  <DockPanel Margin="24">
+    <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,16,0,0">
+      <ProgressBar IsVisible="{Binding RunHost.IsRunning}" Value="{Binding RunHost.PercentComplete}" Minimum="0" Maximum="100" />
+      <TextBlock Text="{Binding RunHost.StageMessage}" />
+      <TextBlock Text="{Binding RunHost.LastError}" Foreground="Red" />
+    </StackPanel>
+
+    <StackPanel Spacing="16">
+      <TextBlock FontSize="20" FontWeight="SemiBold" Text="语音导出（原始 SILK）" />
+      <TextBlock Text="只导出原始 SILK，不生成 WAV。每个源 BLOB 只读取一次：复制、哈希、与已有文件比对后原子提交；重复运行会跳过已验证文件。" TextWrapping="Wrap" />
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBox Width="340" PlaceholderText="Workspace JSON 路径" Text="{Binding WorkspacePath}" />
+        <TextBox Width="220" PlaceholderText="联系人用户名（wxid_…）" Text="{Binding ContactUsername}" />
+        <TextBox Width="260" PlaceholderText="导出根目录" Text="{Binding OutputDirectory}" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBox Width="180" PlaceholderText="方向 incoming/outgoing" Text="{Binding DirectionText}" />
+        <TextBox Width="180" PlaceholderText="起始 UTC 时间" Text="{Binding FromText}" />
+        <TextBox Width="180" PlaceholderText="结束 UTC 时间" Text="{Binding ToText}" />
+        <Button Content="导出" Command="{Binding ExportCommand}" />
+        <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
+        <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
+      </StackPanel>
+      <TextBlock Text="{Binding ExportSummary}" FontWeight="SemiBold" />
+      <StackPanel Orientation="Horizontal" Spacing="24">
+        <TextBlock Text="{Binding ExportedCount, StringFormat='新增：{0} 条'}" />
+        <TextBlock Text="{Binding SkippedCount, StringFormat='跳过：{0} 条'}" />
+        <TextBlock Text="{Binding FailureCount, StringFormat='失败：{0} 条'}" />
+      </StackPanel>
+
+      <StackPanel Spacing="8">
+        <TextBlock FontWeight="SemiBold" Text="失败明细（不包含敏感内容）" />
+        <ListBox ItemsSource="{Binding Failures}" MaxHeight="160">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="models:VoiceExportFailure">
+              <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="{Binding MessageId}" Width="120" />
+                <TextBlock Text="{Binding Stage}" Width="160" />
+                <TextBlock Text="{Binding Error}" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </StackPanel>
+
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBox Width="420" PlaceholderText="可选：runs/&lt;run-id&gt;.jsonl Journal 路径（崩溃恢复）" Text="{Binding JournalPath}" />
+        <Button Content="恢复 Journal" Command="{Binding RecoverCommand}" CommandParameter="{Binding JournalPath}" />
+      </StackPanel>
+    </StackPanel>
+  </DockPanel>
+</UserControl>

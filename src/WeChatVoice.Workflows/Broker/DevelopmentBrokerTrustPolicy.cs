@@ -1,12 +1,13 @@
-namespace WeChatVoice.Cli.Services.BrokerTrust;
+namespace WeChatVoice.Workflows.Broker;
 
 /// <summary>
-/// Trust policy for unsigned development builds. It is never the default: the
-/// CLI must explicitly opt in with --allow-development-broker, and the Broker
-/// must still be a regular file inside a verified repository build output
-/// directory. Release behavior is unchanged and never accepts this policy.
+/// Trust policy for unsigned development builds. It is never the default: a
+/// host must explicitly opt in with --allow-development-broker (or the
+/// equivalent UI setting), and the Broker must still be a regular file inside
+/// a verified repository build output directory. Release behavior is unchanged
+/// and never accepts this policy.
 /// </summary>
-internal sealed class DevelopmentBrokerTrustPolicy : IBrokerTrustPolicy
+public sealed class DevelopmentBrokerTrustPolicy : IBrokerTrustPolicy
 {
     internal const string SolutionFileName = "WeChatVoice.slnx";
 

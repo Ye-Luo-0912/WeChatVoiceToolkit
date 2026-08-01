@@ -77,6 +77,7 @@ internal static class BrokerHost
                     null,
                     null,
                     new BrokerError(
+                        BrokerErrorKind.Domain,
                         ErrorCode.MaterializationInvalid.ToString(),
                         "No materialization output was supplied to the one-shot Broker.",
                         hostError.IsRetryable,
@@ -244,11 +245,21 @@ internal static class BrokerHost
         return await new RawSnapshotVerifier().VerifyAsync(new RawSnapshot(manifest, snapshotRoot), cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Transport-level failures (protocol, cancellation, snapshot-not-found,
+    /// internal runtime errors) carry a typed transport code; domain failures
+    /// carry an <see cref="ErrorCode"/> name. Clients map each kind to the
+    /// matching enum and never surface raw strings.
+    /// </summary>
     private static BrokerResponse Failed(string? requestId, string code, string message) =>
-        new("failed", requestId, null, null, new BrokerError(code, message));
+        new("failed", requestId, null, null, new BrokerError(
+            BrokerErrorKind.Transport,
+            code,
+            message));
 
     private static BrokerResponse Failed(string? requestId, AppError error, string? message) =>
         new("failed", requestId, null, null, new BrokerError(
+            BrokerErrorKind.Domain,
             error.Code.ToString(),
             string.IsNullOrWhiteSpace(message) ? error.NonSensitiveTechnicalContext : message,
             error.IsRetryable,

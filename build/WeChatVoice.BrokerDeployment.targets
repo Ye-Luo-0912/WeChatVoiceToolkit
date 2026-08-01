@@ -1,0 +1,29 @@
+<Project>
+  <!--
+    Shared deployment targets: build the elevated Key Broker project and copy
+    the Broker, SQLCipher Worker, provider, and native e_sqlcipher binaries into
+    the host output directory so the trust policy's "adjacent file" contract and
+    the bundle-manifest generation work for every host (CLI, Desktop).
+  -->
+  <PropertyGroup>
+    <KeyBrokerOutputPath>..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\</KeyBrokerOutputPath>
+    <KeyBrokerOutputPath Condition="'$(RuntimeIdentifier)' != ''">..\WeChatVoice.KeyBroker\bin\$(Configuration)\net10.0\$(RuntimeIdentifier)\</KeyBrokerOutputPath>
+  </PropertyGroup>
+
+  <Target Name="BuildKeyBroker" BeforeTargets="CopyKeyBroker" Condition="'$(RuntimeIdentifier)' == ''">
+    <MSBuild Projects="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" Targets="Build" Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
+  </Target>
+
+  <Target Name="CopyKeyBroker" AfterTargets="Build" Condition="'$(RuntimeIdentifier)' == ''">
+    <ItemGroup>
+      <KeyBrokerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.KeyBroker*" />
+      <SqlCipherWorkerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.SqlCipherWorker*" />
+      <SqlCipherProviderFiles Include="$(KeyBrokerOutputPath)SQLitePCLRaw.provider.e_sqlcipher.dll" />
+      <SqlCipherNativeFiles Include="$(KeyBrokerOutputPath)runtimes\win-x64\native\e_sqlcipher.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(KeyBrokerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(SqlCipherWorkerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(SqlCipherProviderFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(SqlCipherNativeFiles)" DestinationFolder="$(OutDir)runtimes\win-x64\native" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

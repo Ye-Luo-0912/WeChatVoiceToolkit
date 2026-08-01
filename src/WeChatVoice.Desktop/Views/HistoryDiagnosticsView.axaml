@@ -1,0 +1,49 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
+             xmlns:models="using:WeChatVoice.Desktop.Infrastructure"
+             x:Class="WeChatVoice.Desktop.Views.HistoryDiagnosticsView"
+             x:DataType="vm:HistoryDiagnosticsViewModel">
+  <DockPanel Margin="24">
+    <DockPanel>
+      <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="0,0,0,12">
+        <TextBlock FontSize="20" FontWeight="SemiBold" Text="历史与诊断" />
+        <TextBlock Text="{Binding DiagnosticsSummary}" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button Content="刷新" Command="{Binding RefreshCommand}" />
+          <Button Content="移除选中项" Command="{Binding RemoveSelectedWorkspaceCommand}" />
+        </StackPanel>
+      </StackPanel>
+
+      <Grid RowDefinitions="*,*" RowSpacing="12">
+        <DockPanel Grid.Row="0">
+          <TextBlock DockPanel.Dock="Top" FontWeight="SemiBold" Text="最近 Workspace（LocalApplicationData）" Margin="0,0,0,6" />
+          <ListBox ItemsSource="{Binding RecentWorkspaces}"
+                   SelectedItem="{Binding SelectedWorkspace}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="models:RecentWorkspaceEntry">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding WorkspacePath}" />
+                  <TextBlock FontSize="11"
+                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                             Text="{Binding WorkspaceId}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+
+        <DockPanel Grid.Row="1">
+          <TextBlock DockPanel.Dock="Top" FontWeight="SemiBold" Text="会话日志（已脱敏）" Margin="0,0,0,6" />
+          <ListBox ItemsSource="{Binding LogLines}" FontFamily="Consolas" FontSize="11">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="x:String">
+                <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Grid>
+    </DockPanel>
+  </DockPanel>
+</UserControl>

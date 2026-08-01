@@ -89,25 +89,49 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
             .ThenBy(static artifact => artifact.DatabasePath, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        await ValidateAccountIdentityAsync(contact, messages, dataSet.AccountId, cancellationToken).ConfigureAwait(false);
-        return new WeixinWindows4VoiceCatalog(workspace, contact, messages, media);
+        var accountIdentity = await ValidateAccountIdentityAsync(contact, messages, dataSet.AccountId, cancellationToken).ConfigureAwait(false);
+        return new WeixinWindows4VoiceCatalog(workspace, contact, messages, media, accountIdentity);
     }
 
-    private static async Task ValidateAccountIdentityAsync(
+    /// <summary>
+    /// Verifies the workspace account identity against the account's own
+    /// indexes and its self-identity row. Existence checks require exactly one
+    /// match in <c>contact</c> and in <c>Name2Id</c> of every message shard.
+    /// The self-identity discriminator (exactly one contact row with
+    /// <c>username = encrypt_username</c> equal to the account id) was
+    /// live-validated on 2026-08-01 for the stable 4.1.11.55 account and is
+    /// intentionally soft-failing: when it does not hold, identity stays
+    /// Candidate and no export is blocked.
+    /// </summary>
+    private static async Task<AccountIdentity> ValidateAccountIdentityAsync(
         DatabaseArtifact contact,
         IReadOnlyList<DatabaseArtifact> messages,
         string accountId,
         CancellationToken cancellationToken)
     {
+        long selfRows;
         await using (var connection = await OpenReadOnlyAsync(contact, cancellationToken).ConfigureAwait(false))
-        await using (var command = connection.CreateCommand())
         {
-            command.CommandText = "SELECT COUNT(*) FROM contact WHERE username = $username;";
-            command.Parameters.AddWithValue("$username", accountId);
-            var count = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
-            if (count != 1)
+            await using (var command = connection.CreateCommand())
             {
-                throw new InvalidDataException($"Workspace account identity did not resolve exactly once in the contact database (matches: {count}).");
+                command.CommandText = "SELECT COUNT(*) FROM contact WHERE username = $username;";
+                command.Parameters.AddWithValue("$username", accountId);
+                var count = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+                if (count != 1)
+                {
+                    throw new InvalidDataException($"Workspace account identity did not resolve exactly once in the contact database (matches: {count}).");
+                }
+            }
+
+            // The account's own contact row is the only row whose
+            // encrypt_username equals its username; every other row carries an
+            // encrypted stranger identifier. Exactly one match proves the
+            // account is present as itself, not merely listed as a contact.
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT COUNT(*) FROM contact WHERE username = $username AND encrypt_username = username;";
+                command.Parameters.AddWithValue("$username", accountId);
+                selfRows = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
             }
         }
 
@@ -123,6 +147,10 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
                 throw new InvalidDataException($"Workspace account identity did not resolve exactly once in message shard '{message.DatabasePath}' (matches: {count}).");
             }
         }
+
+        return selfRows == 1
+            ? new AccountIdentity(AccountIdentityState.Confirmed, "contact-self-identity-row")
+            : AccountIdentity.CandidateOnly;
     }
 
     internal static async Task<SqliteConnection> OpenReadOnlyAsync(DatabaseArtifact artifact, CancellationToken cancellationToken)
@@ -196,7 +224,8 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         VerifiedLocalWorkspace workspace,
         DatabaseArtifact contact,
         IReadOnlyList<DatabaseArtifact> messages,
-        DatabaseArtifact media)
+        DatabaseArtifact media,
+        AccountIdentity accountIdentity)
     {
         _workspace = workspace;
         _contact = contact;
@@ -212,7 +241,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             workspace.Workspace.Provenance?.SourceSnapshotId ?? dataSet.SnapshotId,
             WeixinWindows4Adapter.AdapterId,
             workspace.Workspace.Provenance,
-            AccountIdentity.CandidateOnly);
+            accountIdentity);
     }
 
     public VoiceCatalogContext Context { get; }

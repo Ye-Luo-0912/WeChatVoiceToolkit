@@ -1,0 +1,40 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
+        x:Class="WeChatVoice.Desktop.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Width="1100"
+        Height="720"
+        MinWidth="900"
+        MinHeight="600"
+        Title="WeChatVoice 语音导出工具"
+        WindowStartupLocation="CenterScreen">
+  <Grid ColumnDefinitions="210,*">
+    <Border Grid.Column="0" Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Top"
+                   Margin="16,18,16,12"
+                   FontSize="16"
+                   FontWeight="SemiBold"
+                   Text="WeChatVoice" />
+        <TextBlock DockPanel.Dock="Bottom"
+                   Margin="16,8"
+                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                   FontSize="11"
+                   Text="仅支持 Weixin 4.1.11.55 · 一对一联系人 · 原始 SILK" />
+        <ListBox ItemsSource="{Binding Pages}"
+                 SelectedItem="{Binding SelectedPage, Mode=TwoWay}"
+                 Background="Transparent"
+                 BorderThickness="0">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:PageViewModelBase">
+              <TextBlock Text="{Binding Title}" Padding="12,8" />
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+    </Border>
+
+    <ContentControl Grid.Column="1" Content="{Binding SelectedPage}" />
+  </Grid>
+</Window>

@@ -1,21 +1,22 @@
 using WeChatVoice.Infrastructure.Serialization;
 using WeChatVoice.Windows;
 
-namespace WeChatVoice.Cli.Services.BrokerTrust;
+namespace WeChatVoice.Workflows.Broker;
 
 /// <summary>
 /// Full trust chain for released Broker binaries: a regular adjacent file,
 /// a hash-bound publish manifest, a WinVerifyTrust-validated Authenticode
 /// signature pinned to the manifest publisher thumbprint, and a non-user-
-/// writable install directory. Every check fails closed.
+/// writable install directory. Every check fails closed. This is the default
+/// policy for released installs; unsigned or mismatched brokers are denied.
 /// </summary>
-internal sealed class ReleaseBrokerTrustPolicy : IBrokerTrustPolicy
+public sealed class ReleaseBrokerTrustPolicy : IBrokerTrustPolicy
 {
     private readonly IAuthenticodeVerifier _verifier;
     private readonly string _installDirectory;
     private readonly Func<string, bool> _isUserWritable;
 
-    internal ReleaseBrokerTrustPolicy(IAuthenticodeVerifier? verifier = null, string? installDirectory = null, Func<string, bool>? isUserWritable = null)
+    public ReleaseBrokerTrustPolicy(IAuthenticodeVerifier? verifier = null, string? installDirectory = null, Func<string, bool>? isUserWritable = null)
     {
         _verifier = verifier ?? AuthenticodeVerifier.Instance;
         _installDirectory = Path.GetFullPath(installDirectory ?? AppContext.BaseDirectory);

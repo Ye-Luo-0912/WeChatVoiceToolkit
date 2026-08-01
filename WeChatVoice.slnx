@@ -10,10 +10,14 @@
     <Project Path="src/WeChatVoice.KeyProfileMetadata/WeChatVoice.KeyProfileMetadata.csproj" />
     <Project Path="src/WeChatVoice.SqlCipherWorker/WeChatVoice.SqlCipherWorker.csproj" />
     <Project Path="src/WeChatVoice.Windows/WeChatVoice.Windows.csproj" />
+    <Project Path="src/WeChatVoice.Workflows/WeChatVoice.Workflows.csproj" />
+    <Project Path="src/WeChatVoice.Desktop/WeChatVoice.Desktop.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/WeChatVoice.FakeMaterializer/WeChatVoice.FakeMaterializer.csproj" />
     <Project Path="tests/WeChatVoice.SqlCipherFixture/WeChatVoice.SqlCipherFixture.csproj" />
     <Project Path="tests/WeChatVoice.Tests/WeChatVoice.Tests.csproj" />
+    <Project Path="tests/WeChatVoice.Workflows.Tests/WeChatVoice.Workflows.Tests.csproj" />
+    <Project Path="tests/WeChatVoice.Desktop.Tests/WeChatVoice.Desktop.Tests.csproj" />
   </Folder>
 </Solution>

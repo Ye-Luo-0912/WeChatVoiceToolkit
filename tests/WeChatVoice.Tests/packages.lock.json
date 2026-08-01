@@ -119,12 +119,8 @@
         "type": "Project",
         "dependencies": {
           "System.CommandLine": "[2.0.10, )",
-          "WeChatVoice.Application": "[1.0.0, )",
           "WeChatVoice.Core": "[1.0.0, )",
-          "WeChatVoice.Infrastructure": "[1.0.0, )",
-          "WeChatVoice.KeyAcquisition": "[1.0.0, )",
-          "WeChatVoice.KeyProfileMetadata": "[1.0.0, )",
-          "WeChatVoice.Windows": "[1.0.0, )"
+          "WeChatVoice.Workflows": "[1.0.0, )"
         }
       },
       "wechatvoice.core": {
@@ -192,6 +188,16 @@
         "type": "Project",
         "dependencies": {
           "WeChatVoice.Core": "[1.0.0, )"
+        }
+      },
+      "wechatvoice.workflows": {
+        "type": "Project",
+        "dependencies": {
+          "WeChatVoice.Application": "[1.0.0, )",
+          "WeChatVoice.Core": "[1.0.0, )",
+          "WeChatVoice.Infrastructure": "[1.0.0, )",
+          "WeChatVoice.KeyProfileMetadata": "[1.0.0, )",
+          "WeChatVoice.Windows": "[1.0.0, )"
         }
       },
       "Microsoft.Data.Sqlite.Core": {

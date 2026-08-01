@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
-using WeChatVoice.Cli.Services.BrokerTrust;
 using WeChatVoice.Windows;
+using WeChatVoice.Workflows.Broker;
 
 namespace WeChatVoice.Tests;
 

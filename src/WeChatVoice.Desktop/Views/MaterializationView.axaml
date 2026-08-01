@@ -1,0 +1,54 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
+             x:Class="WeChatVoice.Desktop.Views.MaterializationView"
+             x:DataType="vm:MaterializationViewModel">
+  <DockPanel Margin="24">
+    <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,16,0,0">
+      <ProgressBar IsVisible="{Binding RunHost.IsRunning}" IsIndeterminate="True" />
+      <TextBlock Text="{Binding RunHost.StageMessage}" />
+      <TextBlock Text="{Binding RunHost.LastError}" Foreground="Red" />
+      <Border IsVisible="{Binding IsUacRejected}" Background="#FFD9C7" CornerRadius="4" Padding="8">
+        <TextBlock Text="UAC 管理员授权被拒绝。请重试并在系统提示中点击「是」。" />
+      </Border>
+    </StackPanel>
+
+    <StackPanel Spacing="16">
+      <TextBlock FontSize="20" FontWeight="SemiBold" Text="物料化（解密数据库）" />
+      <TextBlock Text="通过一次性 Key Broker 提取并校验密钥，将加密数据库解密为普通 SQLite。检测到的账号需要明确确认；Broker 会弹出 UAC 授权。" TextWrapping="Wrap" />
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBox Width="380" PlaceholderText="快照目录" Text="{Binding SnapshotDirectory}" />
+        <TextBox Width="380" PlaceholderText="物料化输出目录" Text="{Binding OutputDirectory}" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBox Width="380" PlaceholderText="可选：Workspace JSON 输出路径" Text="{Binding WorkspaceOutputPath}" />
+        <TextBox Width="380" PlaceholderText="可选：显式确认的账号（wxid_…）" Text="{Binding RequestedAccount}" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="16">
+        <CheckBox Content="允许未签名开发构建 Broker（仅调试）" IsChecked="{Binding AllowDevelopmentBroker}" />
+        <Button Content="开始物料化" Command="{Binding MaterializeCommand}" />
+        <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
+        <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
+      </StackPanel>
+      <TextBlock Text="{Binding ResultSummary}" FontWeight="SemiBold" />
+      <TextBlock Text="{Binding IdentitySummary}" />
+    </StackPanel>
+
+    <Border IsVisible="{Binding IsConfirmDialogOpen}"
+            Background="#EEF2F7"
+            CornerRadius="6"
+            Padding="16"
+            Margin="0,12,0,0"
+            VerticalAlignment="Top">
+      <StackPanel Spacing="10">
+        <TextBlock FontWeight="SemiBold" Text="确认账号身份" />
+        <TextBlock Text="{Binding PendingAccountCandidate, StringFormat='检测到账号：{0}'}" />
+        <TextBlock Text="请确认这是您自己的 Weixin 账号。该账号将与密钥提取和物料化结果绑定。" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button Content="确认" Command="{Binding ConfirmAccountCommand}" />
+          <Button Content="拒绝" Command="{Binding DeclineAccountCommand}" />
+        </StackPanel>
+      </StackPanel>
+    </Border>
+  </DockPanel>
+</UserControl>

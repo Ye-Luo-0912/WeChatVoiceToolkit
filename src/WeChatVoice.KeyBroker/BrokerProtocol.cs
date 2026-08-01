@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using WeChatVoice.Core.Models;
 
 namespace WeChatVoice.KeyBroker;
 
@@ -83,30 +84,6 @@ internal static class BrokerProtocol
 }
 
 internal sealed record BrokerRequest(string RequestId, string SnapshotId, string Operation);
-
-internal sealed record BrokerResponse(
-    string Status,
-    string? RequestId,
-    string? ProfileId,
-    string? MaterializationId,
-    BrokerError? Error);
-
-internal sealed record BrokerError(
-    string Code,
-    string Message,
-    bool IsRetryable = false,
-    string? SuggestedAction = null,
-    string? NonSensitiveTechnicalContext = null);
-
-internal sealed record BrokerStageEvent(
-    string Stage,
-    long? ScannedBytes = null,
-    int? Candidates = null,
-    int? CompletedGroups = null,
-    int? TotalGroups = null,
-    int? CompletedDatabases = null,
-    int? TotalDatabases = null,
-    int? FirstUnvalidatedGroupOrdinal = null);
 
 internal sealed class BrokerProtocolException(string code, string message, string? requestId = null) : Exception(message)
 {

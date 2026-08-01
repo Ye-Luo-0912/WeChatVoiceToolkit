@@ -8,7 +8,18 @@ The repository now contains a live-validated, end-to-end path for the exact
 signed Weixin Windows 4.1.11.55 build: restricted in-memory key acquisition,
 ephemeral SQLCipher materialization, verified local workspace creation,
 contact lookup, voice audit, and idempotent raw SILK export. No plaintext key
-file or UI is involved.
+file is involved.
+
+Two thin hosts share one workflow layer:
+
+- `WeChatVoice.Cli` — the audited command-line surface below.
+- `WeChatVoice.Desktop` — an Avalonia UI (normal privilege) with pages for
+  environment, source snapshot, materialization, contacts, scan, export, and
+  history/diagnostics. The UI only composes `WeChatVoice.Workflows`; it never
+  opens SQLite, reads process memory, or touches a Key Broker implementation,
+  and it never launches the CLI to do its work. Run it with
+  `dotnet run --project src/WeChatVoice.Desktop`, or pass `--smoke-check` for a
+  headless CI smoke.
 
 ## Current commands
 

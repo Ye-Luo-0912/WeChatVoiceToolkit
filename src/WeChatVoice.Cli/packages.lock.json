@@ -30,13 +30,6 @@
           "WeChatVoice.Core": "[1.0.0, )"
         }
       },
-      "wechatvoice.keyacquisition": {
-        "type": "Project",
-        "dependencies": {
-          "WeChatVoice.Core": "[1.0.0, )",
-          "WeChatVoice.Windows": "[1.0.0, )"
-        }
-      },
       "wechatvoice.keyprofilemetadata": {
         "type": "Project"
       },
@@ -44,6 +37,16 @@
         "type": "Project",
         "dependencies": {
           "WeChatVoice.Core": "[1.0.0, )"
+        }
+      },
+      "wechatvoice.workflows": {
+        "type": "Project",
+        "dependencies": {
+          "WeChatVoice.Application": "[1.0.0, )",
+          "WeChatVoice.Core": "[1.0.0, )",
+          "WeChatVoice.Infrastructure": "[1.0.0, )",
+          "WeChatVoice.KeyProfileMetadata": "[1.0.0, )",
+          "WeChatVoice.Windows": "[1.0.0, )"
         }
       },
       "Microsoft.Data.Sqlite.Core": {

@@ -39,14 +39,14 @@ else {
     }
 }
 
-foreach ($file in @('WeChatVoice.Cli.exe', 'WeChatVoice.KeyBroker.exe', 'WeChatVoice.SqlCipherWorker.exe')) {
+foreach ($file in @('WeChatVoice.Cli.exe', 'WeChatVoice.Desktop.exe', 'WeChatVoice.KeyBroker.exe', 'WeChatVoice.SqlCipherWorker.exe')) {
     $path = Join-Path $Directory $file
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing published executable: $file" }
     & $signTool @signArgs $path
     if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file (exit $LASTEXITCODE)." }
 }
 
-foreach ($file in @('WeChatVoice.Cli.exe', 'WeChatVoice.KeyBroker.exe', 'WeChatVoice.SqlCipherWorker.exe')) {
+foreach ($file in @('WeChatVoice.Cli.exe', 'WeChatVoice.Desktop.exe', 'WeChatVoice.KeyBroker.exe', 'WeChatVoice.SqlCipherWorker.exe')) {
     $path = Join-Path $Directory $file
     $signature = Get-AuthenticodeSignature -LiteralPath $path
     if ($signature.Status -ne 'Valid') {

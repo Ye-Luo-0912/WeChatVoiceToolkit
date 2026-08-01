@@ -1,0 +1,33 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
+             xmlns:views="using:WeChatVoice.Desktop.Views"
+             x:Class="WeChatVoice.Desktop.App">
+  <Application.Styles>
+    <FluentTheme />
+  </Application.Styles>
+
+  <Application.DataTemplates>
+    <DataTemplate DataType="{x:Type vm:EnvironmentViewModel}">
+      <views:EnvironmentView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:SourceSnapshotViewModel}">
+      <views:SourceSnapshotView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:MaterializationViewModel}">
+      <views:MaterializationView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:ContactViewModel}">
+      <views:ContactView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:ScanViewModel}">
+      <views:ScanView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:ExportViewModel}">
+      <views:ExportView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:HistoryDiagnosticsViewModel}">
+      <views:HistoryDiagnosticsView />
+    </DataTemplate>
+  </Application.DataTemplates>
+</Application>

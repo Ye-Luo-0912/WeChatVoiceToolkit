@@ -53,4 +53,7 @@ public enum ErrorCode
 
     /// <summary>Account identity is only a candidate; explicit user confirmation is required.</summary>
     AccountConfirmationRequired,
+
+    /// <summary>The elevated Key Broker could not start because the user declined the UAC prompt.</summary>
+    UacElevationRejected,
 }

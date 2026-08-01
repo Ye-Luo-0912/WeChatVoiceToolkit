@@ -83,6 +83,58 @@ public sealed class WeixinWindows4AdapterTests
     }
 
     [Fact]
+    public async Task Adapter_marks_identity_confirmed_when_self_identity_row_is_present()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateFixtureAsync(root);
+        // The account's own contact row is the only row whose encrypt_username
+        // equals its username (live-validated discriminator, 2026-08-01).
+        await ExecuteAsync(Path.Combine(root, "databases", "contact", "contact.db"),
+            $"UPDATE contact SET encrypt_username = username WHERE username = '{AccountId}';");
+        var verified = await CreateVerifiedWorkspaceAsync(root);
+        var adapter = new WeixinWindows4Adapter();
+
+        await using var catalog = await adapter.OpenAsync(verified, CancellationToken.None);
+        Assert.Equal(AccountIdentityState.Confirmed, catalog.Context.AccountIdentity.State);
+        Assert.Equal("contact-self-identity-row", catalog.Context.AccountIdentity.ConfirmedBy);
+    }
+
+    [Fact]
+    public async Task Adapter_keeps_candidate_identity_without_a_self_identity_row()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateFixtureAsync(root);
+        var verified = await CreateVerifiedWorkspaceAsync(root);
+        var adapter = new WeixinWindows4Adapter();
+
+        await using var catalog = await adapter.OpenAsync(verified, CancellationToken.None);
+        // Without the verified self-identity discriminator the account is
+        // present in the indexes but not proven to be itself; identity stays
+        // Candidate and no export path is blocked.
+        Assert.Equal(AccountIdentityState.Candidate, catalog.Context.AccountIdentity.State);
+        Assert.Null(catalog.Context.AccountIdentity.ConfirmedBy);
+    }
+
+    [Fact]
+    public async Task Adapter_never_confirms_identity_from_a_foreign_self_identity_row()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateFixtureAsync(root);
+        // A foreign contact carries the self-equal pattern; the account row
+        // itself does not. Exactly-once self-row matching must not confirm.
+        await ExecuteAsync(Path.Combine(root, "databases", "contact", "contact.db"),
+            $"UPDATE contact SET encrypt_username = username WHERE username = '{ContactId}';");
+        var verified = await CreateVerifiedWorkspaceAsync(root);
+        var adapter = new WeixinWindows4Adapter();
+
+        await using var catalog = await adapter.OpenAsync(verified, CancellationToken.None);
+        Assert.Equal(AccountIdentityState.Candidate, catalog.Context.AccountIdentity.State);
+    }
+
+    [Fact]
     public async Task Adapter_without_deep_scan_reports_length_and_header_without_a_source_hash()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -157,7 +209,8 @@ public sealed class WeixinWindows4AdapterTests
                 (20, 200, 34, 1, 2, 1700000030, 3, 0, 0, 1, 2),
                 (21, 201, 34, 2, 2, 1700000080, 3, 0, 0, 2, 2),
                 (22, 202, 34, 3, 2, 1700000140, 3, 0, 0, 3, 2);
-            """);    }
+            """);
+    }
 
     [Fact]
     public async Task Adapter_refuses_workspace_without_stable_account_identity()

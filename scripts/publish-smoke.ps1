@@ -8,13 +8,14 @@ $out = Join-Path ([System.IO.Path]::GetTempPath()) ('wechatvoice-publish-' + [gu
 try {
     foreach ($project in @(
         'src/WeChatVoice.Cli/WeChatVoice.Cli.csproj',
+        'src/WeChatVoice.Desktop/WeChatVoice.Desktop.csproj',
         'src/WeChatVoice.KeyBroker/WeChatVoice.KeyBroker.csproj',
         'src/WeChatVoice.SqlCipherWorker/WeChatVoice.SqlCipherWorker.csproj')) {
         dotnet publish (Join-Path $repo $project) -c Release -r win-x64 --self-contained true -o $out --nologo
     }
     & (Join-Path $repo 'build/GenerateWorkerBundleManifest.ps1') -Directory $out
     & (Join-Path $repo 'build/GenerateBrokerBundleManifest.ps1') -Directory $out -PublisherThumbprint $PublisherThumbprint
-    foreach ($file in @('WeChatVoice.Cli.exe', 'WeChatVoice.KeyBroker.exe', 'WeChatVoice.SqlCipherWorker.exe')) {
+    foreach ($file in @('WeChatVoice.Cli.exe', 'WeChatVoice.Desktop.exe', 'WeChatVoice.KeyBroker.exe', 'WeChatVoice.SqlCipherWorker.exe')) {
         $path = Join-Path $out $file
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing published executable: $file" }
     }
@@ -31,6 +32,15 @@ try {
     else {
         Write-Host 'WARNING: Release publish output is unsigned. The CLI will reject the Broker unless --allow-development-broker is used against a repository build directory.'
     }
+    # Launch smoke: the published Desktop app must start headless (--smoke-check),
+    # exercise the composition root and Workflow State Machine, and exit 0.
+    $desktop = Join-Path $out 'WeChatVoice.Desktop.exe'
+    $smoke = Start-Process -FilePath $desktop -ArgumentList '--smoke-check' -Wait -PassThru -WindowStyle Hidden
+    if ($smoke.ExitCode -ne 0) {
+        throw "Desktop smoke check failed with exit code $($smoke.ExitCode)."
+    }
+    Write-Host 'Desktop --smoke-check passed.'
+
     $all = Get-ChildItem -LiteralPath $out -File
     if ($all.Count -eq 0) { throw 'Publish output is empty.' }
     Write-Host "Publish smoke passed: $out"

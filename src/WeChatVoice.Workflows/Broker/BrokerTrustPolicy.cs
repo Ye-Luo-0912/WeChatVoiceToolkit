@@ -1,4 +1,4 @@
-namespace WeChatVoice.Cli.Services.BrokerTrust;
+namespace WeChatVoice.Workflows.Broker;
 
 /// <summary>Result of a Broker binary trust evaluation.</summary>
 public sealed record BrokerTrustResult(bool Verified, string? NonSensitiveReason)

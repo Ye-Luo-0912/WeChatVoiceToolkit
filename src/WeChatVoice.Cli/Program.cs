@@ -1,20 +1,14 @@
 using System.CommandLine;
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using WeChatVoice.Application;
 using WeChatVoice.Cli.Services;
-using WeChatVoice.Cli.Services.BrokerTrust;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
-using WeChatVoice.Infrastructure.Adapters;
-using WeChatVoice.Infrastructure.Export;
-using WeChatVoice.Infrastructure.Materialization;
-using WeChatVoice.Infrastructure.Snapshots;
 using WeChatVoice.Infrastructure.Sqlite;
 using WeChatVoice.KeyProfileMetadata;
-using WeChatVoice.Windows;
+using WeChatVoice.Workflows.Composition;
+using WeChatVoice.Workflows.Workflows;
 
 var rootCommand = new RootCommand("Safe, schema-agnostic WeChat voice toolkit foundation.");
 rootCommand.Subcommands.Add(CreateDoctorCommand());
@@ -26,6 +20,19 @@ rootCommand.Subcommands.Add(CreateWorkspaceCommand());
 rootCommand.Subcommands.Add(CreateContactCommand());
 
 return rootCommand.Parse(args).Invoke();
+
+// The CLI is a pure command layer: every product flow runs through the shared
+// workflows (WeChatVoice.Workflows), never through direct Infrastructure
+// composition. Developer diagnostics (schema/dataset probe) still call their
+// single probe services directly; they compose nothing.
+static WorkflowCompositionRoot CreateRoot(bool allowDevelopmentBroker = false)
+    => new(new ConsoleAccountConfirmation(), allowDevelopmentBroker);
+
+static void ReportProgress(OperationProgress progress)
+{
+    var percent = progress.Stage.PercentComplete is { } complete ? $" {complete:0}%" : string.Empty;
+    Console.Error.WriteLine($"stage:{progress.Phase}:{progress.Stage.Id}{percent}");
+}
 
 static Command CreateDoctorCommand()
 {
@@ -39,38 +46,25 @@ static Command CreateDoctorCommand()
     {
         try
         {
-            var adapters = BuiltInAdapters.Create();
-            var keyProfiles = BuiltInKeyProfileMetadata.Create();
-            var runningProcesses = WeChatProcessDiscovery.ListRunning();
-            var matchingAdapters = Array.Empty<string>();
-            var workspacePath = parseResult.GetValue(workspaceOption);
-            if (!string.IsNullOrWhiteSpace(workspacePath))
-            {
-                var workspace = await new WorkspaceLoader().LoadVerifiedAsync(workspacePath, cancellationToken).ConfigureAwait(false);
-                matchingAdapters = adapters
-                    .Where(adapter => adapter.Probe(workspace.DataSet).IsMatch)
-                    .Select(static adapter => adapter.Id)
-                    .Order(StringComparer.Ordinal)
-                    .ToArray();
-            }
-
-            var matchingProfiles = GetMatchingKeyProfiles(keyProfiles);
-            var workerInstalled = File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.exe"));
-            var brokerInstalled = File.Exists(Path.Combine(AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe"));
+            var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var result = await CreateRoot().EnvironmentAssessment.RunAsync(
+                new EnvironmentAssessmentRequest(parseResult.GetValue(workspaceOption)),
+                context,
+                cancellationToken).ConfigureAwait(false);
             var report = new DoctorReport(
                 System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 Environment.OSVersion.VersionString,
-                OperatingSystem.IsWindows(),
-                WeChatProcessDiscovery.SupportedProcessNames,
-                runningProcesses,
+                result.IsWindows,
+                result.SupportedProcessNames,
+                result.RunningWeChatProcesses,
                 new CapabilityReport(
-                    RegisteredAdapters: adapters.Select(static adapter => adapter.Id).Order(StringComparer.Ordinal).ToArray(),
-                    AdapterMatchEvaluated: !string.IsNullOrWhiteSpace(workspacePath),
-                    MatchingAdapters: matchingAdapters,
-                    KeyAcquisitionProfiles: keyProfiles,
-                    MatchingKeyAcquisitionProfiles: matchingProfiles,
+                    RegisteredAdapters: result.RegisteredAdapters,
+                    AdapterMatchEvaluated: result.AdapterMatchEvaluated,
+                    MatchingAdapters: result.MatchingAdapters,
+                    KeyAcquisitionProfiles: result.KeyAcquisitionProfiles,
+                    MatchingKeyAcquisitionProfiles: result.MatchingKeyAcquisitionProfiles,
                     MaterializationBackends: ["weixin-windows-4"],
-                    BrokerAcquireAndMaterializeAvailable: brokerInstalled && workerInstalled && matchingProfiles.Count > 0,
+                    BrokerAcquireAndMaterializeAvailable: result.BrokerAcquireAndMaterializeAvailable,
                     OrdinaryCliCanReadProcessMemory: false,
                     AllowsArbitraryProcessMemoryRead: false,
                     HasUserInterface: false));
@@ -90,51 +84,6 @@ static Command CreateDoctorCommand()
         }
     });
     return command;
-}
-
-static IReadOnlyList<string> GetMatchingKeyProfiles(IReadOnlyList<KeyProfileMetadata> profiles)
-{
-    if (!OperatingSystem.IsWindows())
-    {
-        return [];
-    }
-
-    var currentSid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
-    if (string.IsNullOrWhiteSpace(currentSid))
-    {
-        return [];
-    }
-
-    var reader = new WindowsWeixinProcessIdentityReader();
-    var matches = new HashSet<string>(StringComparer.Ordinal);
-    foreach (var process in new WeixinProcessLocator().Locate())
-    {
-        WeixinProcessIdentityEvidence evidence;
-        try
-        {
-            evidence = reader.Read(process.ProcessId);
-        }
-        catch (Exception exception) when (exception is ArgumentException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            continue;
-        }
-
-        foreach (var profile in profiles)
-        {
-            var descriptor = profile;
-            if (string.Equals(evidence.OwnerSid, currentSid, StringComparison.Ordinal)
-                && evidence.HasTrustedSignature
-                && evidence.SignerSubject.Contains("Tencent", StringComparison.OrdinalIgnoreCase)
-                && descriptor.ProductVersions.Contains(evidence.ProductVersion)
-                && descriptor.ImageSha256.Contains(evidence.ImageSha256, StringComparer.OrdinalIgnoreCase)
-                && string.Equals(descriptor.Architecture, evidence.Architecture, StringComparison.OrdinalIgnoreCase))
-            {
-                matches.Add(profile.Id);
-            }
-        }
-    }
-
-    return matches.Order(StringComparer.Ordinal).ToArray();
 }
 
 static Command CreateSnapshotCommand()
@@ -180,9 +129,12 @@ static Command CreateSnapshotCommand()
 
         try
         {
-            var request = new SnapshotRequest(source, output, AllowLiveSource: allowLiveSource, MaxAttempts: maxAttempts);
-            var manifest = await new SnapshotCreator(new WeChatSnapshotSourceActivityProbe()).CreateAsync(request, cancellationToken).ConfigureAwait(false);
-            WriteJson(manifest);
+            var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var result = await CreateRoot().Snapshot.RunAsync(
+                new SnapshotWorkflowRequest(source, output, AllowLiveSource: allowLiveSource, MaxAttempts: maxAttempts),
+                context,
+                cancellationToken).ConfigureAwait(false);
+            WriteJson(result.Manifest);
             return 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -272,13 +224,20 @@ static Command CreateVoiceCommand()
 
         try
         {
-            await using var catalog = await OpenCatalogAsync(workspacePath, cancellationToken).ConfigureAwait(false);
-            var contact = await new ContactResolver().ResolveExactAsync(catalog, contactUsername, cancellationToken).ConfigureAwait(false);
-            var service = new VoiceExportService(catalog, new FileSystemVoiceExportStore(output));
-            var query = BuildVoiceQuery(conversationId, contact, directionText, fromText, toText);
-            var manifest = await service.ExportAsync(query, new VoiceExportOptions { DecodeToWav = false }, cancellationToken).ConfigureAwait(false);
-            WriteJson(manifest);
-            return GetExportExitCode(manifest);
+            var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var result = await CreateRoot().VoiceExport.RunAsync(
+                new VoiceExportWorkflowRequest(
+                    workspacePath,
+                    output,
+                    ContactUsername: contactUsername,
+                    ConversationId: conversationId,
+                    Direction: ParseDirection(directionText),
+                    From: VoiceQueryBuilder.ParseUtc(fromText, "--from"),
+                    To: VoiceQueryBuilder.ParseUtc(toText, "--to")),
+                context,
+                cancellationToken).ConfigureAwait(false);
+            WriteJson(result.Manifest);
+            return GetExportExitCode(result.Manifest);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -320,17 +279,19 @@ static Command CreateVoiceCommand()
 
         try
         {
-            await using var catalog = await OpenCatalogAsync(workspace, cancellationToken).ConfigureAwait(false);
-            var contact = await new ContactResolver().ResolveExactAsync(catalog, parseResult.GetValue(scanContactOption), cancellationToken).ConfigureAwait(false);
-            var query = BuildVoiceQuery(
-                parseResult.GetValue(scanConversationOption),
-                contact,
-                parseResult.GetValue(scanDirectionOption),
-                parseResult.GetValue(scanFromOption),
-                parseResult.GetValue(scanToOption));
-            var report = await new VoiceScanService(catalog).ScanAsync(query, cancellationToken).ConfigureAwait(false);
-            WriteJson(report);
-            return report.MatchedVoiceCount == 0 ? 4 : 0;
+            var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var result = await CreateRoot().VoiceScan.RunAsync(
+                new VoiceScanWorkflowRequest(
+                    workspace,
+                    ContactUsername: parseResult.GetValue(scanContactOption),
+                    ConversationId: parseResult.GetValue(scanConversationOption),
+                    Direction: ParseDirection(parseResult.GetValue(scanDirectionOption)),
+                    From: VoiceQueryBuilder.ParseUtc(parseResult.GetValue(scanFromOption), "--from"),
+                    To: VoiceQueryBuilder.ParseUtc(parseResult.GetValue(scanToOption), "--to")),
+                context,
+                cancellationToken).ConfigureAwait(false);
+            WriteJson(result.Report);
+            return result.Report.MatchedVoiceCount == 0 ? 4 : 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -370,10 +331,7 @@ static Command CreateVoiceCommand()
 
         try
         {
-            var fullJournalPath = Path.GetFullPath(journalPath);
-            var exportRoot = Path.GetDirectoryName(Path.GetDirectoryName(fullJournalPath)!)
-                ?? throw new InvalidDataException("The Journal path must be nested under an export root runs directory.");
-            var manifest = await new FileSystemVoiceExportStore(exportRoot).RecoverRunAsync(fullJournalPath, cancellationToken).ConfigureAwait(false);
+            var manifest = await CreateRoot().VoiceExport.RecoverRunAsync(journalPath, cancellationToken).ConfigureAwait(false);
             WriteJson(manifest);
             return 0;
         }
@@ -390,6 +348,21 @@ static Command CreateVoiceCommand()
     });
     exportCommand.Subcommands.Add(recoverCommand);
     return voiceCommand;
+}
+
+static VoiceDirection? ParseDirection(string? directionText)
+{
+    if (string.IsNullOrWhiteSpace(directionText))
+    {
+        return null;
+    }
+
+    if (!Enum.TryParse<VoiceDirection>(directionText, true, out var parsedDirection))
+    {
+        throw new ArgumentException("--direction must be incoming or outgoing.");
+    }
+
+    return parsedDirection;
 }
 
 static Command CreateDatasetCommand()
@@ -491,14 +464,17 @@ static Command CreateWorkspaceCommand()
 
         try
         {
-            var workspace = await new LocalWorkspaceCreator().CreateAsync(root, cancellationToken).ConfigureAwait(false);
-            await WriteJsonFileAsync(output, workspace, cancellationToken).ConfigureAwait(false);
+            var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var result = await CreateRoot().Workspace.CreateAsync(
+                new WorkspaceCreateRequest(root, output),
+                context,
+                cancellationToken).ConfigureAwait(false);
             WriteJson(new WorkspaceCreateResult(
                 Path.GetFullPath(output),
-                workspace.WorkspaceId,
-                workspace.DataSet.DataSetId,
-                workspace.DataSet.Databases.Count,
-                workspace.Issues.Count));
+                result.Workspace.WorkspaceId,
+                result.Workspace.DataSet.DataSetId,
+                result.Workspace.DataSet.Databases.Count,
+                result.Workspace.Issues.Count));
             return 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -532,7 +508,8 @@ static Command CreateWorkspaceCommand()
 
         try
         {
-            var verified = await new WorkspaceLoader().LoadVerifiedAsync(workspacePath, cancellationToken).ConfigureAwait(false);
+            var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var verified = await CreateRoot().Workspace.VerifyAsync(workspacePath, context, cancellationToken).ConfigureAwait(false);
             WriteJson(new WorkspaceVerifyResult(
                 Path.GetFullPath(workspacePath),
                 verified.Workspace.WorkspaceId,
@@ -619,108 +596,61 @@ static Command CreateWorkspaceCommand()
             return 2;
         }
 
-        if (decryptor is not null && !allowUntrustedBackend)
+        if (allowDevelopmentBroker)
         {
-            Console.Error.WriteLine("--external-decryptor is development-only and requires --allow-untrusted-backend.");
-            return 2;
-        }
-
-        if (decryptor is null && allowUntrustedBackend)
-        {
-            Console.Error.WriteLine("--allow-untrusted-backend requires --external-decryptor.");
-            return 2;
+            Console.Error.WriteLine("警告：使用未签名的开发构建 Key Broker，仅供开发调试，禁止用于正式发布。");
         }
 
         try
         {
-            var snapshotRoot = Path.GetFullPath(snapshotDirectory);
-            var manifestPath = Path.GetFullPath(snapshotManifest ?? Path.Combine(snapshotRoot, ".wechatvoice", "snapshot-manifest.json"));
-            var manifest = await ReadJsonFileAsync<SnapshotManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
-            var rawSnapshot = new RawSnapshot(manifest, snapshotRoot);
-            var verifiedSnapshot = await new RawSnapshotVerifier().VerifyAsync(rawSnapshot, cancellationToken).ConfigureAwait(false);
-
-            // Account identity is path-derived and only a candidate. The user
-            // must explicitly confirm the detected account before the broker
-            // spends a privileged materialization on it; nothing is silent.
-            var sourceIdentity = SnapshotSourceIdentity.TryDerive(manifest.SourceDirectory, manifest.Files);
-            var confirmedAccountId = await ConfirmAccountAsync(sourceIdentity?.AccountCandidate, requestedAccount, cancellationToken).ConfigureAwait(false);
-
-            var outputRoot = Path.GetFullPath(output);
-            var localWorkspacePath = Path.GetFullPath(workspaceOutput ?? Path.Combine(
-                Path.GetDirectoryName(outputRoot) ?? throw new InvalidDataException("The materialization output must have a parent directory."),
-                Path.GetFileName(outputRoot) + ".workspace.json"));
-            PathOverlapGuard.EnsureDisjoint(snapshotRoot, outputRoot, localWorkspacePath);
-            if (decryptor is null)
+            var root = CreateRoot(allowDevelopmentBroker);
+            var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var result = await root.Materialization.RunAsync(
+                new MaterializationWorkflowRequest(
+                    snapshotDirectory,
+                    snapshotManifest,
+                    backendId,
+                    decryptor,
+                    AllowUntrustedBackend: allowUntrustedBackend,
+                    AllowDevelopmentBroker: allowDevelopmentBroker,
+                    RequestedAccountId: requestedAccount,
+                    OutputDirectory: output,
+                    WorkspaceOutputPath: workspaceOutput),
+                context,
+                cancellationToken).ConfigureAwait(false);
+            if (result.ProfileId is not null)
             {
-                if (!string.Equals(backendId, "weixin-windows-4", StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new MaterializationBackendUnavailableException(backendId, $"Materialization backend '{backendId}' is not registered.");
-                }
-
-                var trustPolicy = allowDevelopmentBroker
-                    ? (IBrokerTrustPolicy)new DevelopmentBrokerTrustPolicy()
-                    : new ReleaseBrokerTrustPolicy();
-                if (allowDevelopmentBroker)
-                {
-                    Console.Error.WriteLine("警告：使用未签名的开发构建 Key Broker，仅供开发调试，禁止用于正式发布。");
-                }
-
-                var brokerResult = await new KeyBrokerClient(trustPolicy).AcquireAndMaterializeAsync(
-                    verifiedSnapshot,
-                    manifestPath,
-                    outputRoot,
-                    localWorkspacePath,
-                    cancellationToken,
-                    ReportBrokerStage).ConfigureAwait(false);
-                if (!string.Equals(brokerResult.Status, "completed", StringComparison.Ordinal) ||
-                    string.IsNullOrWhiteSpace(brokerResult.ProfileId) ||
-                    string.IsNullOrWhiteSpace(brokerResult.MaterializationId))
-                {
-                    throw new KeyBrokerOperationException(
-                        brokerResult.Error?.Code ?? "broker_failed",
-                        brokerResult.Error?.Message ?? "The Key Broker did not complete materialization.",
-                        brokerResult.Error?.IsRetryable ?? false,
-                        brokerResult.Error?.SuggestedAction);
-                }
-
-                var verifiedWorkspace = await new WorkspaceLoader().LoadVerifiedAsync(localWorkspacePath, cancellationToken).ConfigureAwait(false);
-                if (confirmedAccountId is not null
-                    && !string.Equals(verifiedWorkspace.DataSet.AccountId, confirmedAccountId, StringComparison.Ordinal))
-                {
-                    throw new AppFailureException(ErrorCode.WorkspaceInvalid, "The Broker produced a workspace for a different account than the one confirmed.");
-                }
-
                 WriteJson(new BrokerWorkspaceMaterializationResult(
-                    brokerResult.ProfileId,
-                    brokerResult.MaterializationId,
-                    localWorkspacePath,
-                    verifiedWorkspace.Workspace.WorkspaceId,
-                    verifiedWorkspace.DataSet.DataSetId,
-                    verifiedWorkspace.DataSet.Databases.Count));
-                return 0;
+                    result.ProfileId,
+                    result.MaterializationId!,
+                    result.LocalWorkspacePath,
+                    result.Workspace.Workspace.WorkspaceId,
+                    result.Workspace.DataSet.DataSetId,
+                    result.Workspace.DataSet.Databases.Count));
+            }
+            else
+            {
+                WriteJson(new WorkspaceMaterializationResult(
+                    result.MaterializationId!,
+                    Path.GetFullPath(output),
+                    Path.Combine(Path.GetFullPath(output), ".wechatvoice", "materialization-manifest.json"),
+                    result.LocalWorkspacePath,
+                    result.Workspace.Workspace.WorkspaceId,
+                    result.Workspace.DataSet.DataSetId,
+                    result.Workspace.DataSet.Databases.Count));
             }
 
-            IDatabaseMaterializationBackend backend = new ExternalDatabaseMaterializer(decryptor);
-            var materialization = await backend.MaterializeAsync(
-                verifiedSnapshot,
-                new MaterializationOptions(Path.GetFullPath(output)),
-                cancellationToken).ConfigureAwait(false);
-            var localWorkspace = await new LocalWorkspaceCreator().CreateAsync(materialization, cancellationToken).ConfigureAwait(false);
-            await WriteJsonFileAsync(localWorkspacePath, localWorkspace, cancellationToken).ConfigureAwait(false);
-            WriteJson(new WorkspaceMaterializationResult(
-                materialization.Result.WorkspaceId,
-                materialization.OutputRoot,
-                materialization.Result.ManifestPath,
-                localWorkspacePath,
-                localWorkspace.WorkspaceId,
-                localWorkspace.DataSet.DataSetId,
-                materialization.Result.Databases.Count));
             return 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             Console.Error.WriteLine("Database materialization was cancelled.");
             return 130;
+        }
+        catch (ArgumentException exception)
+        {
+            WriteError(exception);
+            return 2;
         }
         catch (Exception exception)
         {
@@ -747,15 +677,18 @@ static Command CreateContactCommand()
         var workspace = parseResult.GetValue(listWorkspaceOption);
         try
         {
-            await using var catalog = await OpenCatalogAsync(workspace!, cancellationToken).ConfigureAwait(false);
-            var contacts = new List<ContactRecord>();
-            await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
-            {
-                contacts.Add(contact);
-            }
-
-            WriteJson(contacts);
+            var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var result = await CreateRoot().ContactDiscovery.RunAsync(
+                new ContactDiscoveryRequest(workspace!),
+                context,
+                cancellationToken).ConfigureAwait(false);
+            WriteJson(result.Contacts);
             return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Contact listing was cancelled.");
+            return 130;
         }
         catch (Exception exception)
         {
@@ -772,15 +705,18 @@ static Command CreateContactCommand()
         var queryText = parseResult.GetValue(searchOption);
         try
         {
-            await using var catalog = await OpenCatalogAsync(workspace!, cancellationToken).ConfigureAwait(false);
-            var contacts = new List<ContactRecord>();
-            await foreach (var contact in catalog.QueryContactsAsync(new ContactQuery(queryText), cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
-            {
-                contacts.Add(contact);
-            }
-
-            WriteJson(contacts);
+            var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+            var result = await CreateRoot().ContactDiscovery.RunAsync(
+                new ContactDiscoveryRequest(workspace!, SearchTerm: queryText),
+                context,
+                cancellationToken).ConfigureAwait(false);
+            WriteJson(result.Contacts);
             return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Contact search was cancelled.");
+            return 130;
         }
         catch (Exception exception)
         {
@@ -792,58 +728,6 @@ static Command CreateContactCommand()
     contactCommand.Subcommands.Add(listCommand);
     contactCommand.Subcommands.Add(searchCommand);
     return contactCommand;
-}
-
-static async Task<IVoiceCatalog> OpenCatalogAsync(string path, CancellationToken cancellationToken)
-{
-    var verified = await new WorkspaceLoader().LoadVerifiedAsync(path, cancellationToken).ConfigureAwait(false);
-    var resolver = new DataSetAdapterResolver(BuiltInAdapters.Create());
-    var adapter = resolver.Resolve(verified.DataSet);
-    return await adapter.OpenAsync(verified, cancellationToken).ConfigureAwait(false);
-}
-
-static VoiceQuery BuildVoiceQuery(string? conversationId, ContactRecord contact, string? directionText, string? fromText, string? toText)
-{
-    ArgumentNullException.ThrowIfNull(contact);
-    if (!string.IsNullOrWhiteSpace(conversationId)
-        && !string.Equals(conversationId, contact.ConversationId, StringComparison.Ordinal))
-    {
-        throw new ArgumentException("--conversation-id conflicts with the selected contact's stable ConversationId.", nameof(conversationId));
-    }
-
-    VoiceDirection? direction = null;
-    if (!string.IsNullOrWhiteSpace(directionText))
-    {
-        if (!Enum.TryParse<VoiceDirection>(directionText, true, out var parsedDirection))
-        {
-            throw new ArgumentException("--direction must be incoming or outgoing.");
-        }
-
-        direction = parsedDirection;
-    }
-
-    return new VoiceQuery(
-        conversationId ?? contact.ConversationId,
-        direction,
-        ParseUtc(fromText, "--from"),
-        ParseUtc(toText, "--to"),
-        ContactUsername: contact.Username,
-        ContactId: contact.ContactId);
-}
-
-static DateTimeOffset? ParseUtc(string? value, string optionName)
-{
-    if (string.IsNullOrWhiteSpace(value))
-    {
-        return null;
-    }
-
-    if (!DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
-    {
-        throw new ArgumentException($"{optionName} is not a valid UTC date/time.");
-    }
-
-    return parsed;
 }
 
 static Command CreateSchemaCommand()
@@ -906,6 +790,14 @@ static Command CreateSchemaCommand()
     return schemaCommand;
 }
 
+static async Task<T> ReadJsonFileAsync<T>(string path, CancellationToken cancellationToken)
+{
+    var fullPath = Path.GetFullPath(path);
+    await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+    var value = await JsonSerializer.DeserializeAsync<T>(stream, CliJson.Options, cancellationToken).ConfigureAwait(false);
+    return value ?? throw new InvalidDataException($"The JSON document was empty: '{fullPath}'.");
+}
+
 static async Task WriteJsonFileAsync<T>(string outputPath, T value, CancellationToken cancellationToken)
 {
     ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
@@ -914,17 +806,10 @@ static async Task WriteJsonFileAsync<T>(string outputPath, T value, Cancellation
     var directory = Path.GetDirectoryName(fullOutputPath)
         ?? throw new ArgumentException("The output path must include a directory.", nameof(outputPath));
     Directory.CreateDirectory(directory);
-
-    var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(fullOutputPath)}.{Guid.NewGuid():N}.tmp");
+    var temporaryPath = fullOutputPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
     try
     {
-        await using (var stream = new FileStream(
-            temporaryPath,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            128 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan))
+        await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
         {
             await JsonSerializer.SerializeAsync(stream, value, CliJson.Options, cancellationToken).ConfigureAwait(false);
             await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -941,82 +826,34 @@ static async Task WriteJsonFileAsync<T>(string outputPath, T value, Cancellation
     }
 }
 
-static async Task<T> ReadJsonFileAsync<T>(string path, CancellationToken cancellationToken)
-{
-    var fullPath = Path.GetFullPath(path);
-    await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-    var value = await JsonSerializer.DeserializeAsync<T>(stream, CliJson.Options, cancellationToken).ConfigureAwait(false);
-    return value ?? throw new InvalidDataException($"The JSON document was empty: '{fullPath}'.");
-}
-
 static void WriteJson<T>(T value) =>
     Console.WriteLine(JsonSerializer.Serialize(value, CliJson.Options));
-
-static void ReportBrokerStage(KeyBrokerStage stage)
-{
-    var details = new List<string>(capacity: 3);
-    if (stage.ScannedBytes is { } scannedBytes)
-    {
-        details.Add($"scannedBytes={scannedBytes}");
-    }
-
-    if (stage.Candidates is { } candidates)
-    {
-        details.Add($"candidates={candidates}");
-    }
-
-    if (stage.CompletedGroups is { } completedGroups && stage.TotalGroups is { } totalGroups)
-    {
-        details.Add($"groups={completedGroups}/{totalGroups}");
-    }
-
-    if (stage.CompletedDatabases is { } completedDatabases && stage.TotalDatabases is { } totalDatabases)
-    {
-        details.Add($"databases={completedDatabases}/{totalDatabases}");
-    }
-
-    if (stage.FirstUnvalidatedGroupOrdinal is { } ordinal)
-    {
-        details.Add($"firstUnvalidatedGroup={ordinal}");
-    }
-
-    Console.Error.WriteLine($"broker-stage:{stage.Stage}{(details.Count == 0 ? string.Empty : " " + string.Join(' ', details))}");
-}
 
 static void WriteError(Exception exception)
 {
     // Stable error codes stay machine-readable; the presentation layer owns
-    // the localized text. This is the same boundary a future UI host uses.
-    if (exception is KeyBrokerOperationException brokerException)
+    // the localized text. This is the same boundary a UI host uses.
+    switch (exception)
     {
-        var detail = brokerException.Code;
-        if (Enum.TryParse<ErrorCode>(detail, ignoreCase: true, out var parsed))
-        {
-            detail = parsed.ToString();
-            var zh = ErrorMessagesZhHans.Get(parsed);
-            Console.Error.WriteLine($"[{detail}] {zh.Message}{(zh.SuggestedAction is null ? string.Empty : "（" + zh.SuggestedAction + "）")}");
+        case AppFailureException appException:
+            WriteLocalized(appException.Code);
             return;
-        }
-
-        Console.Error.WriteLine($"[{brokerException.Code}] {brokerException.Message}");
-        return;
+        case BrokerTransportException brokerException:
+            Console.Error.WriteLine($"[{brokerException.Code}] {brokerException.Message}");
+            return;
+        case NoMatchingDataSetAdapterException:
+            WriteLocalized(ErrorCode.UnsupportedSchema);
+            return;
+        default:
+            Console.Error.WriteLine($"{exception.GetType().Name}: {exception.Message}");
+            return;
     }
 
-    if (exception is AppFailureException appException)
+    static void WriteLocalized(ErrorCode code)
     {
-        var zh = ErrorMessagesZhHans.Get(appException.Code);
-        Console.Error.WriteLine($"[{appException.Code}] {zh.Message}{(zh.SuggestedAction is null ? string.Empty : "（" + zh.SuggestedAction + "）")}");
-        return;
+        var zh = ErrorMessagesZhHans.Get(code);
+        Console.Error.WriteLine($"[{code}] {zh.Message}{(zh.SuggestedAction is null ? string.Empty : "（" + zh.SuggestedAction + "）")}");
     }
-
-    if (exception is NoMatchingDataSetAdapterException)
-    {
-        var zh = ErrorMessagesZhHans.Get(ErrorCode.UnsupportedSchema);
-        Console.Error.WriteLine($"[{ErrorCode.UnsupportedSchema}] {zh.Message}{(zh.SuggestedAction is null ? string.Empty : "（" + zh.SuggestedAction + "）")}");
-        return;
-    }
-
-    Console.Error.WriteLine($"{exception.GetType().Name}: {exception.Message}");
 }
 
 static int GetExportExitCode(VoiceExportManifest manifest)
@@ -1034,94 +871,12 @@ static int GetExportExitCode(VoiceExportManifest manifest)
     return manifest.Failures.Count == 0 ? 0 : 3;
 }
 
-/// <summary>
-/// Resolves and confirms the path-derived account candidate before a
-/// privileged materialization runs. An explicit <c>--account</c> that matches
-/// the candidate counts as confirmation; otherwise the confirmation port
-/// prompts the user. A null candidate (unrecognized layout) proceeds and the
-/// workspace validation later refuses it.
-/// </summary>
-static async Task<string?> ConfirmAccountAsync(string? candidate, string? requestedAccount, CancellationToken cancellationToken)
-{
-    if (candidate is null)
-    {
-        return null;
-    }
-
-    if (requestedAccount is not null)
-    {
-        if (!string.Equals(requestedAccount, candidate, StringComparison.Ordinal))
-        {
-            throw new AppFailureException(ErrorCode.AccountConfirmationRequired, $"The requested account '{requestedAccount}' does not match the detected account '{candidate}'.");
-        }
-
-        return candidate;
-    }
-
-    var confirmation = await new ConsoleAccountConfirmation().ConfirmAsync(
-        new AccountIdentityReport(candidate, AccountIdentityState.Candidate, null),
-        cancellationToken).ConfigureAwait(false);
-    if (!confirmation.Confirmed || !string.Equals(confirmation.ConfirmedAccountId, candidate, StringComparison.Ordinal))
-    {
-        throw new AppFailureException(ErrorCode.AccountConfirmationRequired, "Account confirmation was declined.");
-    }
-
-    return candidate;
-}
-
-/// <summary>
-/// Presentation-layer mapping from stable error codes to zh-Hans guidance.
-/// Lower layers never emit these strings; a future UI host maps the same
-/// codes with its own localized copy.
-/// </summary>
-internal static class ErrorMessagesZhHans
-{    internal static (string Message, string? SuggestedAction) Get(ErrorCode code)
-    {
-        var error = ErrorCatalog.Get(code);
-        var message = code switch
-        {
-            ErrorCode.WeixinNotRunning => "未检测到正在运行的微信进程",
-            ErrorCode.UnsupportedWeixinVersion => "当前微信版本不受支持",
-            ErrorCode.ProcessIdentityMismatch => "微信进程身份与所选配置不匹配",
-            ErrorCode.SnapshotInvalid => "快照校验失败",
-            ErrorCode.SnapshotInconsistent => "快照内容在验证过程中发生变化",
-            ErrorCode.KeyCandidateNotFound => "未找到能验证全部数据库组的密钥候选",
-            ErrorCode.DatabaseGroupUncovered => "密钥获取未覆盖所有必需的数据库组",
-            ErrorCode.WorkerBundleUntrusted => "SQLCipher 工作进程包未通过信任验证",
-            ErrorCode.WorkerFailed => "SQLCipher 工作进程执行失败",
-            ErrorCode.MaterializationInvalid => "数据物化输出未通过独立验证",
-            ErrorCode.WorkspaceInvalid => "工作区无效",
-            ErrorCode.UnsupportedSchema => "未找到支持该数据库结构的适配器",
-            ErrorCode.ContactNotFound => "未找到指定的联系人",
-            ErrorCode.ExportPartialFailure => "导出完成但存在部分失败项",
-            ErrorCode.AccountConfirmationRequired => "检测到账号，需要您确认后继续",
-            _ => "发生未知错误",
-        };
-        var action = error.SuggestedAction switch
-        {
-            "start-weixin" => "请先启动微信后再试",
-            "use-supported-version" => "请使用受支持的微信版本",
-            "restart-weixin-and-retry" => "请重启微信后重试",
-            "re-snapshot" => "请重新创建快照",
-            "reinstall-package" => "请重新安装软件包",
-            "retry-materialization" => "请重试物化操作",
-            "re-materialize" => "请重新执行物化",
-            "confirm-account" => "请确认账号后再继续",
-            "choose-contact" => "请重新选择联系人",
-            "review-failures" => "请查看失败明细",
-            "use-supported-schema" => "请使用受支持的结构版本",
-            _ => null,
-        };
-        return (message, action);
-    }
-}
-
 internal sealed record DoctorReport(
     string Runtime,
     string OperatingSystem,
     bool IsWindows,
     IReadOnlyList<string> RecognizedProcessNames,
-    IReadOnlyList<WeChatProcessInfo> RunningWeChatProcesses,
+    IReadOnlyList<WeChatVoice.Windows.WeChatProcessInfo> RunningWeChatProcesses,
     CapabilityReport Capabilities);
 
 internal sealed record CapabilityReport(
@@ -1167,5 +922,33 @@ internal static class CliJson
     {
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+}
+
+/// <summary>
+/// Presentation-layer mapping from stable error codes to zh-Hans guidance.
+/// The codes themselves are the machine contract; this table is display only.
+/// </summary>
+internal static class ErrorMessagesZhHans
+{
+    internal static (string Message, string? SuggestedAction) Get(ErrorCode code) => code switch
+    {
+        ErrorCode.WeixinNotRunning => ("未检测到正在运行的受支持 Weixin 进程", "start-weixin"),
+        ErrorCode.UnsupportedWeixinVersion => ("当前 Weixin 版本不受支持（仅支持 4.1.11.55）", "use-supported-version"),
+        ErrorCode.ProcessIdentityMismatch => ("Weixin 进程身份证据与 Profile 不匹配", "restart-weixin-and-retry"),
+        ErrorCode.SnapshotInvalid => ("快照校验失败", "re-snapshot"),
+        ErrorCode.SnapshotInconsistent => ("快照内容在验证期间发生变化", "re-snapshot"),
+        ErrorCode.KeyCandidateNotFound => ("未能为每个数据库组校验出密钥", "restart-weixin-and-retry"),
+        ErrorCode.DatabaseGroupUncovered => ("密钥采集未覆盖全部必需的源数据库", "re-snapshot"),
+        ErrorCode.WorkerBundleUntrusted => ("SQLCipher Worker 或 Key Broker 未通过信任校验", "reinstall-package"),
+        ErrorCode.WorkerFailed => ("SQLCipher Worker 处理失败", "retry-materialization"),
+        ErrorCode.MaterializationInvalid => ("物料化输出未通过独立校验", "retry-materialization"),
+        ErrorCode.WorkspaceInvalid => ("本地 Workspace 无效或与确认账号不一致", "re-materialize"),
+        ErrorCode.UnsupportedSchema => ("未找到支持该数据库结构的已验证适配器", "use-supported-schema"),
+        ErrorCode.ContactNotFound => ("未找到请求的稳定联系人", "choose-contact"),
+        ErrorCode.ExportPartialFailure => ("导出完成但存在逐条失败", "review-failures"),
+        ErrorCode.AccountConfirmationRequired => ("账号身份仅为候选，需要明确确认", "confirm-account"),
+        ErrorCode.UacElevationRejected => ("UAC 管理员授权被拒绝", "retry-materialization"),
+        _ => ("操作失败", null),
     };
 }
