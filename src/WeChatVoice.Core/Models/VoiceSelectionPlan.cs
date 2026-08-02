@@ -14,7 +14,12 @@ public sealed record VoiceSelectionPlan(
     DateTimeOffset? ToUtc,
     int? MaximumResults,
     string PlanFingerprint,
-    VoiceScanReport ScanReport)
+    VoiceScanReport ScanReport,
+    long? MinimumDurationMs = null,
+    long? MaximumDurationMs = null,
+    long? MinimumPayloadBytes = null,
+    long? MaximumPayloadBytes = null,
+    bool ResolveDurations = false)
 {
     public string QueryFingerprint => PlanFingerprint;
 
@@ -26,11 +31,16 @@ public sealed record VoiceSelectionPlan(
 
     public static string ComputeFingerprint(string workspaceId, string dataSetId, string accountId,
         string contactId, string contactUsername, VoiceDirection direction,
-        DateTimeOffset? fromUtc, DateTimeOffset? toUtc, int? maximumResults)
+        DateTimeOffset? fromUtc, DateTimeOffset? toUtc, int? maximumResults,
+        long? minimumDurationMs = null, long? maximumDurationMs = null,
+        long? minimumPayloadBytes = null, long? maximumPayloadBytes = null,
+        bool resolveDurations = false)
     {
         var value = string.Join("\n", workspaceId, dataSetId, accountId, contactId, contactUsername,
             direction, fromUtc?.ToUniversalTime().ToString("O") ?? "", toUtc?.ToUniversalTime().ToString("O") ?? "",
-            maximumResults?.ToString() ?? "");
+            maximumResults?.ToString() ?? "", minimumDurationMs?.ToString() ?? "",
+            maximumDurationMs?.ToString() ?? "", minimumPayloadBytes?.ToString() ?? "",
+            maximumPayloadBytes?.ToString() ?? "", resolveDurations ? "1" : "0");
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     }
 }

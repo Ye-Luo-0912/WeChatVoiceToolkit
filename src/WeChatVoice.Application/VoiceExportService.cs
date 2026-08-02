@@ -19,17 +19,20 @@ public sealed class VoiceExportService
     private readonly IVoiceExportStore _exportStore;
     private readonly IVoiceDecoder? _voiceDecoder;
     private readonly IVoiceDurationCache? _durationCache;
+    private readonly IVoiceDurationResolver? _durationResolver;
 
     public VoiceExportService(
         IVoiceCatalog voiceCatalog,
         IVoiceExportStore exportStore,
         IVoiceDecoder? voiceDecoder = null,
-        IVoiceDurationCache? durationCache = null)
+        IVoiceDurationCache? durationCache = null,
+        IVoiceDurationResolver? durationResolver = null)
     {
         _voiceCatalog = voiceCatalog ?? throw new ArgumentNullException(nameof(voiceCatalog));
         _exportStore = exportStore ?? throw new ArgumentNullException(nameof(exportStore));
         _voiceDecoder = voiceDecoder;
         _durationCache = durationCache;
+        _durationResolver = durationResolver;
     }
 
     public Task<VoiceExportManifest> ExportAsync(VoiceQuery query, CancellationToken cancellationToken = default)
@@ -75,7 +78,12 @@ public sealed class VoiceExportService
 
         try
         {
-            await foreach (var record in _voiceCatalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+            await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
+                _voiceCatalog,
+                query,
+                _durationResolver,
+                bypassCatalogDeepScan: false,
+                cancellationToken: cancellationToken).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 resultSetFingerprint.Append(record);
@@ -190,7 +198,12 @@ public sealed class VoiceExportService
         CancellationToken cancellationToken)
     {
         using var fingerprint = new VoiceResultSetFingerprintBuilder();
-        await foreach (var record in _voiceCatalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+        await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
+            _voiceCatalog,
+            query,
+            _durationResolver,
+            bypassCatalogDeepScan: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             fingerprint.Append(record);
         }
@@ -489,7 +502,7 @@ public sealed class VoiceExportService
             record.SpeakerId,
             hasDecodeError,
             qualityFlags.Count == 0 && durationMs is not null ? Array.Empty<string>() : qualityFlags.Concat(durationMs is null ? ["duration-unknown"] : Array.Empty<string>()).ToArray(),
-            false);
+            true);
 
     private async Task<long?> TryReadCachedDurationAsync(
         VoiceRecord record,

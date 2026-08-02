@@ -18,7 +18,11 @@ public static class VoiceQueryBuilder
         DateTimeOffset? to,
         int? maximumResults = null,
         bool deepScan = false,
-        bool resolveDuration = false)
+        bool resolveDuration = false,
+        long? minimumDurationMs = null,
+        long? maximumDurationMs = null,
+        long? minimumPayloadBytes = null,
+        long? maximumPayloadBytes = null)
     {
         ArgumentNullException.ThrowIfNull(contact);
         if (!string.IsNullOrWhiteSpace(conversationId)
@@ -36,7 +40,11 @@ public static class VoiceQueryBuilder
             ContactId: contact.ContactId,
             MaximumResults: maximumResults,
             DeepScan: deepScan,
-            ResolveDuration: resolveDuration);
+            ResolveDuration: resolveDuration || minimumDurationMs is not null || maximumDurationMs is not null,
+            MinimumDurationMs: minimumDurationMs,
+            MaximumDurationMs: maximumDurationMs,
+            MinimumPayloadBytes: minimumPayloadBytes,
+            MaximumPayloadBytes: maximumPayloadBytes);
     }
 
     public static DateTimeOffset? ParseUtc(string? value, string optionName)

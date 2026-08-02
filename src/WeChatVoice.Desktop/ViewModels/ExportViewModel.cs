@@ -67,6 +67,12 @@ public sealed partial class ExportViewModel : PageViewModelBase
     [ObservableProperty]
     private string? _manifestPath;
 
+    [ObservableProperty]
+    private long _totalTrainingDurationMs;
+
+    [ObservableProperty]
+    private int _trainingEntryCount;
+
     [RelayCommand]
     private Task ExportAsync()
     {
@@ -121,10 +127,15 @@ public sealed partial class ExportViewModel : PageViewModelBase
                     From: plan.FromUtc,
                     To: plan.ToUtc,
                     MaximumResults: plan.MaximumResults,
-                    ExpectedResultSetFingerprint: plan.ResultSetFingerprint,
-                    ExpectedResultCount: plan.ResultCount,
-                    ExpectedTotalPayloadBytes: plan.TotalPayloadBytes,
-                    ExpectedContactId: plan.ContactId),
+                     ExpectedResultSetFingerprint: plan.ResultSetFingerprint,
+                     ExpectedResultCount: plan.ResultCount,
+                     ExpectedTotalPayloadBytes: plan.TotalPayloadBytes,
+                    ExpectedContactId: plan.ContactId,
+                    MinimumDurationMs: plan.MinimumDurationMs,
+                    MaximumDurationMs: plan.MaximumDurationMs,
+                    MinimumPayloadBytes: plan.MinimumPayloadBytes,
+                    MaximumPayloadBytes: plan.MaximumPayloadBytes,
+                    ResolveDurations: plan.ResolveDurations),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
@@ -149,6 +160,8 @@ public sealed partial class ExportViewModel : PageViewModelBase
             var manifest = result.Manifest;
             ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
             SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
+            TotalTrainingDurationMs = manifest.TotalTrainingDurationMs;
+            TrainingEntryCount = manifest.TrainingEntryCount;
             Failures = manifest.Failures;
             FailureCount = manifest.Failures.Count;
             ExportSummary = manifest.RunStatus switch
@@ -176,10 +189,12 @@ public sealed partial class ExportViewModel : PageViewModelBase
 
                 return await Workflows.VoiceExport.RecoverRunAsync(capturedJournalPath, cancellationToken).ConfigureAwait(false);
             },
-            manifest =>
+                manifest =>
             {
                 ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
                 SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
+                TotalTrainingDurationMs = manifest.TotalTrainingDurationMs;
+                TrainingEntryCount = manifest.TrainingEntryCount;
                 Failures = manifest.Failures;
                 ExportSummary = $"Journal 恢复完成：{ExportedCount} 条，失败 {manifest.Failures.Count} 条";
             });

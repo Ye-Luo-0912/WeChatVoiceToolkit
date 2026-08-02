@@ -10,11 +10,16 @@ public sealed class VoiceScanService
 {
     private readonly IVoiceCatalog _catalog;
     private readonly IVoiceDurationResolver? _durationResolver;
+    private readonly CachedVoicePayloadHashResolver? _payloadHashResolver;
 
-    public VoiceScanService(IVoiceCatalog catalog, IVoiceDurationResolver? durationResolver = null)
+    public VoiceScanService(
+        IVoiceCatalog catalog,
+        IVoiceDurationResolver? durationResolver = null,
+        IVoicePayloadHashCache? payloadHashCache = null)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _durationResolver = durationResolver;
+        _payloadHashResolver = payloadHashCache is null ? null : new CachedVoicePayloadHashResolver(payloadHashCache);
     }
 
     public async Task<VoiceScanReport> ScanAsync(VoiceQuery query, CancellationToken cancellationToken = default)
@@ -36,7 +41,12 @@ public sealed class VoiceScanService
         var durationKnown = 0;
         using var resultSetFingerprint = new VoiceResultSetFingerprintBuilder();
 
-        await foreach (var record in _catalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+        await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
+            _catalog,
+            query,
+            _durationResolver,
+            bypassCatalogDeepScan: _payloadHashResolver is not null,
+            cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             resultSetFingerprint.Append(record);
             count++;
@@ -86,9 +96,17 @@ public sealed class VoiceScanService
                 ambiguous++;
             }
 
-            if (query.DeepScan && !string.IsNullOrWhiteSpace(record.PayloadSha256))
+            var payloadHash = record.PayloadSha256;
+            if (query.DeepScan
+                && string.IsNullOrWhiteSpace(payloadHash)
+                && _payloadHashResolver is not null)
             {
-                payloadHashes[record.PayloadSha256] = payloadHashes.TryGetValue(record.PayloadSha256, out var hashCount) ? hashCount + 1 : 1;
+                payloadHash = await _payloadHashResolver.ResolveAsync(_catalog, record, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (query.DeepScan && !string.IsNullOrWhiteSpace(payloadHash))
+            {
+                payloadHashes[payloadHash] = payloadHashes.TryGetValue(payloadHash, out var hashCount) ? hashCount + 1 : 1;
             }
         }
 

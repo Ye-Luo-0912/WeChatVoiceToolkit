@@ -16,6 +16,9 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
     public HistoryDiagnosticsViewModel(DesktopServices services)
         : base(services)
     {
+        // Metadata is safe to load at startup; the JSON is still untrusted and
+        // is only opened after the user explicitly invokes Load and Verify.
+        Refresh();
     }
 
     public override string Title => "历史与诊断";

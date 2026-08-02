@@ -36,7 +36,57 @@ public sealed class VoiceExportServiceTests
 
         var manifest = await service.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
 
-        Assert.Equal(4321, Assert.Single(manifest.Entries).DurationMs);
+        var entry = Assert.Single(manifest.Entries);
+        Assert.Equal(4321, entry.DurationMs);
+        Assert.True(entry.SelectedForTraining);
+        Assert.Equal(4321, manifest.TotalTrainingDurationMs);
+        Assert.Equal(1, manifest.TrainingEntryCount);
+        var csvPath = Path.Combine(temporary.GetPath("export"), "manifest.csv");
+        Assert.True(File.Exists(csvPath));
+        var csv = await File.ReadAllTextAsync(csvPath);
+        Assert.Contains("duration_ms", csv, StringComparison.Ordinal);
+        Assert.Contains("4321", csv, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_second_export_skips_every_matching_content_without_opening_source_payloads()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payloadA = new byte[] { 0x01, 0x02, 0x03 };
+        var payloadB = new byte[] { 0x04, 0x05, 0x06, 0x07 };
+        var recordA = CreateRecord("repeat-a", Hash(payloadA), payloadA.Length);
+        var recordB = CreateRecord("repeat-b", Hash(payloadB), payloadB.Length);
+        var records = new[] { recordA, recordB };
+        var exportRoot = temporary.GetPath("repeat-export");
+        var query = new VoiceQuery(Direction: VoiceDirection.Incoming, MaximumResults: 100);
+
+        var first = new VoiceExportService(
+            new TestVoiceCatalog(
+            [
+                (recordA, () => new MemoryStream(payloadA, writable: false)),
+                (recordB, () => new MemoryStream(payloadB, writable: false)),
+            ]),
+            new FileSystemVoiceExportStore(exportRoot));
+        var firstManifest = await first.ExportAsync(query, new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+        Assert.Equal(2, firstManifest.Entries.Count);
+        Assert.All(firstManifest.Entries, entry => Assert.False(entry.WasSkipped));
+
+        var secondA = new CountingStream(new MemoryStream(payloadA, writable: false));
+        var secondB = new CountingStream(new MemoryStream(payloadB, writable: false));
+        var second = new VoiceExportService(
+            new TestVoiceCatalog(
+            [
+                (recordA, () => secondA),
+                (recordB, () => secondB),
+            ]),
+            new FileSystemVoiceExportStore(exportRoot));
+        var secondManifest = await second.ExportAsync(query, new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        Assert.Equal(records.Length, secondManifest.Entries.Count);
+        Assert.All(secondManifest.Entries, entry => Assert.True(entry.WasSkipped));
+        Assert.Empty(secondManifest.Failures);
+        Assert.Equal(0, secondA.BytesRead);
+        Assert.Equal(0, secondB.BytesRead);
     }
     [Fact]
     public async Task ExportAsync_preserves_original_silk_when_optional_decoding_fails()
@@ -305,6 +355,9 @@ public sealed class VoiceExportServiceTests
         DatabaseFingerprints: ["db-fingerprint"],
         PayloadSha256: payloadSha256,
         PayloadByteLength: payloadByteLength);
+
+    private static string Hash(byte[] payload)
+        => Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
 
     private sealed class TestVoiceCatalog : IVoiceCatalog
     {

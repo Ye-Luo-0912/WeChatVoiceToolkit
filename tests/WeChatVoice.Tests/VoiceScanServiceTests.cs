@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using WeChatVoice.Application;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Infrastructure.Audio;
 
 namespace WeChatVoice.Tests;
 
@@ -47,10 +48,73 @@ public sealed class VoiceScanServiceTests
         Assert.Equal(0, withDecode.DurationUnknownCount);
     }
 
+    [Fact]
+    public async Task ScanAsync_applies_maximum_results_after_duration_and_payload_filters()
+    {
+        var records = Enumerable.Range(1, 5)
+            .Select(index => new VoiceRecord(
+                $"filtered-{index}",
+                "conversation",
+                DateTimeOffset.UtcNow.AddMinutes(index),
+                VoiceDirection.Incoming,
+                new VoicePayloadLocator("media", 0, index.ToString()),
+                PayloadByteLength: index * 10,
+                DurationMs: index * 1000,
+                AdapterId: "adapter",
+                AccountId: "account"))
+            .ToArray();
+
+        var report = await new VoiceScanService(new FakeCatalog(records), new RecordDurationResolver()).ScanAsync(
+            new VoiceQuery(
+                Direction: VoiceDirection.Incoming,
+                MaximumResults: 2,
+                ResolveDuration: true,
+                MinimumDurationMs: 2000,
+                MinimumPayloadBytes: 20));
+
+        Assert.Equal(2, report.MatchedVoiceCount);
+        Assert.Equal(2, report.ExportableVoiceCount);
+        Assert.Equal(50, report.TotalPayloadBytes);
+    }
+
+    [Fact]
+    public async Task Deep_scan_reuses_payload_hash_cache_without_reading_payload_again()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payload = new byte[] { 0x23, 0x42, 0x61, 0x7f };
+        var record = new VoiceRecord(
+            "cached-hash",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "cached-hash"),
+            PayloadByteLength: payload.Length,
+            AdapterId: "adapter",
+            AccountId: "account");
+        var catalog = new CountingPayloadCatalog(record, payload);
+        await using var cache = new JsonlVoicePayloadHashCache(temporary.GetPath(".wechatvoice", "deep-scan-cache.jsonl"));
+        var query = new VoiceQuery(Direction: VoiceDirection.Incoming, DeepScan: true);
+
+        var first = await new VoiceScanService(catalog, payloadHashCache: cache).ScanAsync(query);
+        var firstOpenCount = catalog.OpenPayloadCount;
+        var second = await new VoiceScanService(catalog, payloadHashCache: cache).ScanAsync(query);
+
+        Assert.Equal(1, firstOpenCount);
+        Assert.Equal(firstOpenCount, catalog.OpenPayloadCount);
+        Assert.Equal(first.ResultSetFingerprint, second.ResultSetFingerprint);
+        Assert.True(File.Exists(temporary.GetPath(".wechatvoice", "deep-scan-cache.jsonl")));
+    }
+
     private sealed class FakeDurationResolver(long duration) : IVoiceDurationResolver
     {
         public Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
             => Task.FromResult<long?>(duration);
+    }
+
+    private sealed class RecordDurationResolver : IVoiceDurationResolver
+    {
+        public Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
+            => Task.FromResult(record.DurationMs);
     }
 
     private sealed class FakeCatalog(IReadOnlyList<VoiceRecord> records) : IVoiceCatalog
@@ -79,6 +143,39 @@ public sealed class VoiceScanServiceTests
 
         public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
             => ValueTask.FromResult<Stream>(new MemoryStream());
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class CountingPayloadCatalog(VoiceRecord record, byte[] payload) : IVoiceCatalog
+    {
+        public VoiceCatalogContext Context { get; } = new("dataset", "adapter", "1", "account", ["db-fingerprint"]);
+
+        public int OpenPayloadCount { get; private set; }
+
+        public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(ContactQuery query, [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public async IAsyncEnumerable<VoiceRecord> QueryVoicesAsync(VoiceQuery query, [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (query.Direction is null || query.Direction == record.Direction)
+            {
+                yield return record;
+            }
+
+            await Task.CompletedTask;
+        }
+
+        public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            OpenPayloadCount++;
+            return ValueTask.FromResult<Stream>(new MemoryStream(payload, writable: false));
+        }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

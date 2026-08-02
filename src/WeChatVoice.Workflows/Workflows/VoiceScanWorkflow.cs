@@ -13,7 +13,8 @@ public sealed class VoiceScanWorkflow(
     Workspaces.VoiceCatalogOpener opener,
     Workspaces.ContactResolver resolver,
     IVoiceDurationResolver? durationResolver = null,
-    Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null) : IVoiceScanWorkflow
+    Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null,
+    Func<VerifiedLocalWorkspace, IVoicePayloadHashCache>? deepScanCacheFactory = null) : IVoiceScanWorkflow
 {
     public async Task<VoiceScanWorkflowResult> RunAsync(
         VoiceScanWorkflowRequest request,
@@ -32,16 +33,19 @@ public sealed class VoiceScanWorkflow(
             context.Report(OperationPhase.VoiceScan, OperationStageIds.LoadingWorkspace);
             await using var session = await opener.OpenAsync(request.WorkspacePath, cancellationToken).ConfigureAwait(false);
             await using var durationCache = durationCacheFactory?.Invoke(session.Workspace);
+            await using var deepScanCache = deepScanCacheFactory?.Invoke(session.Workspace);
             context.Report(OperationPhase.VoiceScan, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
             EnsureExpectedContact(request.ExpectedContactId, contact);
             var query = VoiceQueryBuilder.Build(request.ConversationId, contact, request.Direction, request.From, request.To,
-                request.MaximumResults, request.DeepScan, request.ResolveDurations);
+                request.MaximumResults, request.DeepScan, request.ResolveDurations,
+                request.MinimumDurationMs, request.MaximumDurationMs,
+                request.MinimumPayloadBytes, request.MaximumPayloadBytes);
             context.Report(OperationPhase.VoiceScan, OperationStageIds.QueryingVoices);
             var effectiveDurationResolver = durationResolver is not null && durationCache is not null
                 ? new CachedVoiceDurationResolver(durationResolver, durationCache)
                 : durationResolver;
-            var report = await new VoiceScanService(session.Catalog, effectiveDurationResolver).ScanAsync(query, cancellationToken).ConfigureAwait(false);
+            var report = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache).ScanAsync(query, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceScan, OperationStageIds.Completing);
             return new VoiceScanWorkflowResult(report, session.Workspace);

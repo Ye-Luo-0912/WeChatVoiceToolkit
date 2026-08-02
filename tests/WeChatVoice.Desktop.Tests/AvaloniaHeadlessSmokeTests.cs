@@ -95,8 +95,12 @@ public sealed class AvaloniaHeadlessSmokeTests
         Assert.Equal("contact-b", services.Project.SelectedContact?.ContactId);
 
         var scan = Assert.IsType<ScanViewModel>(main.Pages[4]);
+        scan.FromText = "2026-01-01T00:00:00Z";
+        scan.ToText = "2026-01-31T23:59:59Z";
+        scan.MaximumResultsText = "100";
         await scan.ScanCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(VoiceDirection.Incoming, fakeScan.LastRequest?.Direction);
+        Assert.Equal(100, fakeScan.LastRequest?.MaximumResults);
         Assert.Equal("contact-b", services.Project.SelectionPlan?.ContactId);
 
         var exportPage = Assert.IsType<ExportViewModel>(main.Pages[5]);
@@ -106,6 +110,9 @@ public sealed class AvaloniaHeadlessSmokeTests
         Assert.Equal(WorkflowState.Completed, exportPage.RunHost.State);
         Assert.Equal("wxid_b", fakeExport.LastRequest?.ContactUsername);
         Assert.Equal(VoiceDirection.Incoming, fakeExport.LastRequest?.Direction);
+        Assert.Equal(100, fakeExport.LastRequest?.MaximumResults);
+        Assert.Equal(fakeScan.LastRequest?.From, fakeExport.LastRequest?.From);
+        Assert.Equal(fakeScan.LastRequest?.To, fakeExport.LastRequest?.To);
         Assert.Equal(services.Project.SelectionPlan?.ResultSetFingerprint, fakeExport.LastRequest?.ExpectedResultSetFingerprint);
         main.SelectedPage = exportPage;
         Assert.Same(exportPage, main.SelectedPage);

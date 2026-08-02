@@ -55,6 +55,10 @@ public sealed partial class ScanViewModel : PageViewModelBase
     [ObservableProperty] private bool _deepScan;
     [ObservableProperty] private bool _resolveDurations;
     [ObservableProperty] private string? _maximumResultsText;
+    [ObservableProperty] private string? _minimumDurationMsText;
+    [ObservableProperty] private string? _maximumDurationMsText;
+    [ObservableProperty] private string? _minimumPayloadBytesText;
+    [ObservableProperty] private string? _maximumPayloadBytesText;
 
     [ObservableProperty]
     private string? _scanSummary;
@@ -109,6 +113,10 @@ public sealed partial class ScanViewModel : PageViewModelBase
         var fromText = FromText;
         var toText = ToText;
         var maximumResultsText = MaximumResultsText;
+        var minimumDurationMsText = MinimumDurationMsText;
+        var maximumDurationMsText = MaximumDurationMsText;
+        var minimumPayloadBytesText = MinimumPayloadBytesText;
+        var maximumPayloadBytesText = MaximumPayloadBytesText;
         var deepScan = DeepScan;
         var resolveDurations = ResolveDurations;
         ScanParameters? parsedParameters = null;
@@ -122,7 +130,21 @@ public sealed partial class ScanViewModel : PageViewModelBase
             var from = VoiceQueryBuilder.ParseUtc(fromText, "from");
             var to = VoiceQueryBuilder.ParseUtc(toText, "to");
             var maximumResults = ParseMaximumResults(maximumResultsText);
-            parsedParameters = new ScanParameters(direction, from, to, maximumResults);
+            var minimumDurationMs = ParseNonNegativeLong(minimumDurationMsText, "minimum duration");
+            var maximumDurationMs = ParseNonNegativeLong(maximumDurationMsText, "maximum duration");
+            var minimumPayloadBytes = ParseNonNegativeLong(minimumPayloadBytesText, "minimum payload size");
+            var maximumPayloadBytes = ParseNonNegativeLong(maximumPayloadBytesText, "maximum payload size");
+            ValidateRange(minimumDurationMs, maximumDurationMs, "duration");
+            ValidateRange(minimumPayloadBytes, maximumPayloadBytes, "payload size");
+            parsedParameters = new ScanParameters(
+                direction,
+                from,
+                to,
+                maximumResults,
+                minimumDurationMs,
+                maximumDurationMs,
+                minimumPayloadBytes,
+                maximumPayloadBytes);
             if (selected is null || string.IsNullOrWhiteSpace(selected.Username))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Please select a contact before scanning.");
@@ -150,13 +172,29 @@ public sealed partial class ScanViewModel : PageViewModelBase
                     MaximumResults: maximumResults,
                     DeepScan: deepScan,
                     ResolveDurations: resolveDurations,
-                    ExpectedContactId: selected.ContactId),
+                    ExpectedContactId: selected.ContactId,
+                    MinimumDurationMs: minimumDurationMs,
+                    MaximumDurationMs: maximumDurationMs,
+                    MinimumPayloadBytes: minimumPayloadBytes,
+                    MaximumPayloadBytes: maximumPayloadBytes),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
         result =>
         {
-            if (!IsCurrentRequest(selected, workspacePath, directionText, fromText, toText, maximumResultsText, deepScan, resolveDurations))
+            if (!IsCurrentRequest(
+                selected,
+                workspacePath,
+                directionText,
+                fromText,
+                toText,
+                maximumResultsText,
+                minimumDurationMsText,
+                maximumDurationMsText,
+                minimumPayloadBytesText,
+                maximumPayloadBytesText,
+                deepScan,
+                resolveDurations))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "扫描期间联系人或查询参数发生变化；请重新扫描当前选择。");
             }
@@ -170,9 +208,15 @@ public sealed partial class ScanViewModel : PageViewModelBase
             var dataSetId = result.Workspace.DataSet.DataSetId ?? "";
             var accountId = result.Workspace.DataSet.AccountId ?? "";
             var fingerprint = VoiceSelectionPlan.ComputeFingerprint(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
-                contact.ContactId, contact.Username!, parameters.Direction, parameters.From, parameters.To, parameters.MaximumResults);
+                contact.ContactId, contact.Username!, parameters.Direction, parameters.From, parameters.To, parameters.MaximumResults,
+                parameters.MinimumDurationMs, parameters.MaximumDurationMs,
+                parameters.MinimumPayloadBytes, parameters.MaximumPayloadBytes,
+                resolveDurations);
             Services.Project.SelectionPlan = new VoiceSelectionPlan(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
-                contact.ContactId, contact.Username!, parameters.Direction, parameters.From, parameters.To, parameters.MaximumResults, fingerprint, report);
+                contact.ContactId, contact.Username!, parameters.Direction, parameters.From, parameters.To, parameters.MaximumResults, fingerprint, report,
+                parameters.MinimumDurationMs, parameters.MaximumDurationMs,
+                parameters.MinimumPayloadBytes, parameters.MaximumPayloadBytes,
+                resolveDurations);
             MatchedVoiceCount = report.MatchedVoiceCount;
             MissingCount = report.UnassociatedMediaCount;
             EmptyCount = report.EmptyBlobCount;
@@ -192,9 +236,14 @@ public sealed partial class ScanViewModel : PageViewModelBase
 
     private VoiceDirection ParseDirection(string? directionText)
     {
-        return Enum.TryParse<VoiceDirection>(directionText, true, out var direction)
+        if (!Enum.TryParse<VoiceDirection>(directionText, true, out var direction))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "Desktop voice scanning requires incoming direction.");
+        }
+
+        return direction == VoiceDirection.Incoming
             ? direction
-            : throw new AppFailureException(ErrorCode.InvalidRequest, "Direction must be incoming or outgoing.");
+            : throw new AppFailureException(ErrorCode.InvalidRequest, "Desktop voice scanning is fixed to incoming direction.");
     }
 
     partial void OnWorkspacePathChanged(string? value) => InvalidateSelection();
@@ -203,6 +252,10 @@ public sealed partial class ScanViewModel : PageViewModelBase
     partial void OnToTextChanged(string? value) => InvalidateSelection();
     partial void OnDeepScanChanged(bool value) => InvalidateSelection();
     partial void OnMaximumResultsTextChanged(string? value) => InvalidateSelection();
+    partial void OnMinimumDurationMsTextChanged(string? value) => InvalidateSelection();
+    partial void OnMaximumDurationMsTextChanged(string? value) => InvalidateSelection();
+    partial void OnMinimumPayloadBytesTextChanged(string? value) => InvalidateSelection();
+    partial void OnMaximumPayloadBytesTextChanged(string? value) => InvalidateSelection();
     partial void OnResolveDurationsChanged(bool value) => InvalidateSelection();
 
     private void InvalidateSelection()
@@ -230,6 +283,21 @@ public sealed partial class ScanViewModel : PageViewModelBase
                 ? parsed
                 : throw new AppFailureException(ErrorCode.InvalidRequest, "Maximum results must be a positive integer.");
 
+    private static long? ParseNonNegativeLong(string? value, string label)
+        => string.IsNullOrWhiteSpace(value)
+            ? null
+            : long.TryParse(value, out var parsed) && parsed >= 0
+                ? parsed
+                : throw new AppFailureException(ErrorCode.InvalidRequest, $"{label} must be a non-negative integer.");
+
+    private static void ValidateRange(long? minimum, long? maximum, string label)
+    {
+        if (minimum is not null && maximum is not null && minimum > maximum)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, $"Minimum {label} cannot exceed maximum {label}.");
+        }
+    }
+
     private bool IsCurrentRequest(
         ContactRecord? selected,
         string? workspacePath,
@@ -237,6 +305,10 @@ public sealed partial class ScanViewModel : PageViewModelBase
         string? fromText,
         string? toText,
         string? maximumResultsText,
+        string? minimumDurationMsText,
+        string? maximumDurationMsText,
+        string? minimumPayloadBytesText,
+        string? maximumPayloadBytesText,
         bool deepScan,
         bool resolveDurations)
         => ReferenceEquals(Services.Project.SelectedContact, selected)
@@ -248,6 +320,10 @@ public sealed partial class ScanViewModel : PageViewModelBase
             && string.Equals(FromText, fromText, StringComparison.Ordinal)
             && string.Equals(ToText, toText, StringComparison.Ordinal)
             && string.Equals(MaximumResultsText, maximumResultsText, StringComparison.Ordinal)
+            && string.Equals(MinimumDurationMsText, minimumDurationMsText, StringComparison.Ordinal)
+            && string.Equals(MaximumDurationMsText, maximumDurationMsText, StringComparison.Ordinal)
+            && string.Equals(MinimumPayloadBytesText, minimumPayloadBytesText, StringComparison.Ordinal)
+            && string.Equals(MaximumPayloadBytesText, maximumPayloadBytesText, StringComparison.Ordinal)
             && DeepScan == deepScan
             && ResolveDurations == resolveDurations;
 
@@ -255,7 +331,11 @@ public sealed partial class ScanViewModel : PageViewModelBase
         VoiceDirection Direction,
         DateTimeOffset? From,
         DateTimeOffset? To,
-        int? MaximumResults);
+        int? MaximumResults,
+        long? MinimumDurationMs,
+        long? MaximumDurationMs,
+        long? MinimumPayloadBytes,
+        long? MaximumPayloadBytes);
 
     protected override void OnProjectPropertyChanged(string? propertyName)
     {

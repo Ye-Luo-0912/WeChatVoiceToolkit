@@ -160,7 +160,11 @@ public sealed record VoiceScanWorkflowRequest(
     int? MaximumResults = null,
     bool DeepScan = false,
     bool ResolveDurations = false,
-    string? ExpectedContactId = null);
+    string? ExpectedContactId = null,
+    long? MinimumDurationMs = null,
+    long? MaximumDurationMs = null,
+    long? MinimumPayloadBytes = null,
+    long? MaximumPayloadBytes = null);
 
 public sealed record VoiceScanWorkflowResult(
     VoiceScanReport Report,
@@ -178,7 +182,12 @@ public sealed record VoiceExportWorkflowRequest(
     string? ExpectedResultSetFingerprint = null,
     int? ExpectedResultCount = null,
     long? ExpectedTotalPayloadBytes = null,
-    string? ExpectedContactId = null);
+    string? ExpectedContactId = null,
+    long? MinimumDurationMs = null,
+    long? MaximumDurationMs = null,
+    long? MinimumPayloadBytes = null,
+    long? MaximumPayloadBytes = null,
+    bool ResolveDurations = false);
 
 public sealed record VoiceExportWorkflowResult(
     VoiceExportManifest Manifest,

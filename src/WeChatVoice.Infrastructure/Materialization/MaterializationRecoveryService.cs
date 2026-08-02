@@ -254,6 +254,7 @@ public sealed class MaterializationRecoveryService
             if (MaterializationStateStore.IsStatePath(path)
                 || MaterializationStateStore.IsLockPath(path)
                 || MaterializationStateStore.IsDurationCachePath(path)
+                || MaterializationStateStore.IsDeepScanCachePath(path)
                 || path.Equals(".wechatvoice/materialization-manifest.json", StringComparison.OrdinalIgnoreCase)
                 || !paths.Add(path))
             {
@@ -434,6 +435,7 @@ public sealed class MaterializationRecoveryService
         return MaterializationStateStore.IsStatePath(relative)
             || MaterializationStateStore.IsLockPath(relative)
             || MaterializationStateStore.IsDurationCachePath(relative)
+            || MaterializationStateStore.IsDeepScanCachePath(relative)
             || relative.Equals(".wechatvoice/materialization-manifest.json", StringComparison.OrdinalIgnoreCase);
     }
 

@@ -14,7 +14,8 @@ namespace WeChatVoice.Workflows.Workflows;
 public sealed class VoiceExportWorkflow(
     Workspaces.VoiceCatalogOpener opener,
     Workspaces.ContactResolver resolver,
-    Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null) : IVoiceExportWorkflow
+    Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null,
+    IVoiceDurationResolver? durationResolver = null) : IVoiceExportWorkflow
 {
     public async Task<VoiceExportWorkflowResult> RunAsync(
         VoiceExportWorkflowRequest request,
@@ -33,6 +34,9 @@ public sealed class VoiceExportWorkflow(
             context.Report(OperationPhase.VoiceExport, OperationStageIds.LoadingWorkspace);
             await using var session = await opener.OpenAsync(request.WorkspacePath, cancellationToken).ConfigureAwait(false);
             await using var durationCache = durationCacheFactory?.Invoke(session.Workspace);
+            var effectiveDurationResolver = durationResolver is not null && durationCache is not null
+                ? new CachedVoiceDurationResolver(durationResolver, durationCache)
+                : durationResolver;
             context.Report(OperationPhase.VoiceExport, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(request.ExpectedContactId)
@@ -48,11 +52,17 @@ public sealed class VoiceExportWorkflow(
                 request.Direction,
                 request.From,
                 request.To,
-                request.MaximumResults);
+                request.MaximumResults,
+                resolveDuration: request.ResolveDurations,
+                minimumDurationMs: request.MinimumDurationMs,
+                maximumDurationMs: request.MaximumDurationMs,
+                minimumPayloadBytes: request.MinimumPayloadBytes,
+                maximumPayloadBytes: request.MaximumPayloadBytes);
             var service = new VoiceExportService(
                 session.Catalog,
                 new FileSystemVoiceExportStore(request.OutputDirectory),
-                durationCache: durationCache);
+                durationCache: durationCache,
+                durationResolver: effectiveDurationResolver);
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Exporting);
             var manifest = await service.ExportAsync(query, new VoiceExportOptions
             {

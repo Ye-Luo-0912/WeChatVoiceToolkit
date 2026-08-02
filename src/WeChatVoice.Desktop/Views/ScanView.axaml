@@ -28,6 +28,13 @@
         <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
         <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
       </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock Width="180" Text="训练筛选（可选）" />
+        <TextBox Width="150" PlaceholderText="最短时长 ms" Text="{Binding MinimumDurationMsText}" />
+        <TextBox Width="150" PlaceholderText="最长时长 ms" Text="{Binding MaximumDurationMsText}" />
+        <TextBox Width="150" PlaceholderText="最小大小 bytes" Text="{Binding MinimumPayloadBytesText}" />
+        <TextBox Width="150" PlaceholderText="最大大小 bytes" Text="{Binding MaximumPayloadBytesText}" />
+      </StackPanel>
       <TextBlock Text="{Binding AccountSummary}" />
       <TextBlock Text="{Binding ScanSummary}" FontWeight="SemiBold" />
       <TextBlock Text="{Binding TotalDurationMs, StringFormat='总时长：{0} ms'}" />

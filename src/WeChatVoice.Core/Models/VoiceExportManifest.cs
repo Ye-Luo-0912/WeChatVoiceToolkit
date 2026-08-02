@@ -78,6 +78,45 @@ public sealed record VoiceExportManifest
     /// </summary>
     public AccountIdentity AccountIdentity { get; }
 
+    /// <summary>Duration of every successfully selected voice in this run.</summary>
+    public long TotalDurationMs => SumDuration(Entries, trainingOnly: false);
+
+    /// <summary>
+    /// Duration represented by the current training selection. The first
+    /// dataset flow marks every successfully exported raw SILK item as
+    /// selected; later UI curation can toggle the per-entry flag.
+    /// </summary>
+    public long TotalTrainingDurationMs => SumDuration(Entries, trainingOnly: true);
+
+    public long TotalPayloadBytes => SumBytes(Entries);
+
+    public int TrainingEntryCount => Entries.Count(static entry => entry.SelectedForTraining);
+
+    private static long SumDuration(IEnumerable<VoiceExportEntry> entries, bool trainingOnly)
+    {
+        long total = 0;
+        foreach (var entry in entries)
+        {
+            if ((!trainingOnly || entry.SelectedForTraining) && entry.DurationMs is > 0)
+            {
+                total = checked(total + entry.DurationMs.Value);
+            }
+        }
+
+        return total;
+    }
+
+    private static long SumBytes(IEnumerable<VoiceExportEntry> entries)
+    {
+        long total = 0;
+        foreach (var entry in entries)
+        {
+            total = checked(total + Math.Max(0, entry.OriginalByteLength));
+        }
+
+        return total;
+    }
+
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T>? values)
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());
 }

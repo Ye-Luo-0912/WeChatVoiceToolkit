@@ -56,8 +56,10 @@ public sealed class WorkflowCompositionRoot
                 configuredDecoder is IVersionedVoiceDurationResolver versioned
                     ? versioned.DecoderVersion
                     : DecoderVoiceDurationResolver.CurrentDecoderVersion);
-        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory);
-        VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory);
+        Func<VerifiedLocalWorkspace, IVoicePayloadHashCache> deepScanCacheFactory = workspaceResult =>
+            new JsonlVoicePayloadHashCache(VoicePayloadHashCachePath.ForWorkspace(workspaceResult));
+        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory, deepScanCacheFactory);
+        VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory, configuredDecoder);
         AccountConfirmation = accountConfirmation;
         AllowDevelopmentBroker = allowDevelopmentBroker;
     }

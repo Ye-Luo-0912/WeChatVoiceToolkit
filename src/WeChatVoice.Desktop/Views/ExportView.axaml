@@ -32,6 +32,8 @@
         <TextBlock Text="{Binding ExportedCount, StringFormat='新增：{0} 条'}" />
         <TextBlock Text="{Binding SkippedCount, StringFormat='跳过：{0} 条'}" />
         <TextBlock Text="{Binding FailureCount, StringFormat='失败：{0} 条'}" />
+        <TextBlock Text="{Binding TrainingEntryCount, StringFormat='训练条目：{0} 条'}" />
+        <TextBlock Text="{Binding TotalTrainingDurationMs, StringFormat='训练总时长：{0} ms'}" />
       </StackPanel>
 
       <StackPanel Spacing="8">

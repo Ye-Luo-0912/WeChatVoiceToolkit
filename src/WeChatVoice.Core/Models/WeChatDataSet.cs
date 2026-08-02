@@ -395,4 +395,35 @@ public sealed record VoiceRecord
 
     public VoiceProvenance Provenance
         => new(SnapshotId, DataSetId, AdapterVersion, DatabaseFingerprints);
+
+    public VoiceRecord WithDuration(long? durationMs)
+        => new(
+            MessageId,
+            ConversationId,
+            OccurredAtUtc,
+            Direction,
+            PayloadLocator,
+            SourceDatabase,
+            ShardNumber,
+            ShardId,
+            SnapshotId,
+            AdapterId,
+            AccountId,
+            SourceMessageKey,
+            PayloadSha256,
+            PayloadByteLength,
+            durationMs,
+            MediaLinked,
+            SpeakerId,
+            DataSetId,
+            AdapterVersion,
+            DatabaseFingerprints,
+            AdapterFamily,
+            AccountStableId,
+            ConversationStableId,
+            MessagePrimaryKey,
+            MediaPrimaryKey,
+            DecodedSha256,
+            DecodedByteLength,
+            PayloadState);
 }

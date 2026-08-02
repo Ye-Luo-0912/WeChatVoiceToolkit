@@ -14,12 +14,19 @@ public sealed record VoiceQuery
         string? ContactUsername = null,
         string? ContactId = null,
         bool DeepScan = false,
-        bool ResolveDuration = false)
+        bool ResolveDuration = false,
+        long? MinimumDurationMs = null,
+        long? MaximumDurationMs = null,
+        long? MinimumPayloadBytes = null,
+        long? MaximumPayloadBytes = null)
     {
         if (MaximumResults is <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(MaximumResults), "Maximum results must be greater than zero when specified.");
         }
+
+        ValidateRange(MinimumDurationMs, MaximumDurationMs, nameof(MinimumDurationMs), "duration");
+        ValidateRange(MinimumPayloadBytes, MaximumPayloadBytes, nameof(MinimumPayloadBytes), "payload size");
 
         var normalizedFrom = FromUtc?.ToUniversalTime();
         var normalizedTo = ToUtc?.ToUniversalTime();
@@ -37,6 +44,10 @@ public sealed record VoiceQuery
         this.ContactId = string.IsNullOrWhiteSpace(ContactId) ? null : ContactId;
         this.DeepScan = DeepScan;
         this.ResolveDuration = ResolveDuration;
+        this.MinimumDurationMs = MinimumDurationMs;
+        this.MaximumDurationMs = MaximumDurationMs;
+        this.MinimumPayloadBytes = MinimumPayloadBytes;
+        this.MaximumPayloadBytes = MaximumPayloadBytes;
     }
 
     public string? ConversationId { get; }
@@ -64,4 +75,63 @@ public sealed record VoiceQuery
     public bool DeepScan { get; init; }
 
     public bool ResolveDuration { get; }
+
+    public long? MinimumDurationMs { get; }
+
+    public long? MaximumDurationMs { get; }
+
+    public long? MinimumPayloadBytes { get; }
+
+    public long? MaximumPayloadBytes { get; }
+
+    public bool RequiresPostQueryFiltering
+        => MinimumDurationMs is not null
+            || MaximumDurationMs is not null
+            || MinimumPayloadBytes is not null
+            || MaximumPayloadBytes is not null;
+
+    public VoiceQuery WithMaximumResults(int? maximumResults)
+        => new(
+            ConversationId,
+            Direction,
+            FromUtc,
+            ToUtc,
+            maximumResults,
+            ContactUsername,
+            ContactId,
+            DeepScan,
+            ResolveDuration,
+            MinimumDurationMs,
+            MaximumDurationMs,
+            MinimumPayloadBytes,
+            MaximumPayloadBytes);
+
+    public VoiceQuery WithDeepScan(bool deepScan)
+        => new(
+            ConversationId,
+            Direction,
+            FromUtc,
+            ToUtc,
+            MaximumResults,
+            ContactUsername,
+            ContactId,
+            deepScan,
+            ResolveDuration,
+            MinimumDurationMs,
+            MaximumDurationMs,
+            MinimumPayloadBytes,
+            MaximumPayloadBytes);
+
+    private static void ValidateRange(long? minimum, long? maximum, string parameterName, string label)
+    {
+        if (minimum is < 0 || maximum is < 0)
+        {
+            throw new ArgumentOutOfRangeException(parameterName, $"{label} filters cannot be negative.");
+        }
+
+        if (minimum is not null && maximum is not null && minimum > maximum)
+        {
+            throw new ArgumentException($"The minimum {label} filter cannot exceed the maximum.", parameterName);
+        }
+    }
 }

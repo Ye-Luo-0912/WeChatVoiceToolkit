@@ -142,7 +142,15 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var manifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".manifest.json");
         var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
         await AtomicFileWriter.WriteJsonAsync(manifestPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        await VoiceManifestCsvWriter.WriteAsync(
+            ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".manifest.csv"),
+            recovered,
+            cancellationToken).ConfigureAwait(false);
         await AtomicFileWriter.WriteJsonAsync(latestPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        await VoiceManifestCsvWriter.WriteAsync(
+            ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.csv"),
+            recovered,
+            cancellationToken).ConfigureAwait(false);
         return recovered;
     }
 
@@ -766,13 +774,19 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
                 var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".jsonl");
                 var manifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".manifest.json");
+                var csvManifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".manifest.csv");
                 var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
+                var latestCsvPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.csv");
                 var journalManifest = await ReadManifestFromJournalAsync(manifest, journalPath, cancellationToken).ConfigureAwait(false);
                 await AtomicFileWriter.WriteJsonAsync(manifestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                await VoiceManifestCsvWriter.WriteAsync(csvManifestPath, journalManifest, cancellationToken).ConfigureAwait(false);
                 var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(journalManifest, InfrastructureJson.Indented);
                 var manifestSha256 = Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant();
-                await AppendCoreAsync(new VoiceExportJournalEvent("manifest-committed", _runId, DateTimeOffset.UtcNow, Context: null, ManifestSha256: manifestSha256), cancellationToken).ConfigureAwait(false);
                 await AtomicFileWriter.WriteJsonAsync(latestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                await VoiceManifestCsvWriter.WriteAsync(latestCsvPath, journalManifest, cancellationToken).ConfigureAwait(false);
+                // This is the durable commit marker. Every manifest file is
+                // complete before the event is flushed to the Journal.
+                await AppendCoreAsync(new VoiceExportJournalEvent("manifest-committed", _runId, DateTimeOffset.UtcNow, Context: null, ManifestSha256: manifestSha256), cancellationToken).ConfigureAwait(false);
             }
             finally
             {
