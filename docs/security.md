@@ -65,9 +65,10 @@ unless the user explicitly opts into the development policy.
   regular file inside a verified repository build output (`src/*/bin` or
   `artifacts/`). It accepts an unsigned binary and prints an explicit warning
   that the build is development-only.
-- `scripts/publish-smoke.ps1` now generates and verifies both the worker and
+- `scripts/package-release.ps1` is the single complete-layout entry point. It
+  reuses `scripts/publish-smoke.ps1` to generate and verify both the worker and
   the Broker bundle manifests; `scripts/sign-release.ps1` signs and verifies
-  the three published executables when a certificate is supplied, and the
+  all four published executables when a certificate is supplied, and the
   publish smoke fails in CI when the output is unsigned.
 
 ## Private staging hardening
@@ -82,10 +83,11 @@ the surrounding flow remains testable.
 ## Export integrity
 
 An export run performs one streaming read of each source BLOB and decides the
-artifact identity at commit time: a repeated export reuses a verified existing
-artifact without re-reading the source when the adapter supplied a trusted
-hash, and otherwise reads the source once and compares it against the existing
-artifact. `latest.manifest.json` and each run manifest inherit the full
+artifact identity at commit time. Existing SILK bytes are always hashed again
+before they are treated as a verified skip; `artifact-index.jsonl` is an
+incremental bookkeeping index, not cryptographic evidence. Otherwise the
+source is read once and compared against the existing artifact.
+`latest.manifest.json` and each run manifest inherit the full
 materialization provenance (key-extraction Profile, Weixin version, module
 hashes, backend bundle), so a training or dataset consumer can audit exactly
 which verified source produced the voices.

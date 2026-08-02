@@ -21,4 +21,4 @@ jobs:
         run: dotnet restore WeChatVoice.slnx --locked-mode --runtime win-x64
       - name: Publish self-contained win-x64
         shell: pwsh
-        run: ./scripts/publish-smoke.ps1
+        run: ./scripts/package-release.ps1

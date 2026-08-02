@@ -2,6 +2,7 @@ using System.Text.Json;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Infrastructure.Sqlite;
+using WeChatVoice.Workflows.Workspaces;
 
 namespace WeChatVoice.Tests;
 
@@ -72,6 +73,30 @@ public sealed class DataSetProbeTests
         Assert.Equal(Path.GetFullPath(root), workspace.SourceRoot);
         Assert.All(workspace.DataSet.Databases, artifact => Assert.True(artifact.LocalPath is { } localPath && Path.IsPathFullyQualified(localPath)));
         Assert.Equal("weixin-windows-4", Assert.Single(workspace.AdapterCandidates).AdapterId);
+    }
+
+    [Fact]
+    public async Task LocalWorkspaceDocumentStore_round_trips_user_confirmation_without_upgrading_evidence()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("decrypted-db");
+        await SqliteSchemaInspectorTests.CreateSampleDatabaseAsync(Path.Combine(root, "message_0.db"));
+
+        var workspace = await new LocalWorkspaceCreator().CreateAsync(root, CancellationToken.None);
+        var persisted = workspace.WithAccountIdentity(new AccountIdentity(
+            AccountIdentityState.Candidate,
+            ConfirmedBy: null,
+            UserConfirmationState.Confirmed));
+        var path = temporary.GetPath("workspace", "local-workspace.json");
+
+        await LocalWorkspaceDocumentStore.WriteAsync(path, persisted, CancellationToken.None);
+        var loaded = await new WorkspaceLoader().ReadAsync(path, CancellationToken.None);
+
+        Assert.Equal(AccountIdentityState.Candidate, loaded.AccountIdentity.State);
+        Assert.Equal(UserConfirmationState.Confirmed, loaded.AccountIdentity.UserConfirmation);
+        Assert.Null(loaded.AccountIdentity.ConfirmedBy);
+        Assert.Equal(persisted.WorkspaceId, loaded.WorkspaceId);
+        Assert.Equal(persisted.SourceRoot, loaded.SourceRoot);
     }
 
     [Fact]

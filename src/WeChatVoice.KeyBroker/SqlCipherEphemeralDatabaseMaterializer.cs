@@ -122,7 +122,9 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 var inputPath = CombineUnderRoot(sourceRoot, binding.RelativeDatabasePath);
                 if (!File.Exists(inputPath))
                 {
-                    throw new FileNotFoundException("A bound database disappeared from the verified Snapshot.", inputPath);
+                    throw new AppFailureException(
+                        ErrorCode.SnapshotInconsistent,
+                        "A bound database disappeared from the verified Snapshot.");
                 }
 
                 // The whole DB/WAL/SHM group is opened read-only with no write
@@ -271,6 +273,13 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 acquisition.ProcessImageSha256,
                 acquisition.WcdbModuleSha256,
                 acquisition.AccountSidFingerprint), DateTimeOffset.UtcNow);
+        }
+        catch (OperationCanceledException exception)
+        {
+            // A cancellation is a control-flow decision, not proof that an
+            // already committed output tree is recoverable or damaged.
+            primaryFailure = exception;
+            throw;
         }
         catch (Exception exception)
         {
@@ -446,6 +455,12 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         await VerifyBundleFileAsync(manifest.RuntimeConfigFile, manifest.RuntimeConfigSha256, cancellationToken).ConfigureAwait(false);
         await VerifyBundleFileAsync(manifest.NativeSqlCipherFile, manifest.NativeSqlCipherSha256, cancellationToken).ConfigureAwait(false);
         await VerifyBundleFileAsync(manifest.ProviderFile, manifest.ProviderSha256, cancellationToken).ConfigureAwait(false);
+        if (manifest.Files is null)
+        {
+            throw new InvalidDataException("The SQLCipher worker bundle has no complete dependency closure.");
+        }
+
+        await VerifyCompleteBundleAsync(manifest.Files, cancellationToken).ConfigureAwait(false);
         return workerHash;
     }
 
@@ -474,6 +489,58 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             throw new InvalidDataException("A SQLCipher worker bundle file hash did not match.");
         }
     }
+
+    private static async Task VerifyCompleteBundleAsync(
+        IReadOnlyList<WorkerBundleFile> files,
+        CancellationToken cancellationToken)
+    {
+        if (files.Count == 0)
+        {
+            throw new InvalidDataException("The SQLCipher worker bundle has no loadable files.");
+        }
+
+        var root = Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            var relative = NormalizeRelative(file.RelativePath);
+            if (!expected.Add(relative) || string.IsNullOrWhiteSpace(file.Sha256) || file.ByteLength < 0)
+            {
+                throw new InvalidDataException("The SQLCipher worker bundle contains duplicate or invalid files.");
+            }
+
+            var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, relative));
+            if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(path)
+                || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new InvalidDataException("The SQLCipher worker bundle references an unsafe file.");
+            }
+
+            var info = new FileInfo(path);
+            var hash = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            if (info.Length != file.ByteLength || !string.Equals(hash, file.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("A SQLCipher worker bundle closure file hash did not match.");
+            }
+        }
+
+        var actual = Directory.EnumerateFiles(AppContext.BaseDirectory, "*", SearchOption.AllDirectories)
+            .Where(path => !IsPackageMetadata(Path.GetRelativePath(AppContext.BaseDirectory, path)))
+            .Select(path => NormalizeRelative(Path.GetRelativePath(AppContext.BaseDirectory, path)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!actual.SetEquals(expected))
+        {
+            throw new InvalidDataException("The SQLCipher worker bundle closure does not match the installed files.");
+        }
+    }
+
+    private static bool IsPackageMetadata(string relativePath)
+        => Path.GetFileName(relativePath).Equals("WeChatVoice.KeyBroker.bundle.json", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("WeChatVoice.SqlCipherWorker.bundle.json", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("package-manifest.json", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("sbom.spdx.json", StringComparison.OrdinalIgnoreCase);
 
     private async Task ValidatePlaintextSqliteAsync(string path, CancellationToken cancellationToken)
     {
@@ -681,6 +748,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
 
         return candidate;
     }
+
 }
 
 internal sealed record WorkerBundleManifest(
@@ -692,4 +760,10 @@ internal sealed record WorkerBundleManifest(
     string? NativeSqlCipherFile,
     string? NativeSqlCipherSha256,
     string? ProviderFile,
-    string? ProviderSha256);
+    string? ProviderSha256,
+    IReadOnlyList<WorkerBundleFile>? Files = null);
+
+internal sealed record WorkerBundleFile(
+    string RelativePath,
+    string Sha256,
+    long ByteLength);

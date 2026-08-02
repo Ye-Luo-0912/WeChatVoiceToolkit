@@ -193,4 +193,31 @@ public sealed class WorkflowRunHostTests
 
         Assert.True(result.Confirmed);
     }
+
+    [Fact]
+    public async Task Account_confirmation_session_can_be_reused_without_reusing_the_first_result()
+    {
+        var confirmation = new DialogAccountConfirmation(DirectInvokeAsync);
+        var requested = new TaskCompletionSource<AccountIdentityReport>(TaskCreationOptions.RunContinuationsAsynchronously);
+        confirmation.ConfirmationRequested += (_, report) => requested.TrySetResult(report);
+
+        var firstTask = confirmation.ConfirmAsync(
+            new AccountIdentityReport("wxid_first", AccountIdentityState.Candidate, null),
+            CancellationToken.None);
+        Assert.Equal("wxid_first", (await requested.Task).AccountCandidate);
+        confirmation.Complete(true, "wxid_first");
+        var first = await firstTask;
+        Assert.True(first.Confirmed);
+
+        requested = new TaskCompletionSource<AccountIdentityReport>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondTask = confirmation.ConfirmAsync(
+            new AccountIdentityReport("wxid_second", AccountIdentityState.Candidate, null),
+            CancellationToken.None);
+        Assert.Equal("wxid_second", (await requested.Task).AccountCandidate);
+        confirmation.Complete(false, null);
+        var second = await secondTask;
+
+        Assert.False(second.Confirmed);
+        Assert.Null(second.ConfirmedAccountId);
+    }
 }

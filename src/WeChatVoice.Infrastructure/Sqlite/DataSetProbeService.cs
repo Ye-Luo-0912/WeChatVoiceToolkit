@@ -119,7 +119,17 @@ public sealed class DataSetProbeService
                 }
                 catch (Exception exception) when (exception is SqliteException or InvalidDataException or IOException)
                 {
-                    issues.Add(new DataSetIssue("schema-probe-failed", "error", exception.Message, file.RelativePath));
+                    // Probe output can be persisted or shared. Keep the
+                    // diagnostic deterministic and path-free; detailed
+                    // provider text may contain local paths, table names, or
+                    // account-derived SQLite information.
+                    var reason = exception switch
+                    {
+                        SqliteException => "sqlite-schema-inspection-failed",
+                        InvalidDataException => "invalid-schema-metadata",
+                        _ => "database-io-failed",
+                    };
+                    issues.Add(new DataSetIssue("schema-probe-failed", "error", reason, file.RelativePath));
                     schema = CreateUnavailableSchema(localPath, mainHash, options, walPresent, shmPresent, completenessIssue);
                 }
             }

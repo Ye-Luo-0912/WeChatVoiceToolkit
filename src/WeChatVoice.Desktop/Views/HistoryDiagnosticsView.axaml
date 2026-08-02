@@ -13,10 +13,13 @@
           <Button Content="刷新" Command="{Binding RefreshCommand}" />
           <Button Content="移除选中项" Command="{Binding RemoveSelectedWorkspaceCommand}" />
           <Button Content="删除 Workspace JSON" Command="{Binding DeleteSelectedWorkspaceFileCommand}" />
-          <Button Content="加载并验证" Command="{Binding LoadSelectedWorkspaceCommand}" />
-          <Button Content="删除明文 Workspace（再次点击确认）" Command="{Binding DeleteMaterializedWorkspaceCommand}" />
+          <Button Content="加载并验证" Command="{Binding LoadSelectedWorkspaceCommand}" IsEnabled="{Binding CanStartOperation}" />
+          <Button Content="删除明文 Workspace（再次点击确认）" Command="{Binding DeleteMaterializedWorkspaceCommand}" IsEnabled="{Binding CanStartOperation}" />
         </StackPanel>
         <TextBlock Text="{Binding WorkspaceDeleteSummary}" Foreground="#A33A00" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding MaterializedRootPath, StringFormat='明文数据库目录：{0}'}" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding MaterializationManifestSummary}" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding SelectedExportDirectory, StringFormat='导出目录：{0}'}" TextWrapping="Wrap" />
       </StackPanel>
 
       <Grid RowDefinitions="*,Auto,*" RowSpacing="12">

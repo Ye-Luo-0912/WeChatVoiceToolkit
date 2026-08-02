@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.ViewModels;
@@ -20,6 +21,7 @@ public sealed partial class ContactViewModel : PageViewModelBase
     internal ContactViewModel(DesktopServices services, Func<Action, Task>? invokeOnUi)
         : base(services, invokeOnUi)
     {
+        WorkspacePath = services.Project.WorkspacePath;
     }
 
     public override string Title => "联系人";
@@ -67,6 +69,7 @@ public sealed partial class ContactViewModel : PageViewModelBase
         result =>
         {
             Contacts = result.Contacts;
+            Services.Project.ClearVoiceSelection(clearContact: true);
             SelectedContact = null;
             Services.Project.Workspace = result.Workspace;
             WorkspacePath = result.WorkspaceDocumentPath;
@@ -79,8 +82,19 @@ public sealed partial class ContactViewModel : PageViewModelBase
     partial void OnSelectedContactChanged(ContactRecord? value)
     {
         Services.Project.SelectedContact = value;
-        Services.Project.Scan = null;
-        Services.Project.SelectionPlan = null;
-        Services.Project.LastExportRun = null;
+        Services.Project.ClearVoiceSelection(clearContact: false);
+    }
+
+    protected override void OnProjectPropertyChanged(string? propertyName)
+    {
+        if (propertyName == nameof(ExportProjectSession.WorkspacePath))
+        {
+            WorkspacePath = Services.Project.WorkspacePath;
+        }
+        else if (propertyName == nameof(ExportProjectSession.SelectedContact)
+            && !ReferenceEquals(SelectedContact, Services.Project.SelectedContact))
+        {
+            SelectedContact = Services.Project.SelectedContact;
+        }
     }
 }

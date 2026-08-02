@@ -32,6 +32,21 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
             {
                 OnPropertyChanged(nameof(IsUacRejected));
             }
+
+            if (eventArgs.PropertyName is nameof(WorkflowRunHost.State)
+                or nameof(WorkflowRunHost.IsRunning))
+            {
+                if (!RunHost.IsAwaitingUser)
+                {
+                    IsConfirmDialogOpen = false;
+                    PendingAccountCandidate = null;
+                }
+
+                if (!RunHost.IsRunning)
+                {
+                    _activeConfirmation = null;
+                }
+            }
         };
     }
 
@@ -40,9 +55,16 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
 
     public override string Title => "物料化";
 
-    public override bool CanNavigate => Services.Project.Snapshot is not null;
+    public override bool CanNavigate
+        => Services.Project.Snapshot is not null
+            && Services.Project.EnvironmentAssessment?.BrokerAcquireAndMaterializeAvailable == true;
 
-    public override string? NavigationHint => CanNavigate ? null : "请先创建源快照";
+    public override string? NavigationHint => CanNavigate ? null
+        : Services.Project.Snapshot is null
+            ? "请先创建源快照"
+            : Services.Project.EnvironmentAssessment is null
+                ? "请先完成环境检测"
+                : "环境检测未通过 Broker/Worker 信任预检";
 
     [ObservableProperty]
     private string? _snapshotDirectory;
@@ -71,6 +93,34 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     [ObservableProperty]
     private bool _isConfirmDialogOpen;
 
+    protected override void OnProjectPropertyChanged(string? propertyName)
+    {
+        if (propertyName == nameof(ExportProjectSession.SnapshotDirectory))
+        {
+            SnapshotDirectory = Services.Project.SnapshotDirectory;
+        }
+    }
+
+    [RelayCommand]
+    private async Task BrowseSnapshotAsync()
+    {
+        var path = await Services.FolderPicker.PickFolderAsync("选择已验证快照目录").ConfigureAwait(true);
+        if (path is not null)
+        {
+            SnapshotDirectory = path;
+        }
+    }
+
+    [RelayCommand]
+    private async Task BrowseOutputAsync()
+    {
+        var path = await Services.FolderPicker.PickFolderAsync("选择明文 Workspace 输出目录").ConfigureAwait(true);
+        if (path is not null)
+        {
+            OutputDirectory = path;
+        }
+    }
+
     [RelayCommand]
     private Task MaterializeAsync()
     {
@@ -80,10 +130,25 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
         var outputDirectory = OutputDirectory;
         var requestedAccount = string.IsNullOrWhiteSpace(RequestedAccount) ? null : RequestedAccount;
         var workspaceOutputPath = string.IsNullOrWhiteSpace(WorkspaceOutputPath) ? null : WorkspaceOutputPath;
+        var environment = Services.Project.EnvironmentAssessment;
         return RunHost.RunAsync(
             CreateConfirmationSession,
         async (context, cancellationToken) =>
         {
+            if (environment is null)
+            {
+                throw new AppFailureException(
+                    ErrorCode.InvalidRequest,
+                    "请先完成环境检测，再开始物料化。 ");
+            }
+
+            if (!environment.BrokerAcquireAndMaterializeAvailable)
+            {
+                throw new AppFailureException(
+                    ErrorCode.WorkerBundleUntrusted,
+                    "环境检测中的 Broker、Worker 或安装目录信任校验未通过；请修复环境后重新检测。 ");
+            }
+
             if (snapshot?.Manifest.PotentiallyInconsistent == true)
             {
                 throw new AppFailureException(ErrorCode.SnapshotInvalid, "此快照来自活动源，不可用于解密或导出。");
@@ -109,6 +174,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
             result =>
             {
                 Services.Project.Materialization = result;
+                Services.Project.ClearVoiceSelection(clearContact: true);
                 Services.Project.Workspace = result.Workspace;
                 Services.Project.WorkspacePath = result.LocalWorkspacePath;
                 Services.RecentWorkspaces.Add(result.Workspace, result.LocalWorkspacePath);

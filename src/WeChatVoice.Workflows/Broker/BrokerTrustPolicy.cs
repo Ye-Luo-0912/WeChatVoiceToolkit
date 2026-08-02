@@ -25,4 +25,8 @@ public sealed record WorkerBundleTrustResult(bool Verified, string? NonSensitive
     public static WorkerBundleTrustResult Deny(string reason) => new(false, reason);
 }
 
-public sealed record InstallDirectorySecurityResult(bool Protected, bool UserWritable, string? NonSensitiveReason);
+public sealed record InstallDirectorySecurityResult(
+    bool Protected,
+    bool UserWritable,
+    string? NonSensitiveReason,
+    UserWriteability Writeability = UserWriteability.Indeterminate);

@@ -194,11 +194,6 @@ public static class MaterializationStateStore
                 current = await ReadCoreAsync(stream, cancellationToken).ConfigureAwait(false);
             }
 
-            if (current is not null && string.Equals(current.State, nextState, StringComparison.Ordinal))
-            {
-                return current;
-            }
-
             if (current is null)
             {
                 if (expectedStates.Count != 0)
@@ -211,6 +206,15 @@ public static class MaterializationStateStore
                 if (!expectedStates.Contains(current.State, StringComparer.Ordinal))
                 {
                     throw new MaterializationStateTransitionException($"The materialization state '{current.State}' was not an expected predecessor of '{nextState}'.");
+                }
+
+                // Idempotent retries are allowed, but only when the caller
+                // explicitly accepts the current state as a predecessor.
+                // This keeps expectedStates meaningful even for repeated
+                // recovery/finalization calls.
+                if (string.Equals(current.State, nextState, StringComparison.Ordinal))
+                {
+                    return current;
                 }
 
                 if (!CanTransition(current.State, nextState))

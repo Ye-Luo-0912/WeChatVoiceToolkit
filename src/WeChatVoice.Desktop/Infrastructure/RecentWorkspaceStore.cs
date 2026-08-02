@@ -15,7 +15,8 @@ public sealed record RecentWorkspaceEntry(
     string WorkspaceId,
     string DataSetId,
     string? AccountId,
-    DateTimeOffset LastUsedUtc);
+    DateTimeOffset LastUsedUtc,
+    string? LastExportDirectory = null);
 
 public sealed class RecentWorkspaceStore
 {
@@ -87,6 +88,22 @@ public sealed class RecentWorkspaceStore
         lock (_gate)
         {
             Save(Load().Where(entry => !string.Equals(entry.WorkspacePath, Path.GetFullPath(workspacePath), StringComparison.OrdinalIgnoreCase)).ToList());
+        }
+    }
+
+    public void SetLastExportDirectory(string workspacePath, string exportDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(exportDirectory);
+        var fullWorkspacePath = Path.GetFullPath(workspacePath);
+        var fullExportDirectory = Path.GetFullPath(exportDirectory);
+        lock (_gate)
+        {
+            var entries = Load().Select(entry =>
+                string.Equals(entry.WorkspacePath, fullWorkspacePath, StringComparison.OrdinalIgnoreCase)
+                    ? entry with { LastExportDirectory = fullExportDirectory, LastUsedUtc = DateTimeOffset.UtcNow }
+                    : entry).ToList();
+            Save(entries);
         }
     }
 

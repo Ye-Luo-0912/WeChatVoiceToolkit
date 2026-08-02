@@ -43,6 +43,45 @@ function Get-PublishedExecutables([string]$directory) {
     }
 }
 
+function Get-RelativePath([string]$root, [string]$path) {
+    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $pathFull = [IO.Path]::GetFullPath($path)
+    if (-not $pathFull.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Path is outside the publish directory: $path"
+    }
+    return $pathFull.Substring($rootFull.Length).Replace('\', '/')
+}
+
+function Get-Sha256([string]$path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($path)
+        try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $stream.Dispose() }
+    }
+    finally { $sha.Dispose() }
+}
+
+function Get-PackageFiles([string]$directory, [string[]]$excludedNames) {
+    $files = @()
+    foreach ($file in Get-ChildItem -LiteralPath $directory -File -Recurse -Force) {
+        $attributes = [IO.File]::GetAttributes($file.FullName)
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The publish output contains a reparse-point file: $($file.FullName)"
+        }
+
+        $relative = Get-RelativePath $directory $file.FullName
+        if ($excludedNames -contains ([IO.Path]::GetFileName($relative))) { continue }
+        $files += [pscustomobject]@{
+            path = $relative
+            sha256 = Get-Sha256 $file.FullName
+            length = $file.Length
+        }
+    }
+
+    return @($files | Sort-Object path)
+}
+
 function Protect-InstallDirectory([string]$directory) {
     $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     & icacls.exe $directory /inheritance:r /grant:r `
@@ -105,13 +144,11 @@ try {
         }
     }
 
-    $packageFiles = @(Get-ChildItem -LiteralPath $out -File -Recurse | Where-Object { $_.Name -notin @('package-manifest.json', 'SHA256SUMS.txt') } | ForEach-Object {
-        [pscustomobject]@{ path = [IO.Path]::GetRelativePath($out, $_.FullName).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); length = $_.Length }
-    })
+    $packageFiles = @(Get-PackageFiles $out @('package-manifest.json', 'SHA256SUMS.txt', 'sbom.spdx.json'))
     [IO.File]::WriteAllText((Join-Path $out 'package-manifest.json'), (@{ format = 'wechatvoice-package-v1'; files = $packageFiles } | ConvertTo-Json -Depth 5))
-    $checksums = @(Get-ChildItem -LiteralPath $out -File | Sort-Object Name | ForEach-Object { "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" })
-    [IO.File]::WriteAllLines((Join-Path $out 'SHA256SUMS.txt'), $checksums)
     [IO.File]::WriteAllText((Join-Path $out 'sbom.spdx.json'), (@{ spdxVersion = 'SPDX-2.3'; name = 'WeChatVoiceToolkit'; creationInfo = @{ created = [DateTime]::UtcNow.ToString('O'); creators = @('Tool: publish-smoke.ps1') }; files = $packageFiles } | ConvertTo-Json -Depth 6))
+    $checksums = @(Get-PackageFiles $out @('SHA256SUMS.txt') | ForEach-Object { "$($_.sha256)  $($_.path)" })
+    [IO.File]::WriteAllLines((Join-Path $out 'SHA256SUMS.txt'), $checksums)
 
     $desktopDirectory = $out
     $smokeArguments = @('--smoke-check')

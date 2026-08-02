@@ -12,6 +12,7 @@ namespace WeChatVoice.Desktop.Infrastructure;
 public sealed partial class ExportProjectSession : ObservableObject
 {
     [ObservableProperty] private string? _sourceDirectory;
+    [ObservableProperty] private EnvironmentAssessmentResult? _environmentAssessment;
     [ObservableProperty] private SnapshotWorkflowResult? _snapshot;
     [ObservableProperty] private string? _snapshotDirectory;
     [ObservableProperty] private MaterializationWorkflowResult? _materialization;
@@ -26,12 +27,31 @@ public sealed partial class ExportProjectSession : ObservableObject
     public void ResetFromSource(string sourceDirectory)
     {
         SourceDirectory = sourceDirectory;
+        // Environment trust is installation-scoped, not source-scoped. Keep
+        // the completed Broker/Worker preflight when the user chooses a new
+        // data source; clearing it would make the guided flow lose its own
+        // prerequisite immediately before materialization.
         Snapshot = null;
         SnapshotDirectory = null;
         Materialization = null;
         Workspace = null;
         WorkspacePath = null;
-        SelectedContact = null;
+        ClearVoiceSelection(clearContact: true);
+        ExportDirectory = null;
+    }
+
+    /// <summary>
+    /// Invalidates all downstream voice choices when a workspace or source is
+    /// replaced. Keeping this in the application session gives every host
+    /// page one authoritative invalidation rule.
+    /// </summary>
+    public void ClearVoiceSelection(bool clearContact)
+    {
+        if (clearContact)
+        {
+            SelectedContact = null;
+        }
+
         Scan = null;
         SelectionPlan = null;
         LastExportRun = null;

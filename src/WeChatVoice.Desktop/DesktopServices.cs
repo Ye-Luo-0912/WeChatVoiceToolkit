@@ -18,12 +18,14 @@ public sealed class DesktopServices
         WorkflowCompositionRoot workflows,
         DesktopLog log,
         RecentWorkspaceStore recentWorkspaces,
-        OperationCoordinator? operationCoordinator = null)
+        OperationCoordinator? operationCoordinator = null,
+        Func<Action, Task>? invokeOnUi = null)
     {
         Workflows = workflows;
         Log = log;
         RecentWorkspaces = recentWorkspaces;
         OperationCoordinator = operationCoordinator ?? new OperationCoordinator();
+        InvokeOnUi = invokeOnUi;
         Project = new ExportProjectSession();
         FolderPicker = new DesktopFolderPicker();
     }
@@ -55,6 +57,12 @@ public sealed class DesktopServices
     public RecentWorkspaceStore RecentWorkspaces { get; }
 
     public OperationCoordinator OperationCoordinator { get; }
+
+    /// <summary>
+    /// Optional host-provided UI dispatcher. Production leaves this null and
+    /// pages use Avalonia.UIThread; headless hosts inject an awaitable adapter.
+    /// </summary>
+    public Func<Action, Task>? InvokeOnUi { get; }
 
     public ExportProjectSession Project { get; }
 

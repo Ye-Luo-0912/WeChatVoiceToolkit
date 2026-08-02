@@ -7,16 +7,17 @@ public sealed record WeixinDataSourceCandidate(
     DateTimeOffset LastWriteTimeUtc,
     int DatabaseCount,
     bool IsReparsePoint,
-    bool HasSnapshot);
+    bool HasSnapshot)
+{
+    public bool IsSelectable => !IsReparsePoint && DatabaseCount > 0;
+}
 
 /// <summary>Discovers directory candidates only; it never infers a schema.</summary>
 public sealed class WeixinDataSourceDiscovery
 {
     public IReadOnlyList<WeixinDataSourceCandidate> Discover(IEnumerable<string>? roots = null)
     {
-        var searchRoots = (roots ?? [
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)])
+        var searchRoots = (roots ?? GetDefaultRoots())
             .Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<WeixinDataSourceCandidate>();
         foreach (var root in searchRoots)
@@ -50,6 +51,26 @@ public sealed class WeixinDataSourceDiscovery
                 catch (UnauthorizedAccessException) { }
             }
         }
-        return candidates.OrderBy(item => item.DbStoragePath, StringComparer.OrdinalIgnoreCase).ToArray();
+        return candidates
+            .GroupBy(item => item.DbStoragePath, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(item => item.LastWriteTimeUtc).First())
+            .OrderBy(item => item.DbStoragePath, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static IEnumerable<string> GetDefaultRoots()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        return
+        [
+            Path.Combine(documents, "WeChat Files"),
+            Path.Combine(documents, "xwechat_files"),
+            Path.Combine(appData, "Tencent", "WeChat"),
+            Path.Combine(appData, "Tencent", "xwechat_files"),
+            Path.Combine(localAppData, "Tencent", "WeChat"),
+            Path.Combine(localAppData, "Tencent", "xwechat_files"),
+        ];
     }
 }

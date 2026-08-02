@@ -16,8 +16,9 @@ namespace WeChatVoice.Workflows.Broker;
 /// the Broker binary through an <see cref="IBrokerTrustPolicy"/>, launches it
 /// elevated (runas), binds the one-time named pipe to the exact process it
 /// started, and translates the terminal response into typed failures. Hosts
-/// never see raw broker strings; cancellation kills the elevated process so no
-/// privileged worker lingers.
+/// never see raw broker strings; cancellation first closes the pipe so the
+/// Broker's disconnect monitor cancels its operation, with process termination
+/// retained only as a last-resort cleanup.
 /// </summary>
 public sealed class KeyBrokerClient : IBrokerClient
 {
@@ -45,7 +46,9 @@ public sealed class KeyBrokerClient : IBrokerClient
         var brokerPath = Path.Combine(_brokerDirectory ?? AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe");
         if (!File.Exists(brokerPath))
         {
-            throw new FileNotFoundException("The fixed WeChatVoice.KeyBroker.exe was not installed next to the host.", brokerPath);
+            throw new AppFailureException(
+                ErrorCode.WorkerBundleUntrusted,
+                "The fixed Key Broker bundle is not installed next to the host.");
         }
 
         VerifyBrokerBinary(brokerPath, _trustPolicy);
@@ -79,10 +82,10 @@ public sealed class KeyBrokerClient : IBrokerClient
 
         using (process)
         {
+            await using var pipe = new NamedPipeClientStream(
+                ".", PipePrefix + token, PipeDirection.InOut, PipeOptions.Asynchronous);
             try
             {
-                await using var pipe = new NamedPipeClientStream(
-                    ".", PipePrefix + token, PipeDirection.InOut, PipeOptions.Asynchronous);
                 using var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 connectionTimeout.CancelAfter(ConnectionTimeout);
                 await pipe.ConnectAsync(connectionTimeout.Token).ConfigureAwait(false);
@@ -135,6 +138,11 @@ public sealed class KeyBrokerClient : IBrokerClient
             }
             catch
             {
+                // Closing the pipe is the authenticated cancellation protocol
+                // understood by BrokerPipeServer. Do this before attempting to
+                // terminate a higher-integrity process; a normal user may not
+                // have permission to kill the elevated Broker.
+                TryDisconnect(pipe);
                 TryKill(process);
                 throw;
             }
@@ -238,6 +246,20 @@ public sealed class KeyBrokerClient : IBrokerClient
             }
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void TryDisconnect(NamedPipeClientStream pipe)
+    {
+        try
+        {
+            pipe.Dispose();
+        }
+        catch (IOException)
+        {
+        }
+        catch (ObjectDisposedException)
         {
         }
     }

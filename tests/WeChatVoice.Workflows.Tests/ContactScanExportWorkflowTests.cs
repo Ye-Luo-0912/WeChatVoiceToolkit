@@ -1,4 +1,5 @@
 using WeChatVoice.Application;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Workflows.Workflows;
 using WeChatVoice.Workflows.Workspaces;
@@ -128,6 +129,43 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
 
         Assert.Single(result.Manifest.Entries);
         Assert.Equal(1, _backend.LastVoiceQuery?.MaximumResults);
+    }
+
+    [Fact]
+    public async Task Scan_rejects_a_contact_id_that_changed_after_selection()
+    {
+        var workflow = new VoiceScanWorkflow(_opener, new ContactResolver());
+        var context = new WorkflowContext(new TestConfirmation());
+
+        var exception = await Assert.ThrowsAsync<AppFailureException>(() => workflow.RunAsync(
+            new VoiceScanWorkflowRequest(
+                _workspacePath,
+                FakeBackend.ContactUsername,
+                ExpectedContactId: "contact-that-is-not-peer"),
+            context,
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCode.SelectionPlanMismatch, exception.Code);
+        Assert.Equal(WorkflowState.Failed, context.StateMachine.State);
+    }
+
+    [Fact]
+    public async Task Export_rejects_a_contact_id_that_changed_after_selection()
+    {
+        var workflow = new VoiceExportWorkflow(_opener, new ContactResolver());
+        var context = new WorkflowContext(new TestConfirmation());
+
+        var exception = await Assert.ThrowsAsync<AppFailureException>(() => workflow.RunAsync(
+            new VoiceExportWorkflowRequest(
+                _workspacePath,
+                Path.Combine(_root, "contact-mismatch"),
+                FakeBackend.ContactUsername,
+                ExpectedContactId: "contact-that-is-not-peer"),
+            context,
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCode.SelectionPlanMismatch, exception.Code);
+        Assert.Equal(WorkflowState.Failed, context.StateMachine.State);
     }
 
     [Fact]

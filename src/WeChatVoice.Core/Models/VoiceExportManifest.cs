@@ -21,7 +21,8 @@ public sealed record VoiceExportManifest
         IReadOnlyList<string>? DatabaseFingerprints = null,
         ExportRunStatus RunStatus = ExportRunStatus.Completed,
         bool Cancelled = false,
-        MaterializationProvenance? Provenance = null)
+        MaterializationProvenance? Provenance = null,
+        AccountIdentity? AccountIdentity = null)
     {
         this.GeneratedAtUtc = GeneratedAtUtc.ToUniversalTime();
         this.Entries = Freeze(Entries);
@@ -36,6 +37,7 @@ public sealed record VoiceExportManifest
         this.RunStatus = RunStatus;
         this.Cancelled = Cancelled || RunStatus == ExportRunStatus.Cancelled;
         this.Provenance = Provenance;
+        this.AccountIdentity = AccountIdentity ?? Core.Models.AccountIdentity.CandidateOnly;
     }
 
     public DateTimeOffset GeneratedAtUtc { get; }
@@ -69,6 +71,12 @@ public sealed record VoiceExportManifest
     /// can audit exactly which verified source produced the voices.
     /// </summary>
     public MaterializationProvenance? Provenance { get; }
+
+    /// <summary>
+    /// Technical account evidence and the independent user-confirmation state
+    /// captured by the catalog that produced this run.
+    /// </summary>
+    public AccountIdentity AccountIdentity { get; }
 
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T>? values)
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());

@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.ViewModels;
@@ -22,6 +23,7 @@ public sealed partial class ScanViewModel : PageViewModelBase
     internal ScanViewModel(DesktopServices services, Func<Action, Task>? invokeOnUi)
         : base(services, invokeOnUi)
     {
+        WorkspacePath = services.Project.WorkspacePath;
     }
 
     public override string Title => "语音扫描";
@@ -101,20 +103,26 @@ public sealed partial class ScanViewModel : PageViewModelBase
     {
         var selected = Services.Project.SelectedContact;
         var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
+        var sessionWorkspacePath = Services.Project.WorkspacePath;
         var contactUsername = selected?.Username;
         var directionText = DirectionText;
         var fromText = FromText;
         var toText = ToText;
         var maximumResultsText = MaximumResultsText;
-        var direction = ParseDirection(directionText);
-        var from = VoiceQueryBuilder.ParseUtc(fromText, "from");
-        var to = VoiceQueryBuilder.ParseUtc(toText, "to");
-        var maximumResults = ParseMaximumResults();
         var deepScan = DeepScan;
         var resolveDurations = ResolveDurations;
-        return RunHost.RunAsync(
+        ScanParameters? parsedParameters = null;
+        return RunHost.RunAsync<VoiceScanWorkflowResult>(
         async (context, cancellationToken) =>
         {
+            // Keep all input parsing inside the WorkflowRunHost boundary so
+            // invalid UI text becomes a typed LastErrorCode instead of an
+            // unobserved command exception.
+            var direction = ParseDirection(directionText);
+            var from = VoiceQueryBuilder.ParseUtc(fromText, "from");
+            var to = VoiceQueryBuilder.ParseUtc(toText, "to");
+            var maximumResults = ParseMaximumResults(maximumResultsText);
+            parsedParameters = new ScanParameters(direction, from, to, maximumResults);
             if (selected is null || string.IsNullOrWhiteSpace(selected.Username))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Please select a contact before scanning.");
@@ -125,6 +133,12 @@ public sealed partial class ScanViewModel : PageViewModelBase
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Workspace path is required.");
             }
 
+            if (!string.IsNullOrWhiteSpace(sessionWorkspacePath)
+                && !PathsEqual(workspacePath, sessionWorkspacePath))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "Workspace path changed; load the selected Workspace before scanning.");
+            }
+
             return await Workflows.VoiceScan.RunAsync(
                 new VoiceScanWorkflowRequest(
                     workspacePath,
@@ -133,7 +147,10 @@ public sealed partial class ScanViewModel : PageViewModelBase
                     Direction: direction,
                     From: from,
                     To: to,
-                    MaximumResults: maximumResults, DeepScan: deepScan, ResolveDurations: resolveDurations),
+                    MaximumResults: maximumResults,
+                    DeepScan: deepScan,
+                    ResolveDurations: resolveDurations,
+                    ExpectedContactId: selected.ContactId),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
@@ -148,12 +165,14 @@ public sealed partial class ScanViewModel : PageViewModelBase
             Services.Project.Workspace = result.Workspace;
             var report = result.Report;
             var contact = selected!;
+            var parameters = parsedParameters
+                ?? throw new AppFailureException(ErrorCode.WorkflowFailed, "扫描请求参数未能固定。");
             var dataSetId = result.Workspace.DataSet.DataSetId ?? "";
             var accountId = result.Workspace.DataSet.AccountId ?? "";
             var fingerprint = VoiceSelectionPlan.ComputeFingerprint(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
-                contact.ContactId, contact.Username!, direction, from, to, maximumResults);
+                contact.ContactId, contact.Username!, parameters.Direction, parameters.From, parameters.To, parameters.MaximumResults);
             Services.Project.SelectionPlan = new VoiceSelectionPlan(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
-                contact.ContactId, contact.Username!, direction, from, to, maximumResults, fingerprint, report);
+                contact.ContactId, contact.Username!, parameters.Direction, parameters.From, parameters.To, parameters.MaximumResults, fingerprint, report);
             MatchedVoiceCount = report.MatchedVoiceCount;
             MissingCount = report.UnassociatedMediaCount;
             EmptyCount = report.EmptyBlobCount;
@@ -178,14 +197,32 @@ public sealed partial class ScanViewModel : PageViewModelBase
             : throw new AppFailureException(ErrorCode.InvalidRequest, "Direction must be incoming or outgoing.");
     }
 
-    partial void OnDirectionTextChanged(string? value) => Services.Project.SelectionPlan = null;
-    partial void OnFromTextChanged(string? value) => Services.Project.SelectionPlan = null;
-    partial void OnToTextChanged(string? value) => Services.Project.SelectionPlan = null;
-    partial void OnDeepScanChanged(bool value) => Services.Project.SelectionPlan = null;
-    partial void OnMaximumResultsTextChanged(string? value) => Services.Project.SelectionPlan = null;
-    partial void OnResolveDurationsChanged(bool value) => Services.Project.SelectionPlan = null;
-    private int? ParseMaximumResults() => ParseMaximumResults(MaximumResultsText);
+    partial void OnWorkspacePathChanged(string? value) => InvalidateSelection();
+    partial void OnDirectionTextChanged(string? value) => InvalidateSelection();
+    partial void OnFromTextChanged(string? value) => InvalidateSelection();
+    partial void OnToTextChanged(string? value) => InvalidateSelection();
+    partial void OnDeepScanChanged(bool value) => InvalidateSelection();
+    partial void OnMaximumResultsTextChanged(string? value) => InvalidateSelection();
+    partial void OnResolveDurationsChanged(bool value) => InvalidateSelection();
 
+    private void InvalidateSelection()
+    {
+        Services.Project.SelectionPlan = null;
+        Services.Project.Scan = null;
+        Services.Project.LastExportRun = null;
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
     private static int? ParseMaximumResults(string? value)
         => string.IsNullOrWhiteSpace(value)
             ? null
@@ -213,4 +250,18 @@ public sealed partial class ScanViewModel : PageViewModelBase
             && string.Equals(MaximumResultsText, maximumResultsText, StringComparison.Ordinal)
             && DeepScan == deepScan
             && ResolveDurations == resolveDurations;
+
+    private sealed record ScanParameters(
+        VoiceDirection Direction,
+        DateTimeOffset? From,
+        DateTimeOffset? To,
+        int? MaximumResults);
+
+    protected override void OnProjectPropertyChanged(string? propertyName)
+    {
+        if (propertyName == nameof(ExportProjectSession.WorkspacePath))
+        {
+            WorkspacePath = Services.Project.WorkspacePath;
+        }
+    }
 }

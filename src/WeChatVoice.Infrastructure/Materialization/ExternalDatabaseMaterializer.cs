@@ -59,13 +59,26 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         var sourceRoot = Path.GetFullPath(rawSnapshot.SnapshotDirectory);
         if (!Directory.Exists(sourceRoot))
         {
-            throw new DirectoryNotFoundException($"The raw snapshot directory was not found: '{sourceRoot}'.");
+            throw new AppFailureException(
+                ErrorCode.SnapshotInconsistent,
+                "The verified raw Snapshot directory is no longer available.");
         }
 
-        var sourceProbe = await new DataSetProbeService().ProbeAsync(
-            snapshot,
-            new DataSetProbeOptions(IncludeLocalPaths: true),
-            cancellationToken).ConfigureAwait(false);
+        DataSetProbe sourceProbe;
+        try
+        {
+            sourceProbe = await new DataSetProbeService().ProbeAsync(
+                snapshot,
+                new DataSetProbeOptions(IncludeLocalPaths: true),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            throw new AppFailureException(
+                ErrorCode.SnapshotInconsistent,
+                "A verified raw Snapshot file disappeared before materialization.",
+                exception);
+        }
         if (sourceProbe.DataSet.Databases.Count == 0)
         {
             throw new DatabaseMaterializationException(null, null, null, "The raw snapshot contains no database artifacts to materialize.");
@@ -176,6 +189,14 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
                 validation.Databases,
                 validation.Files,
                 movedManifestPath), DateTimeOffset.UtcNow);
+        }
+        catch (OperationCanceledException exception)
+        {
+            // Cancellation is not evidence that committed output is damaged;
+            // leave the durable marker at its last state so recovery can make
+            // the next decision from the actual committed files.
+            primaryFailure = exception;
+            throw;
         }
         catch (Exception exception)
         {

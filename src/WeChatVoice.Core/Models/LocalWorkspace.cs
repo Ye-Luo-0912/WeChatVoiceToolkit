@@ -17,7 +17,8 @@ public sealed record LocalWorkspace
         IReadOnlyList<DataSetIssue>? Issues = null,
         IReadOnlyList<AdapterCandidate>? AdapterCandidates = null,
         MaterializationProvenance? Provenance = null,
-        SnapshotSourceIdentity? SourceIdentity = null)
+        SnapshotSourceIdentity? SourceIdentity = null,
+        AccountIdentity? AccountIdentity = null)
     {
         if (string.IsNullOrWhiteSpace(WorkspaceId))
         {
@@ -43,6 +44,7 @@ public sealed record LocalWorkspace
         this.AdapterCandidates = Freeze(AdapterCandidates);
         this.Provenance = Provenance;
         this.SourceIdentity = SourceIdentity;
+        this.AccountIdentity = AccountIdentity ?? AccountIdentity.CandidateOnly;
     }
 
     public string WorkspaceId { get; }
@@ -60,6 +62,28 @@ public sealed record LocalWorkspace
     public MaterializationProvenance? Provenance { get; }
 
     public SnapshotSourceIdentity? SourceIdentity { get; }
+
+    /// <summary>
+    /// Identity evidence and the separate user confirmation decision carried by
+    /// this local workspace. A path-derived account can remain Candidate even
+    /// after the user confirms that it is the intended account.
+    /// </summary>
+    public AccountIdentity AccountIdentity { get; }
+
+    public LocalWorkspace WithAccountIdentity(AccountIdentity accountIdentity)
+    {
+        ArgumentNullException.ThrowIfNull(accountIdentity);
+        return new LocalWorkspace(
+            WorkspaceId,
+            SourceRoot,
+            DataSet,
+            CreatedAtUtc,
+            Issues,
+            AdapterCandidates,
+            Provenance,
+            SourceIdentity,
+            accountIdentity);
+    }
 
     private static IReadOnlyList<T> Freeze<T>(IEnumerable<T>? values)
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());

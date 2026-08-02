@@ -23,6 +23,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
     internal ExportViewModel(DesktopServices services, Func<Action, Task>? invokeOnUi)
         : base(services, invokeOnUi)
     {
+        WorkspacePath = services.Project.WorkspacePath;
     }
 
     public override string Title => "语音导出";
@@ -75,6 +76,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
         var scan = Services.Project.Scan;
         var contact = Services.Project.SelectedContact;
         var workspace = Services.Project.Workspace;
+        var sessionWorkspacePath = Services.Project.WorkspacePath;
         return RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
@@ -103,6 +105,12 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace and output directories are required.");
             }
 
+            if (!string.IsNullOrWhiteSpace(sessionWorkspacePath)
+                && !PathsEqual(workspacePath, sessionWorkspacePath))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "Workspace path changed; run Scan again for the selected Workspace.");
+            }
+
             return await Workflows.VoiceExport.RunAsync(
                 new VoiceExportWorkflowRequest(
                     workspacePath,
@@ -115,13 +123,14 @@ public sealed partial class ExportViewModel : PageViewModelBase
                     MaximumResults: plan.MaximumResults,
                     ExpectedResultSetFingerprint: plan.ResultSetFingerprint,
                     ExpectedResultCount: plan.ResultCount,
-                    ExpectedTotalPayloadBytes: plan.TotalPayloadBytes),
+                    ExpectedTotalPayloadBytes: plan.TotalPayloadBytes,
+                    ExpectedContactId: plan.ContactId),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
         result =>
         {
-            if (plan is null || contact is null || !IsCurrentExportSelection(plan, contact))
+            if (plan is null || contact is null || !IsCurrentExportSelection(plan, contact, workspacePath))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Contact or scan selection changed while exporting; review the plan and run again.");
             }
@@ -129,6 +138,14 @@ public sealed partial class ExportViewModel : PageViewModelBase
             Services.Project.LastExportRun = result;
             Services.Project.Workspace = result.Workspace;
             Services.Project.ExportDirectory = outputDirectory;
+            ManifestPath = string.IsNullOrWhiteSpace(outputDirectory)
+                ? null
+                : Path.Combine(Path.GetFullPath(outputDirectory), "runs", result.Manifest.RunId + ".manifest.json");
+            if (!string.IsNullOrWhiteSpace(outputDirectory)
+                && !string.IsNullOrWhiteSpace(Services.Project.WorkspacePath))
+            {
+                Services.RecentWorkspaces.SetLastExportDirectory(Services.Project.WorkspacePath, outputDirectory);
+            }
             var manifest = result.Manifest;
             ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
             SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
@@ -146,16 +163,19 @@ public sealed partial class ExportViewModel : PageViewModelBase
 
     /// <summary>Recovers a manifest from a flushed run journal after a crash.</summary>
     [RelayCommand]
-    private async Task RecoverAsync(string? journalPath)
+    private Task RecoverAsync(string? journalPath)
     {
-        if (string.IsNullOrWhiteSpace(journalPath))
-        {
-            LastError = "请填写 journal 路径";
-            return;
-        }
+        var capturedJournalPath = journalPath;
+        return RunHost.RunAsync(
+            async (_, cancellationToken) =>
+            {
+                if (string.IsNullOrWhiteSpace(capturedJournalPath))
+                {
+                    throw new AppFailureException(ErrorCode.InvalidRequest, "Journal path is required.");
+                }
 
-        await RunHost.RunAsync(
-            async (_, cancellationToken) => await Workflows.VoiceExport.RecoverRunAsync(journalPath, cancellationToken).ConfigureAwait(false),
+                return await Workflows.VoiceExport.RecoverRunAsync(capturedJournalPath, cancellationToken).ConfigureAwait(false);
+            },
             manifest =>
             {
                 ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
@@ -168,8 +188,32 @@ public sealed partial class ExportViewModel : PageViewModelBase
     [ObservableProperty]
     private string? _journalPath;
 
-    [ObservableProperty]
-    private string? _lastError;
+    partial void OnWorkspacePathChanged(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || string.IsNullOrWhiteSpace(Services.Project.WorkspacePath)
+            || PathsEqual(value, Services.Project.WorkspacePath))
+        {
+            return;
+        }
+
+        Services.Project.Scan = null;
+        Services.Project.SelectionPlan = null;
+        Services.Project.LastExportRun = null;
+    }
+
+    partial void OnOutputDirectoryChanged(string? value)
+        => Services.Project.LastExportRun = null;
+
+    [RelayCommand]
+    private async Task BrowseOutputAsync()
+    {
+        var path = await Services.FolderPicker.PickFolderAsync("选择 SILK 导出目录").ConfigureAwait(true);
+        if (path is not null)
+        {
+            OutputDirectory = path;
+        }
+    }
 
     public string ContactSelectionSummary
     {
@@ -196,6 +240,11 @@ public sealed partial class ExportViewModel : PageViewModelBase
 
     protected override void OnProjectPropertyChanged(string? propertyName)
     {
+        if (propertyName == nameof(ExportProjectSession.WorkspacePath))
+        {
+            WorkspacePath = Services.Project.WorkspacePath;
+        }
+
         if (propertyName is nameof(ExportProjectSession.SelectedContact)
             or nameof(ExportProjectSession.SelectionPlan)
             or nameof(ExportProjectSession.Scan)
@@ -212,10 +261,25 @@ public sealed partial class ExportViewModel : PageViewModelBase
     private static string ShortFingerprint(string fingerprint)
         => fingerprint.Length <= 16 ? fingerprint : fingerprint[..16] + "…";
 
-    private bool IsCurrentExportSelection(VoiceSelectionPlan plan, ContactRecord contact)
+    private bool IsCurrentExportSelection(VoiceSelectionPlan plan, ContactRecord contact, string? workspacePath)
         => ReferenceEquals(Services.Project.SelectionPlan, plan)
             && ReferenceEquals(Services.Project.Scan?.Report, plan.ScanReport)
             && Services.Project.SelectedContact is { } current
             && string.Equals(current.ContactId, contact.ContactId, StringComparison.Ordinal)
-            && string.Equals(current.Username, contact.Username, StringComparison.Ordinal);
+            && string.Equals(current.Username, contact.Username, StringComparison.Ordinal)
+            && (string.IsNullOrWhiteSpace(workspacePath)
+                || string.IsNullOrWhiteSpace(Services.Project.WorkspacePath)
+                || PathsEqual(workspacePath, Services.Project.WorkspacePath));
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
 }

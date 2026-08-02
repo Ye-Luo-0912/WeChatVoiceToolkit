@@ -9,7 +9,7 @@
         MinHeight="600"
         Title="WeChatVoice 语音导出工具"
         WindowStartupLocation="CenterScreen">
-  <Grid RowDefinitions="Auto,*">
+  <Grid RowDefinitions="Auto,Auto,*">
     <Border Grid.Row="0"
             IsVisible="{Binding IsDevelopmentBrokerEnabled}"
             Background="#FFF1C2"
@@ -19,7 +19,16 @@
                  FontWeight="SemiBold" />
     </Border>
 
-    <Grid Grid.Row="1" ColumnDefinitions="210,*">
+    <Border Grid.Row="1"
+            IsVisible="{Binding IsOperationBusy}"
+            Background="#E8F0FE"
+            Padding="12,8">
+      <TextBlock Text="当前有一个高成本操作进行中；其他页面和操作已暂时锁定。"
+                 Foreground="#244A7A"
+                 FontWeight="SemiBold" />
+    </Border>
+
+    <Grid Grid.Row="2" ColumnDefinitions="210,*">
       <Border Grid.Column="0" Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top"

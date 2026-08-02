@@ -15,7 +15,7 @@
       <TextBlock Text="{Binding SupportedVersionText}" />
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBox Width="360" PlaceholderText="可选：Workspace JSON 路径" Text="{Binding WorkspacePath}" />
-        <Button Content="检测" Command="{Binding AssessCommand}" />
+        <Button Content="检测" Command="{Binding AssessCommand}" IsEnabled="{Binding CanStartOperation}" />
       </StackPanel>
       <TextBlock Text="{Binding DetectionSummary}" FontWeight="SemiBold" />
       <TextBlock Text="{Binding CapabilitySummary}" />

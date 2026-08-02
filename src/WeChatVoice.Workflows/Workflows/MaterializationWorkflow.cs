@@ -125,12 +125,23 @@ public sealed class MaterializationWorkflow : IMaterializationWorkflow
                 throw new AppFailureException(ErrorCode.WorkspaceInvalid, "The materialization produced a workspace for a different account than the one confirmed.");
             }
 
+            // The backend can only establish the path/database candidate at
+            // this boundary. Persist the user's decision separately without
+            // upgrading technical evidence to Confirmed. The document is
+            // atomically rewritten and verified again before it crosses back
+            // to the host.
             var identity = confirmedAccountId is not null
-                ? new AccountIdentity(
-                    AccountIdentityState.Candidate,
-                    null,
-                    UserConfirmationState.Confirmed)
+                ? new AccountIdentity(AccountIdentityState.Candidate, null, UserConfirmationState.Confirmed)
                 : AccountIdentity.CandidateOnly;
+            var persistedWorkspace = verifiedWorkspace.Workspace.WithAccountIdentity(identity);
+            if (verifiedWorkspace.Workspace.AccountIdentity != identity)
+            {
+                await LocalWorkspaceDocumentStore.WriteAsync(
+                    executed.LocalWorkspacePath,
+                    persistedWorkspace,
+                    cancellationToken).ConfigureAwait(false);
+                verifiedWorkspace = await _loader.LoadVerifiedAsync(executed.LocalWorkspacePath, cancellationToken).ConfigureAwait(false);
+            }
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.Materialization, OperationStageIds.Completing);
             return new MaterializationWorkflowResult(

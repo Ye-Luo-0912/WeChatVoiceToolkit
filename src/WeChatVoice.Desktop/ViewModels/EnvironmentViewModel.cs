@@ -74,10 +74,14 @@ public sealed partial class EnvironmentViewModel : PageViewModelBase
             cancellationToken).ConfigureAwait(false),
         result =>
         {
+            Services.Project.EnvironmentAssessment = result;
             if (result.Workspace is not null)
             {
+                Services.Project.ClearVoiceSelection(clearContact: true);
                 Services.Project.Workspace = result.Workspace;
-                Services.Project.WorkspacePath = WorkspacePath;
+                Services.Project.WorkspacePath = string.IsNullOrWhiteSpace(workspacePath)
+                    ? null
+                    : Path.GetFullPath(workspacePath);
             }
             IsWindows = result.IsWindows;
             IsWeixinRunning = result.RunningWeChatProcesses.Count > 0;
@@ -100,7 +104,12 @@ public sealed partial class EnvironmentViewModel : PageViewModelBase
                 ? (workerTrust.Verified ? "Worker Bundle 校验通过" : $"Worker Bundle 校验失败：{workerTrust.NonSensitiveReason}")
                 : "Worker Bundle 校验未执行";
             InstallDirectorySecuritySummary = result.InstallDirectorySecurity is { } security
-                ? (security.Protected ? "安装目录不可由当前用户写入" : "安装目录安全校验失败")
+                ? security.Writeability switch
+                {
+                    WeChatVoice.Workflows.Broker.UserWriteability.NotWritable when security.Protected => "安装目录不可由当前用户写入",
+                    WeChatVoice.Workflows.Broker.UserWriteability.Writable => "安装目录可由当前用户写入（拒绝提升）",
+                    _ => "安装目录写入性无法确定（拒绝提升）",
+                }
                 : "安装目录安全校验未执行";
             CapabilitySummary = BrokerAvailable
                 ? "Key Broker / SQLCipher Worker 就绪，可以执行物料化"

@@ -51,6 +51,7 @@
           "SQLitePCLRaw.core": "3.0.3"
         }
       }
-    }
+    },
+    "net10.0/win-x64": {}
   }
 }

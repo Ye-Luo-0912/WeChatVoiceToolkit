@@ -40,11 +40,8 @@ public sealed class MaterializationRecoveryService
                 throw new InvalidDataException("A staging-only materialization cannot be adopted.");
             }
 
-            var manifestPath = Path.Combine(fullRoot, ".wechatvoice", "materialization-manifest.json");
-            var manifest = await ReadManifestAsync(manifestPath, cancellationToken).ConfigureAwait(false);
-            ValidateManifest(manifest);
+            var manifest = await ReadAndVerifyManifestAsync(fullRoot, cancellationToken).ConfigureAwait(false);
             var effectiveAccountId = ResolveAccountId(accountId, manifest.AccountId);
-            await VerifyManifestOutputsAsync(fullRoot, manifest, cancellationToken).ConfigureAwait(false);
 
             VerifiedLocalWorkspace verified;
             if (File.Exists(fullWorkspacePath))
@@ -66,7 +63,7 @@ public sealed class MaterializationRecoveryService
                     fullRoot,
                     manifest.Databases,
                     manifest.Files,
-                    manifestPath,
+                    Path.Combine(fullRoot, ".wechatvoice", "materialization-manifest.json"),
                     manifest.KeyExtractionProfileId,
                     manifest.ProcessVersion,
                     manifest.ProcessImageSha256,
@@ -77,7 +74,7 @@ public sealed class MaterializationRecoveryService
                     effectiveAccountId,
                     sourceIdentity: null,
                     cancellationToken).ConfigureAwait(false);
-                await AtomicFileWriter.WriteJsonAsync(fullWorkspacePath, localWorkspace, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                await LocalWorkspaceDocumentStore.WriteAsync(fullWorkspacePath, localWorkspace, cancellationToken).ConfigureAwait(false);
                 verified = await ReadAndVerifyWorkspaceAsync(fullWorkspacePath, fullRoot, manifest, effectiveAccountId, cancellationToken).ConfigureAwait(false);
             }
 
@@ -113,6 +110,13 @@ public sealed class MaterializationRecoveryService
             }
 
             return verified;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Cancellation is not evidence that committed output is damaged.
+            // Leave the last durable state untouched so a later recovery can
+            // resume or a user can inspect it safely.
+            throw;
         }
         catch (Exception)
         {
@@ -151,18 +155,24 @@ public sealed class MaterializationRecoveryService
         }
     }
 
-    private static async Task<MaterializationManifest> ReadManifestAsync(
-        string manifestPath,
+    public static async Task<MaterializationManifest> ReadAndVerifyManifestAsync(
+        string outputRoot,
         CancellationToken cancellationToken)
     {
+        var fullRoot = Path.GetFullPath(outputRoot);
+        WorkspacePathSafety.EnsureNoReparsePoints(fullRoot);
+        var manifestPath = Path.Combine(fullRoot, ".wechatvoice", "materialization-manifest.json");
         if (!File.Exists(manifestPath))
         {
             throw new InvalidDataException("The materialization manifest is missing.");
         }
 
         await using var stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return await JsonSerializer.DeserializeAsync<MaterializationManifest>(stream, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false)
+        var manifest = await JsonSerializer.DeserializeAsync<MaterializationManifest>(stream, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("The materialization manifest is empty.");
+        ValidateManifest(manifest);
+        await VerifyManifestOutputsAsync(fullRoot, manifest, cancellationToken).ConfigureAwait(false);
+        return manifest;
     }
 
     private static void ValidateManifest(MaterializationManifest manifest)
@@ -209,7 +219,7 @@ public sealed class MaterializationRecoveryService
         return requestedAccountId ?? manifestAccountId;
     }
 
-    private static async Task VerifyManifestOutputsAsync(
+    public static async Task VerifyManifestOutputsAsync(
         string outputRoot,
         MaterializationManifest manifest,
         CancellationToken cancellationToken)

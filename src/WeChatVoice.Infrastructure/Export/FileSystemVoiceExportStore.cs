@@ -239,7 +239,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             journalContext?.DatabaseFingerprints ?? fallback.DatabaseFingerprints,
             runStatus,
             runStatus == ExportRunStatus.Cancelled,
-            journalContext?.MaterializationProvenance ?? fallback.Provenance);
+            journalContext?.MaterializationProvenance ?? fallback.Provenance,
+            journalContext?.AccountIdentity ?? fallback.AccountIdentity);
     }
 
     private async Task<ExportArtifact?> ReadExistingArtifactAsync(string path, string relativePath, CancellationToken cancellationToken)

@@ -40,8 +40,20 @@ failures. Repeating the same export verified and skipped all existing files,
 confirming stable-key idempotency. Local snapshots, decrypted workspaces,
 contacts, exports, and Manifests remain ignored and must never be committed.
 
-Before release work, run the locked restore, CI Release build, format check,
-and complete tests. The next useful work is a guided high-level CLI flow,
-duration evidence, packaging, and only then derived WAV decoding. Do not add an
-unknown-version Profile, partial message/media join, raw-key output, arbitrary
-process reader, or caller-selected privileged executable.
+The current correctness hardening also includes: environment trust is a
+materialization prerequisite; Workspace JSON paths and contact/query choices
+are session-owned; Scan/Export share a result-set fingerprint and maximum
+limit; Workspace catalogs hold read-only file leases; materialization state
+transitions are monotonic and locked; and Broker cancellation closes the pipe
+before attempting best-effort process cleanup.
+
+Before release work, run the RID-locked restore, CI Release build, format
+check, complete tests, and `scripts/package-release.ps1`. The remaining product
+work is CLI decomposition, schema-backed duration evidence, a later batch
+decoder, and installer selection. Account self-identity evidence is already
+re-derived from the verified `encrypt_username = username` row; user
+confirmation remains a separate state. The existing decoder boundary is
+optional and configured through `WECHATVOICE_SILK_DECODER_PATH`; it is not a
+license or schema guess. Do not add an unknown-version Profile, partial
+message/media join, raw-key output, arbitrary process reader, or
+caller-selected privileged executable.

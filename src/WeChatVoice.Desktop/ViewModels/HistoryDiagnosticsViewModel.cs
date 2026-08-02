@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Desktop.Infrastructure;
+using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.ViewModels;
 
@@ -25,6 +26,14 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
     [ObservableProperty]
     private RecentWorkspaceEntry? _selectedWorkspace;
 
+    partial void OnSelectedWorkspaceChanged(RecentWorkspaceEntry? value)
+    {
+        _deleteArmed = false;
+        _deletePreview = null;
+        SelectedExportDirectory = value?.LastExportDirectory;
+        ExportRuns = LoadExportRuns(SelectedExportDirectory);
+    }
+
     [ObservableProperty]
     private IReadOnlyList<string> _logLines = [];
 
@@ -33,8 +42,15 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
 
     [ObservableProperty]
     private string? _workspaceDeleteSummary;
+    [ObservableProperty]
+    private string? _materializedRootPath;
+    [ObservableProperty]
+    private string? _materializationManifestSummary;
+    [ObservableProperty]
+    private string? _selectedExportDirectory;
     [ObservableProperty] private IReadOnlyList<ExportRunHistoryEntry> _exportRuns = [];
     private bool _deleteArmed;
+    private WorkspaceDeletionPreview? _deletePreview;
 
     [RelayCommand]
     private Task LoadSelectedWorkspaceAsync()
@@ -48,10 +64,16 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
         },
         result =>
         {
+            Services.Project.ClearVoiceSelection(clearContact: true);
             Services.Project.Workspace = result;
             Services.Project.WorkspacePath = selectedPath;
-            Services.Project.Scan = null;
-            Services.Project.SelectionPlan = null;
+            Services.Project.ExportDirectory = SelectedWorkspace?.LastExportDirectory;
+            MaterializedRootPath = result.Workspace.SourceRoot;
+            MaterializationManifestSummary = result.Workspace.Provenance is null
+                ? "此 Workspace 没有物料化 provenance；已完成普通 Workspace 验证。"
+                : "物料化 Manifest 已随 Workspace provenance 验证通过。";
+            SelectedExportDirectory = SelectedWorkspace?.LastExportDirectory;
+            ExportRuns = LoadExportRuns(SelectedExportDirectory);
             WorkspaceDeleteSummary = $"Workspace 已验证并恢复：{result.Workspace.WorkspaceId}";
         });
     }
@@ -66,11 +88,32 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
         }
         if (!_deleteArmed)
         {
-            _deleteArmed = true;
-            WorkspaceDeleteSummary = "将重新验证并删除 Manifest 覆盖的明文 Workspace。再次点击确认；源快照和 SILK 导出不会删除。";
+            var previewPath = SelectedWorkspace.WorkspacePath;
+            return RunHost.RunAsync(
+                async (context, cancellationToken) => await Workflows.Workspace.PreviewDeleteMaterializedAsync(
+                    previewPath,
+                    context,
+                    cancellationToken).ConfigureAwait(false),
+                preview =>
+                {
+                    if (!string.Equals(SelectedWorkspace?.WorkspacePath, previewPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new AppFailureException(ErrorCode.InvalidRequest, "Workspace selection changed; run the deletion preview again.");
+                    }
+
+                    _deletePreview = preview;
+                    _deleteArmed = true;
+                    WorkspaceDeleteSummary = $"已验证将删除 {preview.DatabaseCount} 个明文数据库，共 {preview.TotalBytes} bytes。再次点击确认；源快照和 SILK 导出不会删除。";
+                });
+        }
+        if (_deletePreview is null)
+        {
+            _deleteArmed = false;
+            WorkspaceDeleteSummary = "删除预检已失效，请重新执行预检。";
             return Task.CompletedTask;
         }
         _deleteArmed = false;
+        _deletePreview = null;
         var path = SelectedWorkspace.WorkspacePath;
         return RunHost.RunAsync(
             async (context, cancellationToken) => await Workflows.Workspace.DeleteMaterializedAsync(path, context, cancellationToken).ConfigureAwait(false),
@@ -80,9 +123,13 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
                 Services.RecentWorkspaces.Remove(path);
                 if (string.Equals(Services.Project.WorkspacePath, path, StringComparison.OrdinalIgnoreCase))
                 {
+                    Services.Project.ClearVoiceSelection(clearContact: true);
                     Services.Project.Workspace = null;
                     Services.Project.WorkspacePath = null;
                 }
+                MaterializedRootPath = null;
+                MaterializationManifestSummary = null;
+                SelectedExportDirectory = null;
                 Refresh();
             });
     }
@@ -92,12 +139,19 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
     {
         RecentWorkspaces = Services.RecentWorkspaces.Load();
         LogLines = Services.Log.GetRecentSnapshot();
-        ExportRuns = LoadExportRuns();
+        SelectedExportDirectory = SelectedWorkspace?.LastExportDirectory;
+        ExportRuns = LoadExportRuns(SelectedExportDirectory);
     }
 
-    private IReadOnlyList<ExportRunHistoryEntry> LoadExportRuns()
+    private IReadOnlyList<ExportRunHistoryEntry> LoadExportRuns(string? selectedExportDirectory = null)
     {
-        var root = Services.Project.ExportDirectory;
+        var root = selectedExportDirectory;
+        if (string.IsNullOrWhiteSpace(root)
+            && SelectedWorkspace is not null
+            && string.Equals(SelectedWorkspace.WorkspacePath, Services.Project.WorkspacePath, StringComparison.OrdinalIgnoreCase))
+        {
+            root = Services.Project.ExportDirectory;
+        }
         if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(Path.Combine(root, "runs"))) return [];
         var results = new List<ExportRunHistoryEntry>();
         foreach (var path in Directory.EnumerateFiles(Path.Combine(root, "runs"), "*.manifest.json"))
@@ -152,9 +206,10 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
             {
                 Services.Project.Workspace = null;
                 Services.Project.WorkspacePath = null;
-                Services.Project.SelectedContact = null;
-                Services.Project.Scan = null;
-                Services.Project.LastExportRun = null;
+                Services.Project.ClearVoiceSelection(clearContact: true);
+                MaterializedRootPath = null;
+                MaterializationManifestSummary = null;
+                SelectedExportDirectory = null;
             }
 
             WorkspaceDeleteSummary = "Workspace JSON 已删除；源快照和导出文件未删除。";

@@ -229,6 +229,11 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder
         {
             // Preserve cancellation; process teardown remains best effort.
         }
+        catch (UnauthorizedAccessException)
+        {
+            // A decoder launched under another integrity level may reject
+            // termination. Preserve cancellation and the primary result.
+        }
     }
 
     private static async Task ObserveTasksAsync(params Task<string>[] tasks)

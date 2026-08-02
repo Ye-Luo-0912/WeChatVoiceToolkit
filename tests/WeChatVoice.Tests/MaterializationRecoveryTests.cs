@@ -3,6 +3,7 @@ using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Serialization;
 using WeChatVoice.Infrastructure.Sqlite;
+using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Tests;
 
@@ -135,6 +136,112 @@ public sealed class MaterializationRecoveryTests
 
         var state = await MaterializationStateStore.ReadAsync(outputRoot, CancellationToken.None);
         Assert.Equal(MaterializationCommitStates.FailedRecoverable, state.State);
+    }
+
+    [Fact]
+    public async Task Delete_materialized_workspace_revalidates_and_preserves_external_data()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var fixture = await CreateCommittedWorkspaceAsync(temporary, "delete-success");
+        var snapshotSentinel = temporary.GetPath("snapshot-sentinel.txt");
+        var exportSentinel = temporary.GetPath("export-sentinel.silk");
+        await File.WriteAllTextAsync(snapshotSentinel, "snapshot");
+        await File.WriteAllTextAsync(exportSentinel, "silk");
+
+        var context = new WorkflowContext(new TestConfirmation());
+        var result = await new DeleteMaterializedWorkspaceWorkflow().RunAsync(
+            fixture.WorkspacePath,
+            context,
+            CancellationToken.None);
+
+        Assert.Equal(fixture.WorkspaceId, result.WorkspaceId);
+        Assert.Equal(1, result.DatabaseCount);
+        Assert.False(Directory.Exists(fixture.OutputRoot));
+        Assert.True(File.Exists(snapshotSentinel));
+        Assert.True(File.Exists(exportSentinel));
+        Assert.Equal(WorkflowState.Completed, context.StateMachine.State);
+    }
+
+    [Fact]
+    public async Task Delete_preview_revalidates_without_deleting_the_workspace()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var fixture = await CreateCommittedWorkspaceAsync(temporary, "delete-preview");
+
+        var context = new WorkflowContext(new TestConfirmation());
+        var preview = await new DeleteMaterializedWorkspaceWorkflow().PreviewAsync(
+            fixture.WorkspacePath,
+            context,
+            CancellationToken.None);
+
+        Assert.Equal(fixture.WorkspaceId, preview.WorkspaceId);
+        Assert.Equal(1, preview.DatabaseCount);
+        Assert.True(preview.TotalBytes > 0);
+        Assert.True(Directory.Exists(fixture.OutputRoot));
+        Assert.Equal(WorkflowState.Completed, context.StateMachine.State);
+    }
+
+    [Fact]
+    public async Task Delete_materialized_workspace_rejects_an_unmanifested_file()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var fixture = await CreateCommittedWorkspaceAsync(temporary, "delete-extra");
+        await File.WriteAllTextAsync(Path.Combine(fixture.OutputRoot, "unexpected.db"), "not covered");
+
+        var context = new WorkflowContext(new TestConfirmation());
+        await Assert.ThrowsAsync<InvalidDataException>(() => new DeleteMaterializedWorkspaceWorkflow().RunAsync(
+            fixture.WorkspacePath,
+            context,
+            CancellationToken.None));
+
+        Assert.True(Directory.Exists(fixture.OutputRoot));
+        Assert.Equal(WorkflowState.Failed, context.StateMachine.State);
+    }
+
+    private static async Task<MaterializedWorkspaceFixture> CreateCommittedWorkspaceAsync(
+        TestTemporaryDirectory temporary,
+        string name)
+    {
+        var outputRoot = temporary.CreateDirectory(Path.Combine(name, "materialized"));
+        var databasePath = Path.Combine(outputRoot, "databases", "message_0.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+        await SqliteSchemaInspectorTests.CreateSampleDatabaseAsync(databasePath);
+        var info = new FileInfo(databasePath);
+        var hash = await FileHashing.ComputeSha256Async(databasePath, CancellationToken.None);
+        var schema = await new SqliteSchemaInspector().InspectAsync(databasePath, CancellationToken.None);
+        var backendOutputPath = Path.Combine(outputRoot, ".wechatvoice", "materialization-output.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(backendOutputPath)!);
+        await File.WriteAllTextAsync(backendOutputPath, "{\"formatVersion\":1,\"databases\":[]}");
+        var backendOutputInfo = new FileInfo(backendOutputPath);
+        var backendOutputHash = await FileHashing.ComputeSha256Async(backendOutputPath, CancellationToken.None);
+        await WriteManifestAsync(outputRoot, new MaterializationManifest(
+            "materialization-" + name,
+            "snapshot-" + name,
+            "test-backend",
+            "1",
+            new string('b', 64),
+            [new MaterializedDatabase("message_0.db", "group-1", "databases/message_0.db", "message", 0, hash, info.Length, schema.SchemaFingerprint!)],
+            [
+                new MaterializationFile("databases/message_0.db", hash, info.Length),
+                new MaterializationFile(".wechatvoice/materialization-output.json", backendOutputHash, backendOutputInfo.Length),
+            ]));
+        await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.DatabasesCommitted, CancellationToken.None);
+
+        var workspacePath = temporary.GetPath(Path.Combine(name, "workspace.json"));
+        var verified = await new MaterializationRecoveryService().RecoverAsync(outputRoot, workspacePath, null, CancellationToken.None);
+        var state = await MaterializationStateStore.ReadAsync(outputRoot, CancellationToken.None);
+        Assert.Equal(MaterializationCommitStates.Completed, state.State);
+        return new MaterializedWorkspaceFixture(outputRoot, workspacePath, verified.Workspace.WorkspaceId);
+    }
+
+    private sealed record MaterializedWorkspaceFixture(string OutputRoot, string WorkspacePath, string WorkspaceId);
+
+    private sealed class TestConfirmation : WeChatVoice.Core.Ports.IAccountConfirmation
+    {
+        public Task<AccountConfirmation> ConfirmAsync(
+            AccountIdentityReport report,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new AccountConfirmation(true, report.AccountCandidate));
     }
 
     private static async Task WriteManifestAsync(string outputRoot, MaterializationManifest manifest)

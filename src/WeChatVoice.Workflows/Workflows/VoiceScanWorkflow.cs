@@ -32,6 +32,7 @@ public sealed class VoiceScanWorkflow(
             await using var session = await opener.OpenAsync(request.WorkspacePath, cancellationToken).ConfigureAwait(false);
             context.Report(OperationPhase.VoiceScan, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
+            EnsureExpectedContact(request.ExpectedContactId, contact);
             var query = VoiceQueryBuilder.Build(request.ConversationId, contact, request.Direction, request.From, request.To,
                 request.MaximumResults, request.DeepScan, request.ResolveDurations);
             context.Report(OperationPhase.VoiceScan, OperationStageIds.QueryingVoices);
@@ -49,6 +50,17 @@ public sealed class VoiceScanWorkflow(
         {
             context.StateMachine.TryFail();
             throw;
+        }
+    }
+
+    private static void EnsureExpectedContact(string? expectedContactId, ContactRecord contact)
+    {
+        if (!string.IsNullOrWhiteSpace(expectedContactId)
+            && !string.Equals(expectedContactId, contact.ContactId, StringComparison.Ordinal))
+        {
+            throw new Core.Errors.AppFailureException(
+                Core.Errors.ErrorCode.SelectionPlanMismatch,
+                "The resolved contact no longer matches the selected stable ContactId.");
         }
     }
 }

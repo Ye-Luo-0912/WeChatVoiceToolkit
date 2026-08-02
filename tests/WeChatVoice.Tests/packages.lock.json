@@ -257,6 +257,37 @@
           "System.Security.Principal.Windows": "6.0.0-preview.5.21301.5"
         }
       }
+    },
+    "net10.0/win-x64": {
+      "System.Security.Principal.Windows": {
+        "type": "Transitive",
+        "resolved": "6.0.0-preview.5.21301.5",
+        "contentHash": "ywwCqFAaRVbgqqORqYg8jdaX6NUEpzbuhxyUhAs+7mZ8AFAO4PzFYrZ5JPkYejXwougDldtbi0zOkk1lLzugLw=="
+      },
+      "SQLitePCLRaw.lib.e_sqlcipher": {
+        "type": "CentralTransitive",
+        "requested": "[2.1.11, )",
+        "resolved": "2.1.11",
+        "contentHash": "Cg6UPeDbH8jyaOs1vqXYIgeewH0wYrBnmbC5Ml3GYBo+GKzNmyxrWSO52JV68bfB7Addt/PZLMekJV1RH2ftWQ=="
+      },
+      "System.IO.FileSystem.AccessControl": {
+        "type": "CentralTransitive",
+        "requested": "[6.0.0-preview.5.21301.5, )",
+        "resolved": "6.0.0-preview.5.21301.5",
+        "contentHash": "ACAy/tBXovW06UatGYPoqR0EB6FCH65uGuMOurGHiWyt/3Lngq3vSQW+yZkWQ1UW7MzMJoP6xGvP2XzSLeUuWw==",
+        "dependencies": {
+          "System.Security.Principal.Windows": "6.0.0-preview.5.21301.5"
+        }
+      },
+      "System.IO.Pipes.AccessControl": {
+        "type": "CentralTransitive",
+        "requested": "[6.0.0-preview.5.21301.5, )",
+        "resolved": "6.0.0-preview.5.21301.5",
+        "contentHash": "tv3KAjydzPusgdXwueOHldZ70FEh7ECs+q82UCnZZFNmW7nxGzrCgCMPomY5JpesaoJWcgvi3zEhSvJddXuu1g==",
+        "dependencies": {
+          "System.Security.Principal.Windows": "6.0.0-preview.5.21301.5"
+        }
+      }
     }
   }
 }

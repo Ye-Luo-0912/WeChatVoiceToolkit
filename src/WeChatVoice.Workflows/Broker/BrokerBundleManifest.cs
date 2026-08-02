@@ -14,7 +14,19 @@ public sealed record BrokerBundleManifest(
     string? DepsSha256,
     string? RuntimeConfigFile,
     string? RuntimeConfigSha256,
-    string? PublisherThumbprint);
+    string? PublisherThumbprint,
+    IReadOnlyList<BrokerBundleFile>? Files = null);
+
+/// <summary>
+/// One regular file in the final Broker load closure. The list is generated
+/// after signing and is verified in addition to the legacy named sidecars.
+/// Keeping the relative path, length, and digest together prevents a package
+/// from silently replacing a dependency with a same-sized file.
+/// </summary>
+public sealed record BrokerBundleFile(
+    string RelativePath,
+    string Sha256,
+    long ByteLength);
 
 public static class BrokerBundleManifestLoader
 {
@@ -82,6 +94,91 @@ public static class BrokerBundleManifestLoader
             }
         }
 
-        return true;
+        return manifest.Files is not null && VerifyCompleteFileClosure(installDirectory, prefix, manifest.Files);
+    }
+
+    private static bool VerifyCompleteFileClosure(
+        string installDirectory,
+        string prefix,
+        IReadOnlyList<BrokerBundleFile> files)
+    {
+        if (files.Count == 0)
+        {
+            return false;
+        }
+
+        var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            if (string.IsNullOrWhiteSpace(file.RelativePath)
+                || string.IsNullOrWhiteSpace(file.Sha256)
+                || file.ByteLength < 0
+                || Path.IsPathRooted(file.RelativePath)
+                || !expected.Add(NormalizeRelative(file.RelativePath)))
+            {
+                return false;
+            }
+
+            var path = Path.GetFullPath(Path.Combine(installDirectory, file.RelativePath));
+            if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(path)
+                || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                return false;
+            }
+
+            var info = new FileInfo(path);
+            if (info.Length != file.ByteLength)
+            {
+                return false;
+            }
+
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
+            using var hasher = System.Security.Cryptography.SHA256.Create();
+            var actual = Convert.ToHexString(hasher.ComputeHash(stream)).ToLowerInvariant();
+            if (!string.Equals(actual, file.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        // The bundle is the trust boundary for the installed load closure.
+        // Reject both missing files and unexpected regular files. Generated
+        // package metadata is intentionally outside the executable closure and
+        // is covered by package-manifest.json/SHA256SUMS.txt instead.
+        var actualFiles = Directory.EnumerateFiles(installDirectory, "*", SearchOption.AllDirectories)
+            .Where(path => !IsPackageMetadata(Path.GetRelativePath(installDirectory, path)))
+            .Select(path =>
+            {
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new InvalidDataException("The Broker install contains a reparse-point file.");
+                }
+
+                return NormalizeRelative(Path.GetRelativePath(installDirectory, path));
+            })
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return actualFiles.SetEquals(expected);
+    }
+
+    private static bool IsPackageMetadata(string relativePath)
+        => Path.GetFileName(relativePath).Equals("WeChatVoice.KeyBroker.bundle.json", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("WeChatVoice.SqlCipherWorker.bundle.json", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("package-manifest.json", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("sbom.spdx.json", StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeRelative(string path)
+    {
+        var normalized = path.Replace('\\', '/');
+        if (Path.IsPathRooted(path)
+            || normalized.Equals(".", StringComparison.Ordinal)
+            || normalized.StartsWith("../", StringComparison.Ordinal)
+            || normalized.Contains("/../", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The Broker bundle contains a path outside the install directory.");
+        }
+
+        return normalized;
     }
 }

@@ -107,3 +107,16 @@ the Desktop scan option “解码计算时长”. The scanner stages WAV output 
 the OS temporary directory, validates RIFF/PCM structure, computes duration
 from PCM frames, and deletes the derived file. Normal scans and raw SILK export
 never start the decoder.
+
+For a complete self-contained `win-x64` layout, use the single package entry
+point below. It publishes CLI, Desktop, Broker, Worker, native SQLCipher,
+post-signature bundle manifests, package manifest, SBOM, checksums, and Desktop
+smoke verification in one path:
+
+```powershell
+dotnet restore WeChatVoice.slnx --locked-mode --runtime win-x64
+./scripts/package-release.ps1
+```
+
+Do not use a single-project `dotnet publish` as a release package. It can be a
+development build check, but it is not the complete product layout.

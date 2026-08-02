@@ -18,14 +18,16 @@
       <TextBlock Text="通过一次性 Key Broker 提取并校验密钥，将加密数据库解密为普通 SQLite。检测到的账号需要明确确认；Broker 会弹出 UAC 授权。" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBox Width="380" PlaceholderText="快照目录" Text="{Binding SnapshotDirectory}" />
+        <Button Content="选择快照" Command="{Binding BrowseSnapshotCommand}" />
         <TextBox Width="380" PlaceholderText="物料化输出目录" Text="{Binding OutputDirectory}" />
+        <Button Content="选择输出目录" Command="{Binding BrowseOutputCommand}" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBox Width="380" PlaceholderText="可选：Workspace JSON 输出路径" Text="{Binding WorkspaceOutputPath}" />
         <TextBox Width="380" PlaceholderText="可选：显式确认的账号（wxid_…）" Text="{Binding RequestedAccount}" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="16">
-        <Button Content="开始物料化" Command="{Binding MaterializeCommand}" />
+        <Button Content="开始物料化" Command="{Binding MaterializeCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
         <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
       </StackPanel>

@@ -14,7 +14,7 @@
       <TextBlock FontSize="20" FontWeight="SemiBold" Text="语音扫描（元数据审计）" />
       <TextBlock Text="只读审计，不写任何文件。仅支持一对一联系人；输出为原始 SILK 的关联状态。" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="340" PlaceholderText="Workspace JSON 路径" Text="{Binding WorkspacePath}" />
+        <TextBox Width="340" IsReadOnly="True" PlaceholderText="当前 Workspace JSON（由项目会话提供）" Text="{Binding WorkspacePath}" />
         <TextBlock Width="360" Text="联系人必须在联系人页显式选择" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="8">
@@ -24,7 +24,7 @@
         <CheckBox Content="深度扫描（读取并 Hash 完整 Payload）" IsChecked="{Binding DeepScan}" />
         <CheckBox Content="解码计算时长（可选，较慢）" IsChecked="{Binding ResolveDurations}" IsEnabled="{Binding DurationAnalysisAvailable}" />
         <TextBox Width="120" PlaceholderText="最大条数（可选）" Text="{Binding MaximumResultsText}" />
-        <Button Content="扫描" Command="{Binding ScanCommand}" />
+        <Button Content="扫描" Command="{Binding ScanCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
         <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
       </StackPanel>

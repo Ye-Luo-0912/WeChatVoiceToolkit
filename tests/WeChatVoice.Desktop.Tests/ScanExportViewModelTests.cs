@@ -79,6 +79,23 @@ public sealed class ScanExportViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Scan_input_parse_failures_are_reported_as_typed_errors()
+    {
+        var viewModel = new ScanViewModel(Services, DirectInvokeAsync)
+        {
+            WorkspacePath = "C:\\workspace.json",
+            MaximumResultsText = "not-a-number",
+        };
+        Services.Project.SelectedContact = new ContactRecord("contact-1", "wxid_peer", "Peer", null);
+
+        await viewModel.ScanCommand.ExecuteAsync(null);
+
+        Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
+        Assert.Equal(ErrorCode.InvalidRequest, viewModel.RunHost.LastErrorCode);
+        Assert.Null(_scan.LastRequest);
+    }
+
+    [Fact]
     public async Task Export_reports_entries_and_partial_failures()
     {
         var viewModel = new ExportViewModel(Services, DirectInvokeAsync);
@@ -102,6 +119,17 @@ public sealed class ScanExportViewModelTests : IDisposable
         Assert.Single(viewModel.Failures);
         Assert.Contains("含失败", viewModel.ExportSummary, StringComparison.Ordinal);
         Assert.Equal(WorkflowState.Completed, viewModel.RunHost.State);
+    }
+
+    [Fact]
+    public async Task Recover_without_a_journal_uses_typed_run_host_error()
+    {
+        var viewModel = new ExportViewModel(Services, DirectInvokeAsync);
+
+        await viewModel.RecoverCommand.ExecuteAsync(null);
+
+        Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
+        Assert.Equal(ErrorCode.InvalidRequest, viewModel.RunHost.LastErrorCode);
     }
 
     [Fact]

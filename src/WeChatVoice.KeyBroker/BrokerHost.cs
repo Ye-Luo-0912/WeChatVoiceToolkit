@@ -164,11 +164,7 @@ internal static class BrokerHost
             }
             var workspacePath = Path.GetFullPath(workspaceOutput);
             Directory.CreateDirectory(Path.GetDirectoryName(workspacePath)!);
-            await using (var workspaceStream = new FileStream(workspacePath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                await JsonSerializer.SerializeAsync(workspaceStream, workspace, JsonOptions, cancellationToken).ConfigureAwait(false);
-                await workspaceStream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            }
+            await LocalWorkspaceDocumentStore.WriteAsync(workspacePath, workspace, cancellationToken).ConfigureAwait(false);
             await MaterializationStateStore.TransitionAsync(
                 outputRoot,
                 [MaterializationCommitStates.DatabasesCommitted, MaterializationCommitStates.FailedRecoverable],

@@ -153,7 +153,8 @@ public sealed class VoiceExportService
             context.DatabaseFingerprints,
             runStatus,
             runStatus == ExportRunStatus.Cancelled,
-            context.MaterializationProvenance);
+            context.MaterializationProvenance,
+            context.AccountIdentity);
 
         await AppendAsync(
             journal,

@@ -83,6 +83,53 @@ public sealed class WeixinWindows4AdapterTests
     }
 
     [Fact]
+    public async Task Adapter_preserves_workspace_user_confirmation_without_upgrading_evidence()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateFixtureAsync(root);
+        var local = await new LocalWorkspaceCreator().CreateAsync(root, CancellationToken.None);
+        var dataSet = new WeChatDataSet(
+            local.DataSet.DataSetId,
+            AccountId,
+            local.DataSet.Databases,
+            "snapshot-test",
+            local.DataSet.AdapterId);
+        var provenance = new MaterializationProvenance(
+            "snapshot-test",
+            "materialized-test",
+            "sqlcipher-e_sqlcipher-worker",
+            "e_sqlcipher-test",
+            "backend-hash",
+            "manifest-hash",
+            "weixin-windows-4.1.11.55-wcdb-protected-spec-v2",
+            "4.1.11.55",
+            "ac599744a7ce7b65640ebe18c939c0d4e4a06cd039d89cddee7f1e9afc56875d",
+            "ab925b9428239def44b252d970c337034d75e66b27eb5529633dc10669fc796a",
+            "sid-fingerprint");
+        var workspace = new LocalWorkspace(
+            local.WorkspaceId,
+            local.SourceRoot,
+            dataSet,
+            local.CreatedAtUtc,
+            local.Issues,
+            local.AdapterCandidates,
+            provenance,
+            AccountIdentity: new AccountIdentity(
+                AccountIdentityState.Candidate,
+                null,
+                UserConfirmationState.Confirmed));
+
+        await using var catalog = await new WeixinWindows4Adapter().OpenAsync(
+            new VerifiedLocalWorkspace(workspace, DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        Assert.Equal(AccountIdentityState.Candidate, catalog.Context.AccountIdentity.State);
+        Assert.Equal(UserConfirmationState.Confirmed, catalog.Context.AccountIdentity.UserConfirmation);
+        Assert.Null(catalog.Context.AccountIdentity.ConfirmedBy);
+    }
+
+    [Fact]
     public async Task Adapter_marks_identity_confirmed_when_self_identity_row_is_present()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -180,6 +227,40 @@ public sealed class WeixinWindows4AdapterTests
         Assert.Equal(3, limited.Count);
         Assert.Equal([1_700_000_000, 1_700_000_030, 1_700_000_080], limited.Select(static record => record.OccurredAtUtc.ToUnixTimeSeconds()).ToArray());
         Assert.Equal([0, 1, 1], limited.Select(static record => record.ShardNumber).ToArray());
+    }
+
+    [Fact]
+    public async Task Adapter_preflights_incoming_speakers_before_yielding_any_record()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateSecondMessageShardAsync(root);
+        await CreateFixtureAsync(root);
+        var secondShard = Path.Combine(root, "databases", "message", "message_1.db");
+        var tableName = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(ContactId))).ToLowerInvariant();
+        await ExecuteAsync(secondShard, $"""
+            INSERT INTO Name2Id (rowid, user_name, is_session) VALUES (3, 'wxid_other', 1);
+            UPDATE "{tableName}"
+            SET real_sender_id = 3
+            WHERE local_id = 20;
+            """);
+
+        var verified = await CreateVerifiedWorkspaceAsync(root);
+        await using var catalog = await new WeixinWindows4Adapter().OpenAsync(verified, CancellationToken.None);
+        var yielded = 0;
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+        {
+            await foreach (var _ in catalog.QueryVoicesAsync(
+                StableQuery(VoiceDirection.Incoming),
+                CancellationToken.None))
+            {
+                yielded++;
+            }
+        });
+
+        Assert.Contains("more than one speaker", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, yielded);
     }
 
     private static async Task CreateSecondMessageShardAsync(string root)

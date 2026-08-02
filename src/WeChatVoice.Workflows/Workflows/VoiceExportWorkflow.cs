@@ -32,6 +32,13 @@ public sealed class VoiceExportWorkflow(
             await using var session = await opener.OpenAsync(request.WorkspacePath, cancellationToken).ConfigureAwait(false);
             context.Report(OperationPhase.VoiceExport, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(request.ExpectedContactId)
+                && !string.Equals(request.ExpectedContactId, contact.ContactId, StringComparison.Ordinal))
+            {
+                throw new Core.Errors.AppFailureException(
+                    Core.Errors.ErrorCode.SelectionPlanMismatch,
+                    "The resolved contact no longer matches the selected stable ContactId.");
+            }
             var query = VoiceQueryBuilder.Build(
                 request.ConversationId,
                 contact,

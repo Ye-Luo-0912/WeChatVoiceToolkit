@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
@@ -85,10 +83,32 @@ public sealed class ExternalMaterializationExecutor(
             OperationPhase.Materialization,
             OperationStatus.Running,
             new OperationStage(OperationStageIds.Materializing, "正在执行外部解密器")));
-        var materialization = await backend.MaterializeAsync(
-            snapshot,
-            new MaterializationOptions(Path.GetFullPath(outputRoot)),
-            cancellationToken).ConfigureAwait(false);
+        VerifiedMaterialization materialization;
+        try
+        {
+            materialization = await backend.MaterializeAsync(
+                snapshot,
+                new MaterializationOptions(Path.GetFullPath(outputRoot)),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (AppFailureException)
+        {
+            throw;
+        }
+        catch (DatabaseMaterializationException exception)
+        {
+            throw new AppFailureException(
+                ErrorCode.MaterializationInvalid,
+                "The external materialization backend failed validation.",
+                exception);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            throw new AppFailureException(
+                ErrorCode.SnapshotInconsistent,
+                "A verified Snapshot file disappeared before materialization completed.",
+                exception);
+        }
         MaterializationStateLock? stateLock = null;
         var operationId = Guid.NewGuid().ToString("N");
         try
@@ -101,14 +121,7 @@ public sealed class ExternalMaterializationExecutor(
                 cancellationToken).ConfigureAwait(false);
             var fullWorkspacePath = Path.GetFullPath(localWorkspacePath);
             Directory.CreateDirectory(Path.GetDirectoryName(fullWorkspacePath)!);
-            await using (var stream = new FileStream(fullWorkspacePath, FileMode.Create, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                await JsonSerializer.SerializeAsync(stream, localWorkspace, new JsonSerializerOptions(JsonSerializerDefaults.Web)
-                {
-                    Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
-                }, cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            }
+            await LocalWorkspaceDocumentStore.WriteAsync(fullWorkspacePath, localWorkspace, cancellationToken).ConfigureAwait(false);
 
             await MaterializationStateStore.TransitionAsync(
                 outputRoot,
@@ -128,32 +141,30 @@ public sealed class ExternalMaterializationExecutor(
                 heldLock: stateLock!).ConfigureAwait(false);
             return new ExecutedMaterialization(fullWorkspacePath, null, materialization.Result.WorkspaceId);
         }
+        catch (AppFailureException)
+        {
+            await MarkRecoverableAsync(outputRoot, operationId, stateLock).ConfigureAwait(false);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // Keep cancellation separate from validation failure. If the
+            // database commit already exists, recovery will inspect it later;
+            // do not rewrite its durable state merely because the caller
+            // cancelled the request.
+            throw;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            await MarkRecoverableAsync(outputRoot, operationId, stateLock).ConfigureAwait(false);
+            throw new AppFailureException(
+                ErrorCode.WorkspaceInvalid,
+                "The materialized databases could not be committed as a verified Workspace.",
+                exception);
+        }
         catch (Exception)
         {
-            try
-            {
-                if (stateLock is not null)
-                {
-                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
-                        outputRoot,
-                        operationId,
-                        ErrorCode.MaterializationInvalid.ToString(),
-                        CancellationToken.None,
-                        stateLock).ConfigureAwait(false);
-                }
-                else
-                {
-                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
-                        outputRoot,
-                        operationId,
-                        ErrorCode.MaterializationInvalid.ToString(),
-                        CancellationToken.None).ConfigureAwait(false);
-                }
-            }
-            catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
-            {
-            }
-
+            await MarkRecoverableAsync(outputRoot, operationId, stateLock).ConfigureAwait(false);
             throw;
         }
         finally
@@ -162,6 +173,38 @@ public sealed class ExternalMaterializationExecutor(
             {
                 await stateLock.DisposeAsync().ConfigureAwait(false);
             }
+        }
+    }
+
+    private static async Task MarkRecoverableAsync(
+        string outputRoot,
+        string operationId,
+        MaterializationStateLock? stateLock)
+    {
+        try
+        {
+            if (stateLock is not null)
+            {
+                await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                    outputRoot,
+                    operationId,
+                    ErrorCode.MaterializationInvalid.ToString(),
+                    CancellationToken.None,
+                    stateLock).ConfigureAwait(false);
+            }
+            else
+            {
+                await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                    outputRoot,
+                    operationId,
+                    ErrorCode.MaterializationInvalid.ToString(),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            // Preserve the original typed materialization failure when the
+            // recovery marker itself cannot be updated.
         }
     }
 }

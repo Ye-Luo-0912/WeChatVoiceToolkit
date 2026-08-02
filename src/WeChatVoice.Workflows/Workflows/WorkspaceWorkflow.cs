@@ -45,7 +45,7 @@ public sealed class WorkspaceWorkflow : IWorkspaceWorkflow
             var directory = Path.GetDirectoryName(fullOutputPath)
                 ?? throw new ArgumentException("The output path must include a directory.", nameof(request));
             Directory.CreateDirectory(directory);
-            await WriteJsonFileAsync(fullOutputPath, workspace, cancellationToken).ConfigureAwait(false);
+            await LocalWorkspaceDocumentStore.WriteAsync(fullOutputPath, workspace, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.Workspace, OperationStageIds.Completing);
             return new WorkspaceCreateResult(workspace, fullOutputPath);
@@ -129,17 +129,10 @@ public sealed class WorkspaceWorkflow : IWorkspaceWorkflow
         }
     }
 
+    public Task<WorkspaceDeletionPreview> PreviewDeleteMaterializedAsync(string workspacePath, WorkflowContext context, CancellationToken cancellationToken)
+        => new DeleteMaterializedWorkspaceWorkflow().PreviewAsync(workspacePath, context, cancellationToken);
+
     public Task<WorkspaceDeletionResult> DeleteMaterializedAsync(string workspacePath, WorkflowContext context, CancellationToken cancellationToken)
         => new DeleteMaterializedWorkspaceWorkflow().RunAsync(workspacePath, context, cancellationToken);
 
-    private static async Task WriteJsonFileAsync<T>(string outputPath, T value, CancellationToken cancellationToken)
-    {
-        var options = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)
-        {
-            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.CamelCase) },
-        };
-        await using var stream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await System.Text.Json.JsonSerializer.SerializeAsync(stream, value, options, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-    }
 }

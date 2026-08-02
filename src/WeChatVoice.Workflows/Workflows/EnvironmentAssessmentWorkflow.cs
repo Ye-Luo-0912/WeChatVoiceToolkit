@@ -76,12 +76,20 @@ public sealed class EnvironmentAssessmentWorkflow : IEnvironmentAssessmentWorkfl
             var workerTrust = workerInstalled
                 ? await WorkerBundleTrustEvaluator.VerifyAsync(AppContext.BaseDirectory, cancellationToken).ConfigureAwait(false)
                 : WorkerBundleTrustResult.Deny("worker-not-installed");
+            var writeability = brokerTrust.Verified
+                ? UserWriteability.NotWritable
+                : string.Equals(brokerTrust.NonSensitiveReason, "install-directory-user-writable", StringComparison.Ordinal)
+                    ? UserWriteability.Writable
+                    : string.Equals(brokerTrust.NonSensitiveReason, "install-directory-writeability-indeterminate", StringComparison.Ordinal)
+                        ? UserWriteability.Indeterminate
+                        : UserWriteability.Indeterminate;
             var installSecurity = new InstallDirectorySecurityResult(
                 Protected: _brokerTrustPolicy is ReleaseBrokerTrustPolicy
                     && brokerTrust.Verified
-                    && !string.Equals(brokerTrust.NonSensitiveReason, "install-directory-user-writable", StringComparison.Ordinal),
-                UserWritable: string.Equals(brokerTrust.NonSensitiveReason, "install-directory-user-writable", StringComparison.Ordinal),
-                NonSensitiveReason: brokerTrust.Verified ? null : brokerTrust.NonSensitiveReason);
+                    && writeability == UserWriteability.NotWritable,
+                UserWritable: writeability == UserWriteability.Writable,
+                NonSensitiveReason: brokerTrust.Verified ? null : brokerTrust.NonSensitiveReason,
+                Writeability: writeability);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.EnvironmentAssessment, OperationStageIds.Completing);
             return new EnvironmentAssessmentResult(

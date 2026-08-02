@@ -65,6 +65,28 @@ public sealed class FakeMaterializationWorkflow : IMaterializationWorkflow
     }
 }
 
+public sealed class FakeSnapshotWorkflow : ISnapshotWorkflow
+{
+    public SnapshotWorkflowRequest? LastRequest { get; private set; }
+
+    public Task<SnapshotWorkflowResult> RunAsync(
+        SnapshotWorkflowRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        LastRequest = request;
+        var manifest = new SnapshotManifest(
+            request.SourceDirectory,
+            request.OutputDirectory,
+            DateTimeOffset.UtcNow,
+            Files: []);
+        return Task.FromResult(new SnapshotWorkflowResult(
+            manifest,
+            new SnapshotSourceIdentity("wxid_owner_0000000000000000", "wxid_owner", null, 1),
+            Path.Combine(request.OutputDirectory, ".wechatvoice", "snapshot-manifest.json")));
+    }
+}
+
 public sealed class FakeContactWorkflow : IContactDiscoveryWorkflow
 {
     public ContactDiscoveryRequest? LastRequest { get; private set; }

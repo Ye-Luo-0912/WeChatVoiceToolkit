@@ -22,6 +22,7 @@ public sealed class MaterializationViewModelTests : IDisposable
             new TestDoubles.SilentConfirmation(),
             materialization: _workflow);
         Services = new DesktopServices(root, new DesktopLog(_root), new RecentWorkspaceStore(_root));
+        Services.Project.EnvironmentAssessment = new FakeEnvironmentWorkflow().Result;
     }
 
     public void Dispose()
@@ -117,6 +118,32 @@ public sealed class MaterializationViewModelTests : IDisposable
         viewModel.RunHost.CancelCommand.Execute(null);
         await run;
         Assert.Equal(WorkflowState.Cancelled, viewModel.RunHost.State);
+    }
+
+    [Fact]
+    public async Task Materialization_requires_environment_trust_preflight()
+    {
+        Services.Project.EnvironmentAssessment = null;
+        var viewModel = CreateViewModel();
+        viewModel.SnapshotDirectory = "C:\\snapshots\\s";
+        viewModel.OutputDirectory = "C:\\output";
+
+        await viewModel.MaterializeCommand.ExecuteAsync(null);
+
+        Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
+        Assert.Equal(ErrorCode.InvalidRequest, viewModel.RunHost.LastErrorCode);
+        Assert.False(viewModel.IsConfirmDialogOpen);
+    }
+
+    [Fact]
+    public void Materialization_snapshot_path_tracks_the_project_session()
+    {
+        var viewModel = CreateViewModel();
+        Services.Project.SnapshotDirectory = "C:\\snapshots\\first";
+        Assert.Equal(Services.Project.SnapshotDirectory, viewModel.SnapshotDirectory);
+
+        Services.Project.SnapshotDirectory = "C:\\snapshots\\second";
+        Assert.Equal(Services.Project.SnapshotDirectory, viewModel.SnapshotDirectory);
     }
 
     internal static async Task SpinWaitUntilAsync(Func<bool> condition, int timeoutMs = 5000)

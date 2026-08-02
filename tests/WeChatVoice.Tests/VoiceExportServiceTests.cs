@@ -241,6 +241,28 @@ public sealed class VoiceExportServiceTests
         Assert.Equal(new string('b', 64), manifest.Provenance.BackendBundleSha256);
     }
 
+    [Fact]
+    public async Task Export_manifest_preserves_account_evidence_and_user_confirmation_separately()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var exportRoot = temporary.CreateDirectory("export");
+        var identity = new AccountIdentity(
+            AccountIdentityState.Candidate,
+            null,
+            UserConfirmationState.Confirmed);
+        var service = new VoiceExportService(
+            new TestVoiceCatalog(
+                [(CreateRecord("identity", payloadByteLength: 10), () => new MemoryStream("#!SILK_V3"u8.ToArray(), writable: false))],
+                accountIdentity: identity),
+            new FileSystemVoiceExportStore(exportRoot));
+
+        var manifest = await service.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        Assert.Equal(AccountIdentityState.Candidate, manifest.AccountIdentity.State);
+        Assert.Equal(UserConfirmationState.Confirmed, manifest.AccountIdentity.UserConfirmation);
+        Assert.Null(manifest.AccountIdentity.ConfirmedBy);
+    }
+
     private static VoiceRecord CreateRecord(string messageId, string? payloadSha256 = null, long? payloadByteLength = null) => new(
         messageId,
         "contact@example",
@@ -261,10 +283,21 @@ public sealed class VoiceExportServiceTests
     {
         private readonly IReadOnlyList<(VoiceRecord Record, Func<Stream> CreateStream)> _records;
 
-        public TestVoiceCatalog(IReadOnlyList<(VoiceRecord Record, Func<Stream> CreateStream)> records, MaterializationProvenance? provenance = null)
+        public TestVoiceCatalog(
+            IReadOnlyList<(VoiceRecord Record, Func<Stream> CreateStream)> records,
+            MaterializationProvenance? provenance = null,
+            AccountIdentity? accountIdentity = null)
         {
             _records = records;
-            Context = new VoiceCatalogContext("dataset", "adapter", "1", "account", ["db-fingerprint"], "snapshot", MaterializationProvenance: provenance);
+            Context = new VoiceCatalogContext(
+                "dataset",
+                "adapter",
+                "1",
+                "account",
+                ["db-fingerprint"],
+                "snapshot",
+                MaterializationProvenance: provenance,
+                AccountIdentity: accountIdentity);
         }
 
         public VoiceCatalogContext Context { get; }

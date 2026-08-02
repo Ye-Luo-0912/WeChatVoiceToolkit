@@ -92,7 +92,15 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
         var fileLease = await VerifiedWorkspaceFileLease.OpenAsync(workspace, cancellationToken).ConfigureAwait(false);
         try
         {
-            var accountIdentity = await ValidateAccountIdentityAsync(contact, messages, dataSet.AccountId, cancellationToken).ConfigureAwait(false);
+            var evidence = await ValidateAccountIdentityAsync(contact, messages, dataSet.AccountId, cancellationToken).ConfigureAwait(false);
+            // User confirmation is persisted in the Workspace, while the
+            // technical evidence is re-derived from the verified databases on
+            // every catalog open. Never trust a persisted Confirmed state to
+            // upgrade the evidence level.
+            var accountIdentity = evidence with
+            {
+                UserConfirmation = workspace.AccountIdentity.UserConfirmation,
+            };
             return new WeixinWindows4VoiceCatalog(workspace, contact, messages, media, accountIdentity, fileLease);
         }
         catch
@@ -223,6 +231,7 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
 
 internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
 {
+    private const int VoiceQueryBatchSize = 128;
     private readonly VerifiedLocalWorkspace _workspace;
     private readonly DatabaseArtifact _contact;
     private readonly IReadOnlyList<DatabaseArtifact> _messages;
@@ -324,23 +333,77 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             throw new ArgumentException("The exact Weixin adapter accepts only incoming, outgoing, or no direction filter.", nameof(query));
         }
 
-        var selected = new List<MessageRow>();
+        // A contact query is a one-to-one export boundary. Validate the full
+        // selected, globally ordered message set before the first media row is
+        // materialized. The preflight keeps memory bounded (one row per shard)
+        // and prevents a late group-chat speaker from allowing an earlier
+        // batch to be written to an export directory.
+        if (query.Direction is null or VoiceDirection.Incoming)
+        {
+            await EnsureSingleIncomingSpeakerAsync(username, query, cancellationToken).ConfigureAwait(false);
+        }
+
+        var batch = new List<MessageRow>(VoiceQueryBatchSize);
         await foreach (var row in MergeMessageRowsAsync(_messages, username, query, cancellationToken).ConfigureAwait(false))
         {
-            selected.Add(row);
+            if (row.OriginSource == 2
+                && !string.Equals(row.SpeakerId ?? username, username, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("A one-to-one incoming export resolved more than one speaker; group-chat association is refused.");
+            }
+
+            batch.Add(row);
+            if (batch.Count >= VoiceQueryBatchSize)
+            {
+                await foreach (var record in MaterializeVoiceBatchAsync(batch, username, query.DeepScan, cancellationToken).ConfigureAwait(false))
+                {
+                    yield return record;
+                }
+
+                batch.Clear();
+            }
         }
-        if (selected.Where(static message => message.OriginSource == 2)
-            .Select(message => message.SpeakerId ?? username)
-            .Distinct(StringComparer.Ordinal)
-            .Any(speaker => !string.Equals(speaker, username, StringComparison.Ordinal)))
+
+        if (batch.Count > 0)
         {
-            throw new InvalidDataException("A one-to-one incoming export resolved more than one speaker; group-chat association is refused.");
+            await foreach (var record in MaterializeVoiceBatchAsync(batch, username, query.DeepScan, cancellationToken).ConfigureAwait(false))
+            {
+                yield return record;
+            }
         }
-        var requestedKeys = selected
+    }
+
+    private async Task EnsureSingleIncomingSpeakerAsync(
+        string username,
+        VoiceQuery query,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var row in MergeMessageRowsAsync(_messages, username, query, cancellationToken).ConfigureAwait(false))
+        {
+            if (row.OriginSource == 2
+                && !string.Equals(row.SpeakerId ?? username, username, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("A one-to-one incoming export resolved more than one speaker; group-chat association is refused.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Associates and inspects one bounded message batch. The merge reader
+    /// remains ordered, while neither all messages nor all media rows are held
+    /// for the lifetime of a scan/export.
+    /// </summary>
+    private async IAsyncEnumerable<VoiceRecord> MaterializeVoiceBatchAsync(
+        IReadOnlyList<MessageRow> messages,
+        string username,
+        bool deepScan,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var requestedKeys = messages
             .Select(static message => new AssociationKey(message.LocalId, message.ServerId, message.CreateTime))
             .ToHashSet();
-        var payloads = await ReadMediaRowsAsync(username, requestedKeys, query.DeepScan, cancellationToken).ConfigureAwait(false);
-        foreach (var message in selected)
+        var payloads = await ReadMediaRowsAsync(username, requestedKeys, deepScan, cancellationToken).ConfigureAwait(false);
+        foreach (var message in messages)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var key = new AssociationKey(message.LocalId, message.ServerId, message.CreateTime);
@@ -398,7 +461,11 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             throw new InvalidDataException("The payload locator is not valid for this verified media database.");
         }
 
-        await _fileLease.VerifyAsync(cancellationToken, logicalRole: "media").ConfigureAwait(false);
+        // The catalog lease has already content-verified the media group. A
+        // per-payload metadata check detects replacement/length/time changes;
+        // the lease's read-only handle prevents ordinary in-place writers, so
+        // unchanged media is not rehashed for every voice row.
+        await _fileLease.VerifyMetadataAsync(cancellationToken, logicalRole: "media").ConfigureAwait(false);
         var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(_media, cancellationToken).ConfigureAwait(false);
         var command = connection.CreateCommand();
         command.CommandText = "SELECT voice_data FROM VoiceInfo WHERE rowid = $rowid;";

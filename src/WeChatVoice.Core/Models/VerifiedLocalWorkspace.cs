@@ -17,5 +17,7 @@ public sealed record VerifiedLocalWorkspace
 
     public WeChatDataSet DataSet => Workspace.DataSet;
 
+    public AccountIdentity AccountIdentity => Workspace.AccountIdentity;
+
     public DateTimeOffset VerifiedAtUtc { get; }
 }

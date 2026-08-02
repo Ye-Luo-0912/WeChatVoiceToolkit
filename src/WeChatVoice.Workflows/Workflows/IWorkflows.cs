@@ -53,6 +53,11 @@ public interface IWorkspaceWorkflow
         WorkflowContext context,
         CancellationToken cancellationToken);
 
+    Task<WorkspaceDeletionPreview> PreviewDeleteMaterializedAsync(
+        string workspacePath,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
     Task<WorkspaceDeletionResult> DeleteMaterializedAsync(
         string workspacePath,
         WorkflowContext context,
@@ -122,6 +127,7 @@ public sealed record SnapshotWorkflowResult(
 public sealed record WorkspaceCreateRequest(string RootDirectory, string OutputPath);
 
 public sealed record WorkspaceCreateResult(LocalWorkspace Workspace, string OutputPath);
+public sealed record WorkspaceDeletionPreview(string WorkspaceId, string RootDirectory, int DatabaseCount, long TotalBytes);
 public sealed record WorkspaceDeletionResult(string WorkspaceId, string RootDirectory, int DatabaseCount, long TotalBytes);
 public sealed record MaterializationRecoveryRequest(
     string OutputDirectory,
@@ -147,7 +153,8 @@ public sealed record VoiceScanWorkflowRequest(
     DateTimeOffset? To = null,
     int? MaximumResults = null,
     bool DeepScan = false,
-    bool ResolveDurations = false);
+    bool ResolveDurations = false,
+    string? ExpectedContactId = null);
 
 public sealed record VoiceScanWorkflowResult(
     VoiceScanReport Report,
@@ -164,7 +171,8 @@ public sealed record VoiceExportWorkflowRequest(
     int? MaximumResults = null,
     string? ExpectedResultSetFingerprint = null,
     int? ExpectedResultCount = null,
-    long? ExpectedTotalPayloadBytes = null);
+    long? ExpectedTotalPayloadBytes = null,
+    string? ExpectedContactId = null);
 
 public sealed record VoiceExportWorkflowResult(
     VoiceExportManifest Manifest,

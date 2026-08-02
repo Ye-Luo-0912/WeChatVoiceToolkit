@@ -16,9 +16,9 @@
         <TextBlock FontSize="20" FontWeight="SemiBold" Text="联系人发现" />
         <TextBlock Text="仅列出稳定的一对一联系人（群聊已排除）。导出与扫描只接受精确的内部用户名。" TextWrapping="Wrap" />
         <StackPanel Orientation="Horizontal" Spacing="8">
-          <TextBox Width="380" PlaceholderText="Workspace JSON 路径" Text="{Binding WorkspacePath}" />
+          <TextBox Width="380" IsReadOnly="True" PlaceholderText="当前 Workspace JSON（由项目会话提供）" Text="{Binding WorkspacePath}" />
           <TextBox Width="280" PlaceholderText="搜索：用户名 / 微信 ID / 备注 / 昵称" Text="{Binding SearchTerm}" />
-          <Button Content="加载" Command="{Binding LoadContactsCommand}" />
+          <Button Content="加载" Command="{Binding LoadContactsCommand}" IsEnabled="{Binding CanStartOperation}" />
         </StackPanel>
         <TextBlock Text="{Binding AccountSummary}" />
         <TextBlock Text="{Binding ContactSummary}" />

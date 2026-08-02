@@ -1,3 +1,4 @@
+using System.Security;
 using WeChatVoice.Infrastructure.Serialization;
 using WeChatVoice.Windows;
 
@@ -65,7 +66,17 @@ public sealed class ReleaseBrokerTrustPolicy : IBrokerTrustPolicy
             return BrokerTrustResult.Deny("broker-hash-mismatch");
         }
 
-        if (!BrokerBundleManifestLoader.VerifySidecars(_installDirectory, manifest))
+        bool sidecarsVerified;
+        try
+        {
+            sidecarsVerified = BrokerBundleManifestLoader.VerifySidecars(_installDirectory, manifest);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or SecurityException)
+        {
+            sidecarsVerified = false;
+        }
+
+        if (!sidecarsVerified)
         {
             return BrokerTrustResult.Deny("broker-bundle-sidecar-mismatch");
         }
@@ -88,8 +99,17 @@ public sealed class ReleaseBrokerTrustPolicy : IBrokerTrustPolicy
             writeability = _writeabilityProbe?.Invoke(_installDirectory)
                 ?? (_isUserWritable(_installDirectory) ? UserWriteability.Writable : UserWriteability.NotWritable);
         }
-        catch (InvalidOperationException)
+        catch (UnauthorizedAccessException)
         {
+            // Access denial is an explicit negative answer for the write
+            // probe, not an infrastructure failure. The directory is not
+            // writable by this user.
+            writeability = UserWriteability.NotWritable;
+        }
+        catch (Exception exception) when (exception is IOException or ArgumentException or InvalidOperationException or SecurityException)
+        {
+            // Disk, path, sharing, and ACL-provider failures do not prove
+            // that the directory is protected. Fail closed as indeterminate.
             writeability = UserWriteability.Indeterminate;
         }
         if (writeability == UserWriteability.Indeterminate)

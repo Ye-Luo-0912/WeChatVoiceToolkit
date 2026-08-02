@@ -16,8 +16,24 @@ public abstract partial class PageViewModelBase : ObservableObject
     protected PageViewModelBase(DesktopServices services, Func<Action, Task>? invokeOnUi = null)
     {
         Services = services;
-        _marshal = invokeOnUi ?? (action => Dispatcher.UIThread.InvokeAsync(action).GetTask());
+        _marshal = invokeOnUi
+            ?? services.InvokeOnUi
+            ?? (action => Dispatcher.UIThread.InvokeAsync(action).GetTask());
         RunHost = new WorkflowRunHost(invokeOnUi: _marshal, log: services.Log, coordinator: services.OperationCoordinator);
+        services.OperationCoordinator.PropertyChanged += (_, eventArgs) =>
+        {
+            if (eventArgs.PropertyName is nameof(OperationCoordinator.IsBusy) or null)
+            {
+                _ = ApplyOnUiThreadAsync(() => OnPropertyChanged(nameof(CanStartOperation)));
+            }
+        };
+        RunHost.PropertyChanged += (_, eventArgs) =>
+        {
+            if (eventArgs.PropertyName is nameof(WorkflowRunHost.IsRunning) or nameof(WorkflowRunHost.State))
+            {
+                _ = ApplyOnUiThreadAsync(() => OnPropertyChanged(nameof(CanStartOperation)));
+            }
+        };
         services.Project.PropertyChanged += (_, eventArgs) =>
         _ = ApplyOnUiThreadAsync(() =>
             {
@@ -46,6 +62,9 @@ public abstract partial class PageViewModelBase : ObservableObject
     public WorkflowRunHost RunHost { get; }
 
     public virtual bool CanNavigate => true;
+
+    /// <summary>High-cost page commands are disabled while any app operation is active.</summary>
+    public bool CanStartOperation => !Services.OperationCoordinator.IsBusy && !RunHost.IsRunning;
 
     public virtual string? NavigationHint => null;
 
