@@ -22,6 +22,7 @@
         <TextBox Width="180" PlaceholderText="起始 UTC 时间" Text="{Binding FromText}" />
         <TextBox Width="180" PlaceholderText="结束 UTC 时间" Text="{Binding ToText}" />
         <CheckBox Content="深度扫描（读取并 Hash 完整 Payload）" IsChecked="{Binding DeepScan}" />
+        <CheckBox Content="解码计算时长（可选，较慢）" IsChecked="{Binding ResolveDurations}" IsEnabled="{Binding DurationAnalysisAvailable}" />
         <TextBox Width="120" PlaceholderText="最大条数（可选）" Text="{Binding MaximumResultsText}" />
         <Button Content="扫描" Command="{Binding ScanCommand}" />
         <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
@@ -29,6 +30,7 @@
       </StackPanel>
       <TextBlock Text="{Binding AccountSummary}" />
       <TextBlock Text="{Binding ScanSummary}" FontWeight="SemiBold" />
+      <TextBlock Text="{Binding TotalDurationMs, StringFormat='总时长：{0} ms'}" />
       <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="24">
         <StackPanel Grid.Column="0" Spacing="4">
           <TextBlock Text="匹配" />

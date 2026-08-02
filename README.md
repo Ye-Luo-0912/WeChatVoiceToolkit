@@ -94,3 +94,10 @@ hash-matching artifact.
 
 See [architecture.md](docs/architecture.md), [adr-0001-sqlite-runtime.md](docs/adr-0001-sqlite-runtime.md), [security.md](docs/security.md),
 and [agent-handoff.md](docs/agent-handoff.md) before extending the project.
+
+Optional duration analysis reuses the existing SILK decoder boundary. Set
+`WECHATVOICE_SILK_DECODER_PATH` to the reviewed decoder executable, then enable
+the Desktop scan option “解码计算时长”. The scanner stages WAV output only in
+the OS temporary directory, validates RIFF/PCM structure, computes duration
+from PCM frames, and deletes the derived file. Normal scans and raw SILK export
+never start the decoder.

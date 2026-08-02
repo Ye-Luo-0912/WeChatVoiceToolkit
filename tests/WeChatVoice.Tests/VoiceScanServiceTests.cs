@@ -28,6 +28,31 @@ public sealed class VoiceScanServiceTests
         Assert.Equal(2, report.ShardCounts["1"]);
     }
 
+    [Fact]
+    public async Task ScanAsync_resolves_missing_duration_only_when_requested()
+    {
+        var record = new VoiceRecord("decode-me", "conversation", DateTimeOffset.UtcNow, VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "1"), PayloadByteLength: 10, PayloadState: VoicePayloadState.Linked,
+            AdapterId: "adapter", AccountId: "account");
+        var catalog = new FakeCatalog([record]);
+        var resolver = new FakeDurationResolver(1500);
+
+        var withoutDecode = await new VoiceScanService(catalog, resolver).ScanAsync(new VoiceQuery(Direction: VoiceDirection.Incoming));
+        Assert.Equal(0, withoutDecode.TotalDurationMs);
+        Assert.Equal(0, withoutDecode.DurationKnownCount);
+
+        var withDecode = await new VoiceScanService(catalog, resolver).ScanAsync(new VoiceQuery(Direction: VoiceDirection.Incoming, ResolveDuration: true));
+        Assert.Equal(1500, withDecode.TotalDurationMs);
+        Assert.Equal(1, withDecode.DurationKnownCount);
+        Assert.Equal(0, withDecode.DurationUnknownCount);
+    }
+
+    private sealed class FakeDurationResolver(long duration) : IVoiceDurationResolver
+    {
+        public Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
+            => Task.FromResult<long?>(duration);
+    }
+
     private sealed class FakeCatalog(IReadOnlyList<VoiceRecord> records) : IVoiceCatalog
     {
         public VoiceCatalogContext Context { get; } = new("dataset", "adapter", "1", "account", ["db-fingerprint"]);

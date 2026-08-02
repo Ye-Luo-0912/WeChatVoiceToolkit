@@ -13,7 +13,8 @@ public sealed record VoiceQuery
         int? MaximumResults = null,
         string? ContactUsername = null,
         string? ContactId = null,
-        bool DeepScan = false)
+        bool DeepScan = false,
+        bool ResolveDuration = false)
     {
         if (MaximumResults is <= 0)
         {
@@ -35,6 +36,7 @@ public sealed record VoiceQuery
         this.ContactUsername = string.IsNullOrWhiteSpace(ContactUsername) ? null : ContactUsername;
         this.ContactId = string.IsNullOrWhiteSpace(ContactId) ? null : ContactId;
         this.DeepScan = DeepScan;
+        this.ResolveDuration = ResolveDuration;
     }
 
     public string? ConversationId { get; }
@@ -60,4 +62,6 @@ public sealed record VoiceQuery
     /// default scan path reads only a bounded SILK header prefix.
     /// </summary>
     public bool DeepScan { get; init; }
+
+    public bool ResolveDuration { get; }
 }

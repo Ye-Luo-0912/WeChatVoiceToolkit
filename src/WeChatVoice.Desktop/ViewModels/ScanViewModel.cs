@@ -30,6 +30,8 @@ public sealed partial class ScanViewModel : PageViewModelBase
 
     public override string? NavigationHint => CanNavigate ? null : "请先完成物料化或加载 Workspace";
 
+    public bool DurationAnalysisAvailable => Services.Workflows.DurationAnalysisAvailable;
+
     [ObservableProperty]
     private string? _workspacePath;
 
@@ -46,6 +48,7 @@ public sealed partial class ScanViewModel : PageViewModelBase
     private string? _toText;
 
     [ObservableProperty] private bool _deepScan;
+    [ObservableProperty] private bool _resolveDurations;
     [ObservableProperty] private string? _maximumResultsText;
 
     [ObservableProperty]
@@ -79,6 +82,15 @@ public sealed partial class ScanViewModel : PageViewModelBase
     private long _totalPayloadBytes;
 
     [ObservableProperty]
+    private long _totalDurationMs;
+
+    [ObservableProperty]
+    private int _durationKnownCount;
+
+    [ObservableProperty]
+    private int _durationUnknownCount;
+
+    [ObservableProperty]
     private string? _accountSummary;
 
     [RelayCommand]
@@ -92,6 +104,7 @@ public sealed partial class ScanViewModel : PageViewModelBase
         var to = VoiceQueryBuilder.ParseUtc(ToText, "to");
         var maximumResults = ParseMaximumResults();
         var deepScan = DeepScan;
+        var resolveDurations = ResolveDurations;
         return RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
@@ -113,7 +126,7 @@ public sealed partial class ScanViewModel : PageViewModelBase
                     Direction: direction,
                     From: from,
                     To: to,
-                    MaximumResults: maximumResults, DeepScan: deepScan),
+                    MaximumResults: maximumResults, DeepScan: deepScan, ResolveDurations: resolveDurations),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
@@ -138,8 +151,11 @@ public sealed partial class ScanViewModel : PageViewModelBase
             ExportableVoiceCount = report.ExportableVoiceCount;
             RejectedVoiceCount = report.RejectedVoiceCount;
             TotalPayloadBytes = report.TotalPayloadBytes;
+            TotalDurationMs = report.TotalDurationMs;
+            DurationKnownCount = report.DurationKnownCount;
+            DurationUnknownCount = report.DurationUnknownCount;
             AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
-            ScanSummary = $"扫描完成：可导出 {report.ExportableVoiceCount} 条 / 匹配 {report.MatchedVoiceCount} 条；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；重复统计：{(deepScan ? DuplicateCount.ToString() : "未执行")}";
+            ScanSummary = $"扫描完成：可导出 {report.ExportableVoiceCount} 条 / 匹配 {report.MatchedVoiceCount} 条；总时长 {report.TotalDurationMs} ms（已解析 {report.DurationKnownCount}，未知 {report.DurationUnknownCount}）；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；重复统计：{(deepScan ? DuplicateCount.ToString() : "未执行")}";
         });
     }
 
@@ -155,5 +171,6 @@ public sealed partial class ScanViewModel : PageViewModelBase
     partial void OnToTextChanged(string? value) => Services.Project.SelectionPlan = null;
     partial void OnDeepScanChanged(bool value) => Services.Project.SelectionPlan = null;
     partial void OnMaximumResultsTextChanged(string? value) => Services.Project.SelectionPlan = null;
+    partial void OnResolveDurationsChanged(bool value) => Services.Project.SelectionPlan = null;
     private int? ParseMaximumResults() => string.IsNullOrWhiteSpace(MaximumResultsText) ? null : int.TryParse(MaximumResultsText, out var value) && value > 0 ? value : throw new AppFailureException(ErrorCode.InvalidRequest, "Maximum results must be a positive integer.");
 }

@@ -136,7 +136,8 @@ public sealed record VoiceScanWorkflowRequest(
     DateTimeOffset? From = null,
     DateTimeOffset? To = null,
     int? MaximumResults = null,
-    bool DeepScan = false);
+    bool DeepScan = false,
+    bool ResolveDurations = false);
 
 public sealed record VoiceScanWorkflowResult(
     VoiceScanReport Report,

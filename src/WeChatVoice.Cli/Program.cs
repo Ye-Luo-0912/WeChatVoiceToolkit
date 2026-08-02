@@ -262,12 +262,18 @@ static Command CreateVoiceCommand()
     var scanFromOption = new Option<string?>("--from") { Description = "Inclusive UTC start date/time." };
     var scanToOption = new Option<string?>("--to") { Description = "Inclusive UTC end date/time." };
     var scanConversationOption = new Option<string?>("--conversation-id") { Description = "Optional conversation filter." };
+    var scanDeepOption = new Option<bool>("--deep-scan") { Description = "Read and hash complete linked SILK payloads." };
+    var scanDurationOption = new Option<bool>("--resolve-durations") { Description = "Decode linked SILK and calculate validated PCM duration." };
+    var scanMaximumOption = new Option<int?>("--maximum-results") { Description = "Optional global result limit." };
     scanCommand.Options.Add(scanWorkspaceOption);
     scanCommand.Options.Add(scanContactOption);
     scanCommand.Options.Add(scanDirectionOption);
     scanCommand.Options.Add(scanFromOption);
     scanCommand.Options.Add(scanToOption);
     scanCommand.Options.Add(scanConversationOption);
+    scanCommand.Options.Add(scanDeepOption);
+    scanCommand.Options.Add(scanDurationOption);
+    scanCommand.Options.Add(scanMaximumOption);
     scanCommand.SetAction(async (parseResult, cancellationToken) =>
     {
         var workspace = parseResult.GetValue(scanWorkspaceOption);
@@ -287,7 +293,10 @@ static Command CreateVoiceCommand()
                     ConversationId: parseResult.GetValue(scanConversationOption),
                     Direction: ParseDirection(parseResult.GetValue(scanDirectionOption)),
                     From: VoiceQueryBuilder.ParseUtc(parseResult.GetValue(scanFromOption), "--from"),
-                    To: VoiceQueryBuilder.ParseUtc(parseResult.GetValue(scanToOption), "--to")),
+                    To: VoiceQueryBuilder.ParseUtc(parseResult.GetValue(scanToOption), "--to"),
+                    MaximumResults: parseResult.GetValue(scanMaximumOption),
+                    DeepScan: parseResult.GetValue(scanDeepOption),
+                    ResolveDurations: parseResult.GetValue(scanDurationOption)),
                 context,
                 cancellationToken).ConfigureAwait(false);
             WriteJson(result.Report);

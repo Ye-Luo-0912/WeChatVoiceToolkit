@@ -3,6 +3,7 @@ using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Workflows.Broker;
 using WeChatVoice.Workflows.Workflows;
+using WeChatVoice.Infrastructure.Audio;
 
 namespace WeChatVoice.Workflows.Composition;
 
@@ -24,7 +25,8 @@ public sealed class WorkflowCompositionRoot
         IWorkspaceWorkflow? workspace = null,
         IContactDiscoveryWorkflow? contactDiscovery = null,
         IVoiceScanWorkflow? voiceScan = null,
-        IVoiceExportWorkflow? voiceExport = null)
+        IVoiceExportWorkflow? voiceExport = null,
+        IVoiceDurationResolver? voiceDurationResolver = null)
     {
         ArgumentNullException.ThrowIfNull(accountConfirmation);
         var loader = new Workspaces.WorkspaceLoader();
@@ -44,7 +46,9 @@ public sealed class WorkflowCompositionRoot
         Materialization = materialization ?? new MaterializationWorkflow(brokerExecutor);
         Workspace = workspace ?? new WorkspaceWorkflow(loader: loader);
         ContactDiscovery = contactDiscovery ?? new ContactDiscoveryWorkflow(opener);
-        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver);
+        var configuredDecoder = voiceDurationResolver ?? CreateDurationResolver();
+        DurationAnalysisAvailable = configuredDecoder is not null;
+        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder);
         VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver);
         AccountConfirmation = accountConfirmation;
         AllowDevelopmentBroker = allowDevelopmentBroker;
@@ -68,4 +72,14 @@ public sealed class WorkflowCompositionRoot
 
     /// <summary>True when the host opted into the unsigned development Broker.</summary>
     public bool AllowDevelopmentBroker { get; }
+
+    public bool DurationAnalysisAvailable { get; }
+
+    private static IVoiceDurationResolver? CreateDurationResolver()
+    {
+        var path = Environment.GetEnvironmentVariable("WECHATVOICE_SILK_DECODER_PATH");
+        return string.IsNullOrWhiteSpace(path) || !File.Exists(path)
+            ? null
+            : new DecoderVoiceDurationResolver(new ExternalSilkDecoder(path));
+    }
 }

@@ -18,7 +18,8 @@ public sealed record VoiceScanReport
         IReadOnlyDictionary<string, int>? PayloadStateCounts = null,
         bool DeepScan = false,
         int? ExportableVoiceCount = null,
-        long TotalPayloadBytes = 0)
+        long TotalPayloadBytes = 0,
+        int DurationKnownCount = 0)
     {
         this.MatchedVoiceCount = MatchedVoiceCount;
         this.TotalDurationMs = TotalDurationMs;
@@ -34,6 +35,7 @@ public sealed record VoiceScanReport
         this.DeepScan = DeepScan;
         this.ExportableVoiceCount = ExportableVoiceCount ?? (PayloadStateCounts?.TryGetValue(nameof(VoicePayloadState.Linked), out var linked) == true ? linked : 0);
         this.TotalPayloadBytes = TotalPayloadBytes;
+        this.DurationKnownCount = DurationKnownCount;
     }
 
     public int MatchedVoiceCount { get; }
@@ -51,4 +53,6 @@ public sealed record VoiceScanReport
     public int ExportableVoiceCount { get; }
     public int RejectedVoiceCount => Math.Max(0, MatchedVoiceCount - ExportableVoiceCount);
     public long TotalPayloadBytes { get; }
+    public int DurationKnownCount { get; }
+    public int DurationUnknownCount => Math.Max(0, MatchedVoiceCount - DurationKnownCount);
 }

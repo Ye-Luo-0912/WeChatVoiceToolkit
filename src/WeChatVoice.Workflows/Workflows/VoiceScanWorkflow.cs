@@ -1,5 +1,6 @@
 using WeChatVoice.Application;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Core.Ports;
 
 namespace WeChatVoice.Workflows.Workflows;
 
@@ -10,7 +11,8 @@ namespace WeChatVoice.Workflows.Workflows;
 /// </summary>
 public sealed class VoiceScanWorkflow(
     Workspaces.VoiceCatalogOpener opener,
-    Workspaces.ContactResolver resolver) : IVoiceScanWorkflow
+    Workspaces.ContactResolver resolver,
+    IVoiceDurationResolver? durationResolver = null) : IVoiceScanWorkflow
 {
     public async Task<VoiceScanWorkflowResult> RunAsync(
         VoiceScanWorkflowRequest request,
@@ -31,9 +33,9 @@ public sealed class VoiceScanWorkflow(
             context.Report(OperationPhase.VoiceScan, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
             var query = VoiceQueryBuilder.Build(request.ConversationId, contact, request.Direction, request.From, request.To,
-                request.MaximumResults, request.DeepScan);
+                request.MaximumResults, request.DeepScan, request.ResolveDurations);
             context.Report(OperationPhase.VoiceScan, OperationStageIds.QueryingVoices);
-            var report = await new VoiceScanService(session.Catalog).ScanAsync(query, cancellationToken).ConfigureAwait(false);
+            var report = await new VoiceScanService(session.Catalog, durationResolver).ScanAsync(query, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceScan, OperationStageIds.Completing);
             return new VoiceScanWorkflowResult(report, session.Workspace);

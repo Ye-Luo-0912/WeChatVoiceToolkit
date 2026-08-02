@@ -9,9 +9,13 @@ namespace WeChatVoice.Application;
 public sealed class VoiceScanService
 {
     private readonly IVoiceCatalog _catalog;
+    private readonly IVoiceDurationResolver? _durationResolver;
 
-    public VoiceScanService(IVoiceCatalog catalog)
-        => _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+    public VoiceScanService(IVoiceCatalog catalog, IVoiceDurationResolver? durationResolver = null)
+    {
+        _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+        _durationResolver = durationResolver;
+    }
 
     public async Task<VoiceScanReport> ScanAsync(VoiceQuery query, CancellationToken cancellationToken = default)
     {
@@ -29,6 +33,7 @@ public sealed class VoiceScanService
         var ambiguous = 0;
         var exportable = 0;
         long totalPayloadBytes = 0;
+        var durationKnown = 0;
 
         await foreach (var record in _catalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
         {
@@ -36,6 +41,16 @@ public sealed class VoiceScanService
             if (record.DurationMs is > 0)
             {
                 duration = checked(duration + record.DurationMs.Value);
+                durationKnown++;
+            }
+            else if (query.ResolveDuration && _durationResolver is not null && record.PayloadState == VoicePayloadState.Linked)
+            {
+                var resolvedDuration = await _durationResolver.ResolveAsync(_catalog, record, cancellationToken).ConfigureAwait(false);
+                if (resolvedDuration is > 0)
+                {
+                    duration = checked(duration + resolvedDuration.Value);
+                    durationKnown++;
+                }
             }
 
             earliest = earliest is null || record.OccurredAtUtc < earliest ? record.OccurredAtUtc : earliest;
@@ -90,6 +105,7 @@ public sealed class VoiceScanService
             payloadStates,
             query.DeepScan,
             exportable,
-            totalPayloadBytes);
+            totalPayloadBytes,
+            durationKnown);
     }
 }
