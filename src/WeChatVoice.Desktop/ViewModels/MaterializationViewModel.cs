@@ -16,6 +16,7 @@ namespace WeChatVoice.Desktop.ViewModels;
 public sealed partial class MaterializationViewModel : PageViewModelBase
 {
     private DialogAccountConfirmation? _activeConfirmation;
+    private readonly WorkflowRunHost _recoveryAssessmentHost;
 
     public MaterializationViewModel(DesktopServices services)
         : this(services, invokeOnUi: null)
@@ -26,6 +27,10 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     internal MaterializationViewModel(DesktopServices services, Func<Action, Task>? invokeOnUi)
         : base(services, invokeOnUi)
     {
+        _recoveryAssessmentHost = new WorkflowRunHost(
+            invokeOnUi: InvokeOnUi,
+            log: services.Log,
+            coordinator: services.OperationCoordinator);
         RunHost.PropertyChanged += (_, eventArgs) =>
         {
             if (eventArgs.PropertyName == nameof(WorkflowRunHost.LastErrorCode))
@@ -44,7 +49,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
 
                 if (!RunHost.IsRunning)
                 {
-                    _activeConfirmation = null;
+                    ClearConfirmationState();
                 }
             }
         };
@@ -88,6 +93,12 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     private bool _uacRejected;
 
     [ObservableProperty]
+    private bool _canRecoverMaterialization;
+
+    [ObservableProperty]
+    private string? _recoverySummary;
+
+    [ObservableProperty]
     private string? _pendingAccountCandidate;
 
     [ObservableProperty]
@@ -122,16 +133,18 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     }
 
     [RelayCommand]
-    private Task MaterializeAsync()
+    private async Task MaterializeAsync()
     {
         UacRejected = false;
+        CanRecoverMaterialization = false;
+        RecoverySummary = null;
         var snapshot = Services.Project.Snapshot;
         var snapshotDirectory = string.IsNullOrWhiteSpace(SnapshotDirectory) ? Services.Project.SnapshotDirectory : SnapshotDirectory;
         var outputDirectory = OutputDirectory;
         var requestedAccount = string.IsNullOrWhiteSpace(RequestedAccount) ? null : RequestedAccount;
         var workspaceOutputPath = string.IsNullOrWhiteSpace(WorkspaceOutputPath) ? null : WorkspaceOutputPath;
         var environment = Services.Project.EnvironmentAssessment;
-        return RunHost.RunAsync(
+        await RunHost.RunAsync(
             CreateConfirmationSession,
         async (context, cancellationToken) =>
         {
@@ -173,19 +186,98 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
         },
             result =>
             {
-                Services.Project.Materialization = result;
-                Services.Project.ClearVoiceSelection(clearContact: true);
-                Services.Project.Workspace = result.Workspace;
-                Services.Project.WorkspacePath = result.LocalWorkspacePath;
-                Services.RecentWorkspaces.Add(result.Workspace, result.LocalWorkspacePath);
-                IdentitySummary = result.AccountIdentity.State == AccountIdentityState.Confirmed
-                    ? $"数据库证据已确认账号：{result.Workspace.DataSet.AccountId}（{result.AccountIdentity.ConfirmedBy}）"
-                    : result.AccountIdentity.UserConfirmation == UserConfirmationState.Confirmed
-                        ? $"用户已确认账号候选：{result.Workspace.DataSet.AccountId}（证据等级：{result.AccountIdentity.State}）"
-                        : $"账号身份为候选状态（证据等级：{result.AccountIdentity.State}）";
-                ResultSummary = $"物料化完成：Workspace {result.Workspace.Workspace.WorkspaceId}；数据库 {result.Workspace.DataSet.Databases.Count} 个；"
-                    + (result.ProfileId is null ? "外部后端" : $"Profile {result.ProfileId} / MaterializationId {result.MaterializationId}");
+                ApplyMaterializationResult(result);
             });
+
+        if (RunHost.State == WorkflowState.Failed
+            && !string.IsNullOrWhiteSpace(outputDirectory)
+            && Directory.Exists(outputDirectory))
+        {
+            await AssessRecoveryAsync(outputDirectory, workspaceOutputPath).ConfigureAwait(true);
+        }
+    }
+
+    [RelayCommand]
+    private async Task RecoverMaterializationAsync()
+    {
+        var outputDirectory = OutputDirectory;
+        var workspaceOutputPath = string.IsNullOrWhiteSpace(WorkspaceOutputPath) ? null : WorkspaceOutputPath;
+        if (!CanRecoverMaterialization || string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            return;
+        }
+
+        CanRecoverMaterialization = false;
+        await RunHost.RunAsync(
+            CreateConfirmationSession,
+            async (context, cancellationToken) => await Workflows.Workspace.RecoverMaterializationAsync(
+                new MaterializationRecoveryRequest(outputDirectory, workspaceOutputPath, RequestedAccount),
+                context,
+                cancellationToken).ConfigureAwait(false),
+            result => ApplyRecoveredWorkspace(result, outputDirectory, workspaceOutputPath));
+
+        if (RunHost.State == WorkflowState.Failed && Directory.Exists(outputDirectory))
+        {
+            await AssessRecoveryAsync(outputDirectory, workspaceOutputPath).ConfigureAwait(true);
+        }
+    }
+
+    private async Task AssessRecoveryAsync(string outputDirectory, string? workspaceOutputPath)
+    {
+        await _recoveryAssessmentHost.RunAsync(
+            (context, cancellationToken) => Workflows.Workspace.AssessMaterializationRecoveryAsync(
+                outputDirectory,
+                workspaceOutputPath,
+                context,
+                cancellationToken),
+            assessment =>
+            {
+                CanRecoverMaterialization = assessment.CanRecover;
+                RecoverySummary = assessment.CanRecover
+                    ? $"检测到可恢复物料化状态：{assessment.State}。可恢复 Workspace，不重新解密。"
+                    : assessment.State is null
+                        ? null
+                        : $"当前物料化状态：{assessment.State}，暂不可恢复。";
+            });
+    }
+
+    private void ApplyMaterializationResult(MaterializationWorkflowResult result)
+    {
+        Services.Project.Materialization = result;
+        Services.Project.ClearVoiceSelection(clearContact: true);
+        Services.Project.Workspace = result.Workspace;
+        Services.Project.WorkspacePath = result.LocalWorkspacePath;
+        Services.RecentWorkspaces.Add(result.Workspace, result.LocalWorkspacePath);
+        CanRecoverMaterialization = false;
+        RecoverySummary = null;
+        IdentitySummary = result.AccountIdentity.State == AccountIdentityState.Confirmed
+            ? $"数据库证据已确认账号：{result.Workspace.DataSet.AccountId}（{result.AccountIdentity.ConfirmedBy}）"
+            : result.AccountIdentity.UserConfirmation == UserConfirmationState.Confirmed
+                ? $"用户已确认账号候选：{result.Workspace.DataSet.AccountId}（证据等级：{result.AccountIdentity.State}）"
+                : $"账号身份为候选状态（证据等级：{result.AccountIdentity.State}）";
+        ResultSummary = $"物料化完成：Workspace {result.Workspace.Workspace.WorkspaceId}；数据库 {result.Workspace.DataSet.Databases.Count} 个；"
+            + (result.ProfileId is null ? "外部后端" : $"Profile {result.ProfileId} / MaterializationId {result.MaterializationId}");
+    }
+
+    private void ApplyRecoveredWorkspace(
+        VerifiedLocalWorkspace workspace,
+        string outputDirectory,
+        string? workspaceOutputPath)
+    {
+        var path = Path.GetFullPath(workspaceOutputPath ?? Path.Combine(
+            Path.GetDirectoryName(Path.GetFullPath(outputDirectory))!,
+            Path.GetFileName(Path.GetFullPath(outputDirectory)) + ".workspace.json"));
+        Services.Project.Materialization = null;
+        Services.Project.ClearVoiceSelection(clearContact: true);
+        Services.Project.Workspace = workspace;
+        Services.Project.WorkspacePath = path;
+        Services.RecentWorkspaces.Add(workspace, path);
+        CanRecoverMaterialization = false;
+        RecoverySummary = "Workspace 已恢复；数据库未重新解密。";
+        ResultSummary = $"恢复完成：Workspace {workspace.Workspace.WorkspaceId}；数据库 {workspace.DataSet.Databases.Count} 个。";
+        IdentitySummary = workspace.AccountIdentity.UserConfirmation == UserConfirmationState.Confirmed
+            ? $"用户已确认账号候选：{workspace.DataSet.AccountId}（证据等级：{workspace.AccountIdentity.State}）"
+            : $"账号身份为候选状态（证据等级：{workspace.AccountIdentity.State}）";
     }
 
     private DialogAccountConfirmation CreateConfirmationSession()
@@ -204,8 +296,10 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     [RelayCommand]
     private void ConfirmAccount()
     {
+        var accountId = PendingAccountCandidate;
         IsConfirmDialogOpen = false;
-        _activeConfirmation?.Complete(confirmed: true, PendingAccountCandidate);
+        PendingAccountCandidate = null;
+        _activeConfirmation?.Complete(confirmed: true, accountId);
     }
 
     /// <summary>User declined the detected account; the run fails with AccountConfirmationRequired.</summary>
@@ -213,6 +307,14 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     private void DeclineAccount()
     {
         IsConfirmDialogOpen = false;
+        PendingAccountCandidate = null;
         _activeConfirmation?.Complete(confirmed: false, null);
+    }
+
+    private void ClearConfirmationState()
+    {
+        IsConfirmDialogOpen = false;
+        PendingAccountCandidate = null;
+        _activeConfirmation = null;
     }
 }

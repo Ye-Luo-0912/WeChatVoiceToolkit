@@ -50,7 +50,7 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
     [RelayCommand]
     private async Task DiscoverSourcesAsync()
     {
-        var candidates = await Task.Run(() => Services.DataSourceDiscovery.Discover()).ConfigureAwait(true);
+        var candidates = await Services.DataSourceDiscovery.DiscoverAsync().ConfigureAwait(true);
         SourceCandidates = candidates;
         SelectedSourceCandidate = null;
         SnapshotSummary = candidates.Count == 0 ? "未发现 Weixin db_storage。" : $"发现 {candidates.Count} 个数据源，请明确选择；不会自动使用最近修改的账号。";
@@ -106,6 +106,10 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
         {
             Services.Project.Snapshot = result;
             Services.Project.SnapshotDirectory = outputDirectory;
+            Services.RecentWorkspaces.AddSnapshot(
+                result.Manifest.SourceDirectory,
+                outputDirectory!,
+                result.Manifest.SnapshotId);
             AccountCandidate = result.SourceIdentity?.AccountCandidate;
             IsPotentiallyInconsistent = result.Manifest.PotentiallyInconsistent;
             SnapshotSummary = $"快照 {result.Manifest.SnapshotId[..16]}… 已创建：{result.Manifest.Files.Count} 个文件"

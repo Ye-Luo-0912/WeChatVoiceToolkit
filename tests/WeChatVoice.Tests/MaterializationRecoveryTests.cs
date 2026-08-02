@@ -139,6 +139,43 @@ public sealed class MaterializationRecoveryTests
     }
 
     [Fact]
+    public async Task RecoverAsync_requires_confirmation_for_a_path_derived_account()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var fixture = await CreateCommittedWorkspaceAsync(
+            temporary,
+            "account-confirmation",
+            accountId: "wxid_owner",
+            recover: false);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => new MaterializationRecoveryService().RecoverAsync(
+            fixture.OutputRoot,
+            fixture.WorkspacePath,
+            null,
+            CancellationToken.None));
+
+        var failedState = await MaterializationStateStore.ReadAsync(fixture.OutputRoot, CancellationToken.None);
+        Assert.Equal(MaterializationCommitStates.FailedRecoverable, failedState.State);
+
+        var identity = new AccountIdentity(
+            AccountIdentityState.Candidate,
+            null,
+            UserConfirmationState.Confirmed,
+            "wxid_owner");
+        var recovered = await new MaterializationRecoveryService().RecoverAsync(
+            fixture.OutputRoot,
+            fixture.WorkspacePath,
+            "wxid_owner",
+            CancellationToken.None,
+            identity);
+
+        Assert.Equal(UserConfirmationState.Confirmed, recovered.Workspace.AccountIdentity.UserConfirmation);
+        Assert.Equal("wxid_owner", recovered.Workspace.AccountIdentity.ConfirmedAccountId);
+        var completedState = await MaterializationStateStore.ReadAsync(fixture.OutputRoot, CancellationToken.None);
+        Assert.Equal(MaterializationCommitStates.Completed, completedState.State);
+    }
+
+    [Fact]
     public async Task Delete_materialized_workspace_revalidates_and_preserves_external_data()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -200,7 +237,9 @@ public sealed class MaterializationRecoveryTests
 
     private static async Task<MaterializedWorkspaceFixture> CreateCommittedWorkspaceAsync(
         TestTemporaryDirectory temporary,
-        string name)
+        string name,
+        string? accountId = null,
+        bool recover = true)
     {
         var outputRoot = temporary.CreateDirectory(Path.Combine(name, "materialized"));
         var databasePath = Path.Combine(outputRoot, "databases", "message_0.db");
@@ -224,14 +263,20 @@ public sealed class MaterializationRecoveryTests
             [
                 new MaterializationFile("databases/message_0.db", hash, info.Length),
                 new MaterializationFile(".wechatvoice/materialization-output.json", backendOutputHash, backendOutputInfo.Length),
-            ]));
+            ],
+            AccountId: accountId));
         await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.DatabasesCommitted, CancellationToken.None);
 
         var workspacePath = temporary.GetPath(Path.Combine(name, "workspace.json"));
-        var verified = await new MaterializationRecoveryService().RecoverAsync(outputRoot, workspacePath, null, CancellationToken.None);
-        var state = await MaterializationStateStore.ReadAsync(outputRoot, CancellationToken.None);
-        Assert.Equal(MaterializationCommitStates.Completed, state.State);
-        return new MaterializedWorkspaceFixture(outputRoot, workspacePath, verified.Workspace.WorkspaceId);
+        if (recover)
+        {
+            var verified = await new MaterializationRecoveryService().RecoverAsync(outputRoot, workspacePath, null, CancellationToken.None);
+            var state = await MaterializationStateStore.ReadAsync(outputRoot, CancellationToken.None);
+            Assert.Equal(MaterializationCommitStates.Completed, state.State);
+            return new MaterializedWorkspaceFixture(outputRoot, workspacePath, verified.Workspace.WorkspaceId);
+        }
+
+        return new MaterializedWorkspaceFixture(outputRoot, workspacePath, "materialization-" + name);
     }
 
     private sealed record MaterializedWorkspaceFixture(string OutputRoot, string WorkspacePath, string WorkspaceId);

@@ -37,6 +37,28 @@ public sealed class WorkflowRunHostTests
     }
 
     [Fact]
+    public async Task Late_progress_after_completion_is_discarded()
+    {
+        WorkflowContext? captured = null;
+        var stageAfterCompletion = "querying";
+        var host = new WorkflowRunHost(invokeOnUi: DirectInvokeAsync);
+        await host.RunAsync((context, _) =>
+        {
+            captured = context;
+            context.Report(OperationPhase.VoiceScan, OperationStageIds.QueryingVoices, stageAfterCompletion, 20);
+            return Task.CompletedTask;
+        });
+        var finalStage = host.StageId;
+
+        captured!.Report(OperationPhase.VoiceExport, OperationStageIds.Exporting, "late progress", 99);
+        await Task.Delay(25);
+
+        Assert.Equal(WorkflowState.Completed, host.State);
+        Assert.Equal(finalStage, host.StageId);
+        Assert.Equal(20, host.PercentComplete);
+    }
+
+    [Fact]
     public async Task Cancel_transitions_through_cancelling_to_cancelled()
     {
         var host = CreateHost();

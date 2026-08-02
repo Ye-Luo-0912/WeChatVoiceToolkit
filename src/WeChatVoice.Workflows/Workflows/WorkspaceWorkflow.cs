@@ -1,3 +1,4 @@
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Sqlite;
@@ -112,10 +113,100 @@ public sealed class WorkspaceWorkflow : IWorkspaceWorkflow
             var workspacePath = Path.GetFullPath(request.WorkspaceOutputPath ?? Path.Combine(
                 Path.GetDirectoryName(outputRoot) ?? throw new InvalidDataException("The materialization output has no parent directory."),
                 Path.GetFileName(outputRoot) + ".workspace.json"));
-            var verified = await _recovery.RecoverAsync(outputRoot, workspacePath, request.AccountId, cancellationToken).ConfigureAwait(false);
+            var manifest = await MaterializationRecoveryService.ReadAndVerifyManifestAsync(outputRoot, cancellationToken).ConfigureAwait(false);
+            var existingWorkspace = File.Exists(workspacePath)
+                ? await _loader.ReadAsync(workspacePath, cancellationToken).ConfigureAwait(false)
+                : null;
+            var candidate = manifest.AccountId ?? existingWorkspace?.DataSet.AccountId ?? request.AccountId;
+            var accountId = request.AccountId ?? existingWorkspace?.AccountIdentity.ConfirmedAccountId;
+            AccountIdentity? recoveryIdentity = existingWorkspace?.AccountIdentity;
+
+            if (accountId is null && existingWorkspace?.AccountIdentity.UserConfirmation == UserConfirmationState.Confirmed)
+            {
+                accountId = existingWorkspace.DataSet.AccountId;
+            }
+
+            if (manifest.AccountEvidenceState == AccountEvidenceState.DatabaseConfirmed && candidate is not null)
+            {
+                accountId ??= candidate;
+                recoveryIdentity = new AccountIdentity(
+                    AccountIdentityState.Confirmed,
+                    null,
+                    UserConfirmationState.NotConfirmed,
+                    accountId);
+            }
+            else if (candidate is not null
+                && (recoveryIdentity?.UserConfirmation != UserConfirmationState.Confirmed
+                    || !string.Equals(recoveryIdentity.ConfirmedAccountId, candidate, StringComparison.Ordinal)))
+            {
+                context.StateMachine.TryEnterAwaitingUser();
+                context.Report(OperationPhase.Workspace, OperationStageIds.ConfirmingAccount, "恢复前需要再次确认账号");
+                try
+                {
+                    var confirmation = await context.AccountConfirmation.ConfirmAsync(
+                        new AccountIdentityReport(candidate, AccountIdentityState.Candidate, null),
+                        cancellationToken).ConfigureAwait(false);
+                    if (!confirmation.Confirmed
+                        || !string.Equals(confirmation.ConfirmedAccountId, candidate, StringComparison.Ordinal))
+                    {
+                        throw new AppFailureException(ErrorCode.AccountConfirmationRequired, "Account confirmation was declined during recovery.");
+                    }
+
+                    accountId = candidate;
+                    recoveryIdentity = new AccountIdentity(
+                        AccountIdentityState.Candidate,
+                        null,
+                        UserConfirmationState.Confirmed,
+                        candidate);
+                }
+                finally
+                {
+                    context.StateMachine.TryResumeFromUser();
+                }
+            }
+
+            var verified = await _recovery.RecoverAsync(
+                outputRoot,
+                workspacePath,
+                accountId,
+                cancellationToken,
+                recoveryIdentity).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.Workspace, OperationStageIds.Completing, "物料化恢复完成");
             return verified;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
+    public async Task<MaterializationRecoveryAssessment> AssessMaterializationRecoveryAsync(
+        string outputDirectory,
+        string? workspaceOutputPath,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.Workspace, OperationStageIds.VerifyingWorkspace, "正在检查可恢复物料化");
+            var assessment = await _recovery.AssessAsync(outputDirectory, workspaceOutputPath, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            context.Report(OperationPhase.Workspace, OperationStageIds.Completing);
+            return assessment;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

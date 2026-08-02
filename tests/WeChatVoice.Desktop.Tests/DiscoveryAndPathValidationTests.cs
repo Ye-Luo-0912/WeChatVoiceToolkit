@@ -66,6 +66,41 @@ public sealed class DiscoveryAndPathValidationTests : IDisposable
     }
 
     [Fact]
+    public void Discovery_counts_nested_databases_and_uses_recent_snapshot_store()
+    {
+        var root = Path.Combine(_root, "xwechat_files");
+        var source = CreateSource(root, "wxid_nested_0000000000000001", "top.db");
+        var nested = Directory.CreateDirectory(Path.Combine(source, "message", "shard-0")).FullName;
+        File.WriteAllBytes(Path.Combine(nested, "nested.db"), [1, 2, 3]);
+        var snapshot = Directory.CreateDirectory(Path.Combine(_root, "snapshots", "one")).FullName;
+        var recent = new RecentWorkspaceStore(Path.Combine(_root, "recent"));
+        recent.AddSnapshot(source, snapshot, "snapshot-one");
+
+        var candidate = Assert.Single(new WeixinDataSourceDiscovery(recent).Discover([root]));
+
+        Assert.Equal(2, candidate.DatabaseCount);
+        Assert.True(candidate.HasSnapshot);
+        Assert.Equal("wxid_nested", candidate.AccountCandidate);
+    }
+
+    [Fact]
+    public async Task Discovery_honors_directory_budget_and_cancellation()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(_root, "bounded")).FullName;
+        Directory.CreateDirectory(Path.Combine(root, "a", "b", "c"));
+
+        var result = await new WeixinDataSourceDiscovery().DiscoverDetailedAsync(
+            [root],
+            new WeixinDataSourceDiscoveryOptions(MaxDepth: 20, MaxDirectories: 1, Timeout: TimeSpan.FromSeconds(1)),
+            CancellationToken.None);
+        Assert.True(result.WasTruncated);
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new WeixinDataSourceDiscovery().DiscoverAsync([root], cancellationToken: cancellation.Token));
+    }
+
+    [Fact]
     public void Resetting_source_keeps_install_scoped_environment_assessment()
     {
         var session = new ExportProjectSession();

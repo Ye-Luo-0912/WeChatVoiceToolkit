@@ -65,6 +65,40 @@ public sealed class FakeMaterializationWorkflow : IMaterializationWorkflow
     }
 }
 
+public sealed class FakeWorkspaceWorkflow : IWorkspaceWorkflow
+{
+    public MaterializationRecoveryAssessment Assessment { get; set; } = new(
+        "C:\\out",
+        MaterializationCommitStates.FailedRecoverable,
+        CanRecover: true,
+        WorkspaceDocumentPresent: false);
+
+    public VerifiedLocalWorkspace RecoveryResult { get; set; } = TestDoubles.Verified();
+
+    public MaterializationRecoveryRequest? LastRecoveryRequest { get; private set; }
+
+    public Task<WorkspaceCreateResult> CreateAsync(WorkspaceCreateRequest request, WorkflowContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    public Task<VerifiedLocalWorkspace> VerifyAsync(string workspacePath, WorkflowContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    public Task<VerifiedLocalWorkspace> RecoverMaterializationAsync(MaterializationRecoveryRequest request, WorkflowContext context, CancellationToken cancellationToken)
+    {
+        LastRecoveryRequest = request;
+        return Task.FromResult(RecoveryResult);
+    }
+
+    public Task<MaterializationRecoveryAssessment> AssessMaterializationRecoveryAsync(string outputDirectory, string? workspaceOutputPath, WorkflowContext context, CancellationToken cancellationToken)
+        => Task.FromResult(Assessment with { OutputDirectory = Path.GetFullPath(outputDirectory) });
+
+    public Task<WorkspaceDeletionPreview> PreviewDeleteMaterializedAsync(string workspacePath, WorkflowContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    public Task<WorkspaceDeletionResult> DeleteMaterializedAsync(string workspacePath, WorkflowContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+}
+
 public sealed class FakeSnapshotWorkflow : ISnapshotWorkflow
 {
     public SnapshotWorkflowRequest? LastRequest { get; private set; }

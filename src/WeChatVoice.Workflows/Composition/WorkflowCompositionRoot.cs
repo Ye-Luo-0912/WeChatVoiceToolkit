@@ -1,4 +1,5 @@
 using WeChatVoice.Application;
+using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Infrastructure.Audio;
@@ -48,8 +49,15 @@ public sealed class WorkflowCompositionRoot
         ContactDiscovery = contactDiscovery ?? new ContactDiscoveryWorkflow(opener);
         var configuredDecoder = voiceDurationResolver ?? CreateDurationResolver();
         DurationAnalysisAvailable = configuredDecoder is not null;
-        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder);
-        VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver);
+        Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = configuredDecoder is null
+            ? null
+            : workspaceResult => new JsonlVoiceDurationCache(
+                VoiceDurationCachePath.ForWorkspace(workspaceResult),
+                configuredDecoder is IVersionedVoiceDurationResolver versioned
+                    ? versioned.DecoderVersion
+                    : DecoderVoiceDurationResolver.CurrentDecoderVersion);
+        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory);
+        VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory);
         AccountConfirmation = accountConfirmation;
         AllowDevelopmentBroker = allowDevelopmentBroker;
     }

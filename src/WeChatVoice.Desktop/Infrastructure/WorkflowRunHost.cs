@@ -213,7 +213,8 @@ public sealed partial class WorkflowRunHost : ObservableObject
             _retry = () => StartRun(confirmationFactory, operation, applyOnUiThread);
         }
 
-        session.StateMachine.Transitioned += (_, _) => QueueStateChanged(session);
+        session.TransitionHandler = (_, _) => QueueStateChanged(session);
+        session.StateMachine.Transitioned += session.TransitionHandler;
         LastError = null;
         LastErrorCode = null;
         LastTransportErrorCode = null;
@@ -222,14 +223,8 @@ public sealed partial class WorkflowRunHost : ObservableObject
 
         if (!session.StateMachine.TryStart())
         {
+            DetachSession(session);
             session.Dispose();
-            lock (_sessionGate)
-            {
-                if (ReferenceEquals(_activeSession, session))
-                {
-                    _activeSession = null;
-                }
-            }
 
             operationLease?.Dispose();
             _runGate.Release();
@@ -275,6 +270,11 @@ public sealed partial class WorkflowRunHost : ObservableObject
         }
         finally
         {
+            // CompleteRun normally detaches on the UI dispatcher after the
+            // terminal state has been applied. This fallback also handles a
+            // dispatcher shutdown or a failed final callback without leaving
+            // a stale session able to accept late progress.
+            DetachSession(session);
             session.Dispose();
             operationLease?.Dispose();
             _runGate.Release();
@@ -341,6 +341,7 @@ public sealed partial class WorkflowRunHost : ObservableObject
         }
 
         OnStateChanged(session);
+        DetachSession(session);
     }
 
     private void SetTypedError(Exception exception)
@@ -380,6 +381,23 @@ public sealed partial class WorkflowRunHost : ObservableObject
         if (State == WorkflowState.AwaitingUser)
         {
             StageMessage = "等待账号确认…";
+        }
+    }
+
+    private void DetachSession(WorkflowRunSession session)
+    {
+        lock (_sessionGate)
+        {
+            if (ReferenceEquals(_activeSession, session))
+            {
+                _activeSession = null;
+            }
+        }
+
+        if (session.TransitionHandler is { } handler)
+        {
+            session.StateMachine.Transitioned -= handler;
+            session.TransitionHandler = null;
         }
     }
 

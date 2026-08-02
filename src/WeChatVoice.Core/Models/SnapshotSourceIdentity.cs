@@ -14,7 +14,9 @@ public sealed record SnapshotSourceIdentity(
     /// <summary>
     /// Derives identity from the fixed Weixin storage layout
     /// <c>&lt;account-dir&gt;\db_storage</c> where the account directory is
-    /// <c>wxid_&lt;name&gt;_&lt;16 hex&gt;</c>. The candidate is the prefix;
+    /// <c>wxid_&lt;name&gt;_&lt;hex suffix&gt;</c>. The current layouts use either
+    /// the legacy four-hex suffix or the modern sixteen-hex suffix. The
+    /// candidate is the prefix;
     /// <see cref="SourceRootFileId"/> anchors the layout to a stable file
     /// identity inside <c>db_storage</c> from the verified manifest.
     /// </summary>
@@ -34,8 +36,9 @@ public sealed record SnapshotSourceIdentity(
 
         var name = accountDirectory.Name;
         var separator = name.LastIndexOf('_');
+        var suffixLength = name.Length - separator - 1;
         if (separator <= "wxid_".Length
-            || separator + 5 != name.Length
+            || suffixLength is not (4 or 16)
             || !name.StartsWith("wxid_", StringComparison.Ordinal)
             || !ContainsOnlyHexDigits(name.AsSpan(separator + 1)))
         {

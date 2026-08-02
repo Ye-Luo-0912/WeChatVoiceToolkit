@@ -31,5 +31,7 @@ public sealed class WorkflowRunSession : IDisposable
 
     public SemaphoreSlim RunGate { get; }
 
+    internal EventHandler<WorkflowStateTransition>? TransitionHandler { get; set; }
+
     public void Dispose() => Cancellation.Dispose();
 }

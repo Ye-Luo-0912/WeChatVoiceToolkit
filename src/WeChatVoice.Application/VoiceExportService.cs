@@ -18,12 +18,18 @@ public sealed class VoiceExportService
     private readonly IVoiceCatalog _voiceCatalog;
     private readonly IVoiceExportStore _exportStore;
     private readonly IVoiceDecoder? _voiceDecoder;
+    private readonly IVoiceDurationCache? _durationCache;
 
-    public VoiceExportService(IVoiceCatalog voiceCatalog, IVoiceExportStore exportStore, IVoiceDecoder? voiceDecoder = null)
+    public VoiceExportService(
+        IVoiceCatalog voiceCatalog,
+        IVoiceExportStore exportStore,
+        IVoiceDecoder? voiceDecoder = null,
+        IVoiceDurationCache? durationCache = null)
     {
         _voiceCatalog = voiceCatalog ?? throw new ArgumentNullException(nameof(voiceCatalog));
         _exportStore = exportStore ?? throw new ArgumentNullException(nameof(exportStore));
         _voiceDecoder = voiceDecoder;
+        _durationCache = durationCache;
     }
 
     public Task<VoiceExportManifest> ExportAsync(VoiceQuery query, CancellationToken cancellationToken = default)
@@ -264,6 +270,8 @@ public sealed class VoiceExportService
             var originalArtifact = lease.OriginalState == ExportArtifactState.VerifiedExisting
                 ? lease.ExistingOriginalArtifact!
                 : await CopyOriginalAsync(record, lease, cancellationToken).ConfigureAwait(false);
+            var durationMs = await TryReadCachedDurationAsync(record, originalArtifact.Sha256, cancellationToken).ConfigureAwait(false)
+                ?? record.DurationMs;
             ExportArtifact? decodedArtifact = lease.DecodedState == ExportArtifactState.VerifiedExisting
                 ? lease.ExistingDecodedArtifact
                 : null;
@@ -316,7 +324,7 @@ public sealed class VoiceExportService
                 }
             }
 
-            var entry = CreateEntry(record, originalArtifact, decodedArtifact, hasDecodeError, qualityFlags, lease.OriginalState == ExportArtifactState.VerifiedExisting && (!options.DecodeToWav || lease.DecodedState == ExportArtifactState.VerifiedExisting));
+            var entry = CreateEntry(record, originalArtifact, decodedArtifact, durationMs, hasDecodeError, qualityFlags, lease.OriginalState == ExportArtifactState.VerifiedExisting && (!options.DecodeToWav || lease.DecodedState == ExportArtifactState.VerifiedExisting));
             entries.Enqueue(entry);
             var eventName = entry.WasSkipped ? "item-skipped" : "item-committed";
             await AppendAsync(journal, new VoiceExportJournalEvent(eventName, runId, DateTimeOffset.UtcNow, record.MessageId, entry), cancellationToken).ConfigureAwait(false);
@@ -458,6 +466,7 @@ public sealed class VoiceExportService
         VoiceRecord record,
         ExportArtifact originalArtifact,
         ExportArtifact? decodedArtifact,
+        long? durationMs,
         bool hasDecodeError,
         IReadOnlyList<string> qualityFlags,
         bool wasSkipped)
@@ -474,13 +483,35 @@ public sealed class VoiceExportService
             wasSkipped,
             record.SourceDatabase,
             record.ShardId,
-            record.DurationMs,
+            durationMs,
             originalArtifact.Sha256,
             decodedArtifact?.Sha256,
             record.SpeakerId,
             hasDecodeError,
-            qualityFlags.Count == 0 && record.DurationMs is not null ? Array.Empty<string>() : qualityFlags.Concat(record.DurationMs is null ? ["duration-unknown"] : Array.Empty<string>()).ToArray(),
+            qualityFlags.Count == 0 && durationMs is not null ? Array.Empty<string>() : qualityFlags.Concat(durationMs is null ? ["duration-unknown"] : Array.Empty<string>()).ToArray(),
             false);
+
+    private async Task<long?> TryReadCachedDurationAsync(
+        VoiceRecord record,
+        string payloadSha256,
+        CancellationToken cancellationToken)
+    {
+        if (_durationCache is null || record.SourceStableKey is null || string.IsNullOrWhiteSpace(payloadSha256))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await _durationCache.TryGetAsync(
+                new VoiceDurationCacheKey(record.SourceStableKey, payloadSha256, _durationCache.DecoderVersion),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     private static Task AppendAsync(IExportRunLease journal, VoiceExportJournalEvent journalEvent, CancellationToken cancellationToken)
         => journal.AppendAsync(journalEvent, cancellationToken);

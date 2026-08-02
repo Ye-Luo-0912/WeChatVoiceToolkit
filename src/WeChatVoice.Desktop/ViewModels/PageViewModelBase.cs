@@ -45,6 +45,8 @@ public abstract partial class PageViewModelBase : ObservableObject
 
     protected DesktopServices Services { get; }
 
+    protected Func<Action, Task> InvokeOnUi => _marshal;
+
     protected WorkflowCompositionRoot Workflows => Services.Workflows;
 
     /// <summary>Dispatches page state changes to the Avalonia UI thread.</summary>

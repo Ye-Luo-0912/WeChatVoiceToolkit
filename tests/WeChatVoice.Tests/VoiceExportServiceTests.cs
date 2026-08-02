@@ -5,12 +5,39 @@ using WeChatVoice.Application;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Infrastructure.Audio;
 using WeChatVoice.Infrastructure.Export;
 
 namespace WeChatVoice.Tests;
 
 public sealed class VoiceExportServiceTests
 {
+    [Fact]
+    public async Task Export_manifest_inherits_duration_from_the_verified_cache()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payload = new byte[] { 0x02, 0x03, 0x04 };
+        var payloadHash = Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
+        var record = CreateRecord("voice-duration", payloadHash, payload.Length);
+        await using var cache = new JsonlVoiceDurationCache(
+            temporary.GetPath("workspace", ".wechatvoice", "duration-cache.jsonl"),
+            "silk-wav-decoder-v1");
+        await cache.StoreAsync(
+            new VoiceDurationCacheEntry(
+                new VoiceDurationCacheKey(record.SourceStableKey!, payloadHash, cache.DecoderVersion),
+                4321,
+                DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        var service = new VoiceExportService(
+            new TestVoiceCatalog([(record, () => new MemoryStream(payload, writable: false))]),
+            new FileSystemVoiceExportStore(temporary.GetPath("export")),
+            durationCache: cache);
+
+        var manifest = await service.ExportAsync(new VoiceQuery(), new VoiceExportOptions { MaxDegreeOfParallelism = 1 });
+
+        Assert.Equal(4321, Assert.Single(manifest.Entries).DurationMs);
+    }
     [Fact]
     public async Task ExportAsync_preserves_original_silk_when_optional_decoding_fails()
     {

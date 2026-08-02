@@ -18,6 +18,12 @@ public sealed record RecentWorkspaceEntry(
     DateTimeOffset LastUsedUtc,
     string? LastExportDirectory = null);
 
+public sealed record RecentSnapshotEntry(
+    string SourceDirectory,
+    string SnapshotDirectory,
+    string SnapshotId,
+    DateTimeOffset LastUsedUtc);
+
 public sealed class RecentWorkspaceStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -27,6 +33,7 @@ public sealed class RecentWorkspaceStore
     };
 
     private readonly string _storePath;
+    private readonly string _snapshotStorePath;
     private readonly object _gate = new();
 
     public RecentWorkspaceStore(string? directory = null)
@@ -35,6 +42,7 @@ public sealed class RecentWorkspaceStore
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "WeChatVoiceToolkit");
         _storePath = Path.Combine(baseDirectory, "recent-workspaces.json");
+        _snapshotStorePath = Path.Combine(baseDirectory, "recent-snapshots.json");
     }
 
     public IReadOnlyList<RecentWorkspaceEntry> Load()
@@ -107,12 +115,83 @@ public sealed class RecentWorkspaceStore
         }
     }
 
+    public IReadOnlyList<RecentSnapshotEntry> LoadSnapshots()
+    {
+        lock (_gate)
+        {
+            if (!File.Exists(_snapshotStorePath))
+            {
+                return [];
+            }
+
+            try
+            {
+                var json = File.ReadAllText(_snapshotStorePath);
+                return JsonSerializer.Deserialize<List<RecentSnapshotEntry>>(json, JsonOptions) ?? [];
+            }
+            catch (JsonException)
+            {
+                return [];
+            }
+            catch (IOException)
+            {
+                return [];
+            }
+        }
+    }
+
+    public void AddSnapshot(string sourceDirectory, string snapshotDirectory, string snapshotId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotId);
+        lock (_gate)
+        {
+            var fullSource = Path.GetFullPath(sourceDirectory);
+            var fullSnapshot = Path.GetFullPath(snapshotDirectory);
+            var entries = LoadSnapshots()
+                .Where(entry => !string.Equals(entry.SourceDirectory, fullSource, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            entries.Insert(0, new RecentSnapshotEntry(fullSource, fullSnapshot, snapshotId, DateTimeOffset.UtcNow));
+            while (entries.Count > 10)
+            {
+                entries.RemoveAt(entries.Count - 1);
+            }
+
+            SaveSnapshots(entries);
+        }
+    }
+
+    public bool HasSnapshotForSource(string sourceDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
+        var fullSource = Path.GetFullPath(sourceDirectory);
+        return LoadSnapshots().Any(entry =>
+            string.Equals(entry.SourceDirectory, fullSource, StringComparison.OrdinalIgnoreCase)
+            && Directory.Exists(entry.SnapshotDirectory));
+    }
+
     private void Save(IReadOnlyList<RecentWorkspaceEntry> entries)
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_storePath)!);
             File.WriteAllText(_storePath, JsonSerializer.Serialize(entries, JsonOptions));
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private void SaveSnapshots(IReadOnlyList<RecentSnapshotEntry> entries)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_snapshotStorePath)!);
+            File.WriteAllText(_snapshotStorePath, JsonSerializer.Serialize(entries, JsonOptions));
         }
         catch (IOException)
         {

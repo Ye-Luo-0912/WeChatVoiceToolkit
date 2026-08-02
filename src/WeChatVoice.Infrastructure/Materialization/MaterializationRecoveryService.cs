@@ -13,11 +13,55 @@ namespace WeChatVoice.Infrastructure.Materialization;
 /// </summary>
 public sealed class MaterializationRecoveryService
 {
+    public async Task<MaterializationRecoveryAssessment> AssessAsync(
+        string outputRoot,
+        string? workspaceOutputPath,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputRoot);
+        cancellationToken.ThrowIfCancellationRequested();
+        var fullRoot = Path.GetFullPath(outputRoot);
+        var workspacePath = Path.GetFullPath(workspaceOutputPath ?? Path.Combine(
+            Path.GetDirectoryName(fullRoot) ?? fullRoot,
+            Path.GetFileName(fullRoot) + ".workspace.json"));
+        if (!Directory.Exists(fullRoot))
+        {
+            return new MaterializationRecoveryAssessment(fullRoot, null, false, File.Exists(workspacePath));
+        }
+
+        MaterializationStateDocument state;
+        try
+        {
+            state = await MaterializationStateStore.ReadAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            return new MaterializationRecoveryAssessment(fullRoot, null, false, File.Exists(workspacePath));
+        }
+
+        var eligibleState = state.State is MaterializationCommitStates.DatabasesCommitted or MaterializationCommitStates.FailedRecoverable;
+        if (!eligibleState)
+        {
+            return new MaterializationRecoveryAssessment(fullRoot, state.State, false, File.Exists(workspacePath));
+        }
+
+        try
+        {
+            await ReadAndVerifyManifestAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+            return new MaterializationRecoveryAssessment(fullRoot, state.State, true, File.Exists(workspacePath));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            return new MaterializationRecoveryAssessment(fullRoot, state.State, false, File.Exists(workspacePath));
+        }
+    }
+
     public async Task<VerifiedLocalWorkspace> RecoverAsync(
         string outputRoot,
         string workspaceOutputPath,
         string? accountId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AccountIdentity? accountIdentity = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceOutputPath);
@@ -41,12 +85,21 @@ public sealed class MaterializationRecoveryService
             }
 
             var manifest = await ReadAndVerifyManifestAsync(fullRoot, cancellationToken).ConfigureAwait(false);
-            var effectiveAccountId = ResolveAccountId(accountId, manifest.AccountId);
+            var effectiveAccountId = ResolveAccountId(accountId ?? accountIdentity?.ConfirmedAccountId, manifest.AccountId);
 
             VerifiedLocalWorkspace verified;
             if (File.Exists(fullWorkspacePath))
             {
                 verified = await ReadAndVerifyWorkspaceAsync(fullWorkspacePath, fullRoot, manifest, effectiveAccountId, cancellationToken).ConfigureAwait(false);
+                if (accountIdentity is not null && verified.Workspace.AccountIdentity != accountIdentity)
+                {
+                    await LocalWorkspaceDocumentStore.WriteAsync(
+                        fullWorkspacePath,
+                        verified.Workspace.WithAccountIdentity(accountIdentity),
+                        cancellationToken).ConfigureAwait(false);
+                    verified = await ReadAndVerifyWorkspaceAsync(fullWorkspacePath, fullRoot, manifest, effectiveAccountId, cancellationToken).ConfigureAwait(false);
+                }
+                EnsureExistingWorkspaceIdentity(verified.Workspace.AccountIdentity, manifest, effectiveAccountId);
             }
             else if (state.State is MaterializationCommitStates.Completed or MaterializationCommitStates.WorkspaceCommitted)
             {
@@ -74,6 +127,12 @@ public sealed class MaterializationRecoveryService
                     effectiveAccountId,
                     sourceIdentity: null,
                     cancellationToken).ConfigureAwait(false);
+                localWorkspace = localWorkspace.WithAccountIdentity(
+                    accountIdentity
+                    ?? (manifest.AccountEvidenceState == AccountEvidenceState.DatabaseConfirmed
+                        ? new AccountIdentity(AccountIdentityState.Confirmed, null, UserConfirmationState.NotConfirmed, effectiveAccountId)
+                        : AccountIdentity.CandidateOnly));
+                EnsureRecoveryIdentity(localWorkspace.AccountIdentity, manifest, effectiveAccountId);
                 await LocalWorkspaceDocumentStore.WriteAsync(fullWorkspacePath, localWorkspace, cancellationToken).ConfigureAwait(false);
                 verified = await ReadAndVerifyWorkspaceAsync(fullWorkspacePath, fullRoot, manifest, effectiveAccountId, cancellationToken).ConfigureAwait(false);
             }
@@ -194,6 +253,7 @@ public sealed class MaterializationRecoveryService
             var path = NormalizeRelative(file.OutputRelativePath);
             if (MaterializationStateStore.IsStatePath(path)
                 || MaterializationStateStore.IsLockPath(path)
+                || MaterializationStateStore.IsDurationCachePath(path)
                 || path.Equals(".wechatvoice/materialization-manifest.json", StringComparison.OrdinalIgnoreCase)
                 || !paths.Add(path))
             {
@@ -217,6 +277,72 @@ public sealed class MaterializationRecoveryService
         }
 
         return requestedAccountId ?? manifestAccountId;
+    }
+
+    private static void EnsureRecoveryIdentity(
+        AccountIdentity identity,
+        MaterializationManifest manifest,
+        string? effectiveAccountId)
+    {
+        if (effectiveAccountId is null)
+        {
+            return;
+        }
+
+        if (manifest.AccountEvidenceState == AccountEvidenceState.DatabaseConfirmed)
+        {
+            if (identity.AccountEvidenceState != AccountEvidenceState.DatabaseConfirmed
+                || !string.Equals(identity.ConfirmedAccountId, effectiveAccountId, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("The recovered workspace does not preserve the verified database account evidence.");
+            }
+
+            return;
+        }
+
+        if (manifest.UserConfirmationState == UserConfirmationState.Confirmed
+            && identity.UserConfirmation != UserConfirmationState.Confirmed)
+        {
+            throw new InvalidDataException("The recovered workspace lost the manifest's account confirmation.");
+        }
+
+        if (identity.UserConfirmation != UserConfirmationState.Confirmed
+            || !string.Equals(identity.ConfirmedAccountId, effectiveAccountId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Account confirmation is required before a recovered workspace can be used.");
+        }
+    }
+
+    private static void EnsureExistingWorkspaceIdentity(
+        AccountIdentity identity,
+        MaterializationManifest manifest,
+        string? effectiveAccountId)
+    {
+        if (effectiveAccountId is null)
+        {
+            return;
+        }
+
+        if (manifest.AccountEvidenceState == AccountEvidenceState.DatabaseConfirmed)
+        {
+            if (identity.AccountEvidenceState != AccountEvidenceState.DatabaseConfirmed)
+            {
+                throw new InvalidDataException("The workspace does not preserve the manifest's database account evidence.");
+            }
+
+            return;
+        }
+
+        if (manifest.UserConfirmationState == UserConfirmationState.Confirmed
+            && identity.UserConfirmation != UserConfirmationState.Confirmed)
+        {
+            throw new InvalidDataException("The workspace lost the manifest's account confirmation.");
+        }
+
+        if (identity.UserConfirmation != UserConfirmationState.Confirmed)
+        {
+            throw new InvalidDataException("The existing workspace has no recorded account confirmation.");
+        }
     }
 
     public static async Task VerifyManifestOutputsAsync(
@@ -286,6 +412,19 @@ public sealed class MaterializationRecoveryService
             throw new InvalidDataException("The adopted workspace provenance does not match the materialization manifest.");
         }
 
+        if (manifest.ConfirmedAccountId is not null
+            && (!string.Equals(workspace.AccountIdentity.ConfirmedAccountId, manifest.ConfirmedAccountId, StringComparison.Ordinal)
+                || workspace.AccountIdentity.UserConfirmation != UserConfirmationState.Confirmed))
+        {
+            throw new InvalidDataException("The adopted workspace account confirmation does not match the materialization manifest.");
+        }
+
+        if (manifest.UserConfirmationState == UserConfirmationState.Confirmed
+            && workspace.AccountIdentity.UserConfirmation != UserConfirmationState.Confirmed)
+        {
+            throw new InvalidDataException("The adopted workspace does not preserve the manifest's account confirmation.");
+        }
+
         return await new LocalWorkspaceVerifier().VerifyAsync(workspace, cancellationToken).ConfigureAwait(false);
     }
 
@@ -294,6 +433,7 @@ public sealed class MaterializationRecoveryService
         var relative = NormalizeRelative(Path.GetRelativePath(root, path));
         return MaterializationStateStore.IsStatePath(relative)
             || MaterializationStateStore.IsLockPath(relative)
+            || MaterializationStateStore.IsDurationCachePath(relative)
             || relative.Equals(".wechatvoice/materialization-manifest.json", StringComparison.OrdinalIgnoreCase);
     }
 

@@ -136,6 +136,37 @@ public sealed class MaterializationViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Recoverable_failure_exposes_desktop_recovery_without_redecrypting()
+    {
+        var output = Directory.CreateDirectory(Path.Combine(_root, "recoverable-output")).FullName;
+        _workflow.Throw = new AppFailureException(ErrorCode.MaterializationInvalid, "materialization failed");
+        _workflow.OnRun = _ => Directory.CreateDirectory(output);
+        var workspaceWorkflow = new FakeWorkspaceWorkflow();
+        var root = new WorkflowCompositionRoot(
+            new TestDoubles.SilentConfirmation(),
+            materialization: _workflow,
+            workspace: workspaceWorkflow);
+        var services = new DesktopServices(root, new DesktopLog(_root), new RecentWorkspaceStore(_root), invokeOnUi: DirectInvokeAsync);
+        services.Project.EnvironmentAssessment = new FakeEnvironmentWorkflow().Result;
+        var viewModel = new MaterializationViewModel(services, DirectInvokeAsync)
+        {
+            SnapshotDirectory = "C:\\snapshots\\s",
+            OutputDirectory = output,
+        };
+
+        await viewModel.MaterializeCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.CanRecoverMaterialization);
+        Assert.Contains("不重新解密", viewModel.RecoverySummary, StringComparison.Ordinal);
+
+        await viewModel.RecoverMaterializationCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.CanRecoverMaterialization);
+        Assert.Equal(Path.GetFullPath(output), workspaceWorkflow.LastRecoveryRequest?.OutputDirectory);
+        Assert.Same(workspaceWorkflow.RecoveryResult, services.Project.Workspace);
+    }
+
+    [Fact]
     public void Materialization_snapshot_path_tracks_the_project_session()
     {
         var viewModel = CreateViewModel();

@@ -15,6 +15,7 @@ public static class MaterializationStateStore
 {
     public const string RelativeStatePath = ".wechatvoice/materialization-state.json";
     public const string RelativeLockPath = ".wechatvoice/materialization.lock";
+    public const string RelativeDurationCachePath = ".wechatvoice/duration-cache.jsonl";
 
     private static readonly string[] FailureAllowedStates =
     [
@@ -35,6 +36,9 @@ public static class MaterializationStateStore
 
     public static bool IsLockPath(string? relativePath)
         => string.Equals(relativePath?.Replace('\\', '/'), RelativeLockPath, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsDurationCachePath(string? relativePath)
+        => string.Equals(relativePath?.Replace('\\', '/'), RelativeDurationCachePath, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Compatibility helper for tests and migration tooling that creates the

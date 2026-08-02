@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using WeChatVoice.Application;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Audio;
@@ -8,6 +9,57 @@ namespace WeChatVoice.Tests;
 
 public sealed class DecoderVoiceDurationResolverTests
 {
+    [Fact]
+    public async Task Jsonl_cache_round_trips_entries_and_isolates_decoder_versions()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var path = temporary.GetPath(".wechatvoice", "duration-cache.jsonl");
+        var key = new VoiceDurationCacheKey("adapter|account|contact|message|media", new string('a', 64), "decoder-v1");
+        await using (var cache = new JsonlVoiceDurationCache(path, "decoder-v1"))
+        {
+            await cache.StoreAsync(new VoiceDurationCacheEntry(key, 1234, DateTimeOffset.UtcNow), CancellationToken.None);
+            Assert.Equal(1234, await cache.TryGetAsync(key, CancellationToken.None));
+            Assert.Null(await cache.TryGetAsync(new VoiceDurationCacheKey(key.SourceStableKey, key.PayloadSha256, "decoder-v2"), CancellationToken.None));
+        }
+
+        var lines = await File.ReadAllLinesAsync(path);
+        Assert.Single(lines);
+        Assert.Contains("durationMs", lines[0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Cached_resolver_does_not_start_decoder_when_content_key_is_cached()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        await using var cache = new JsonlVoiceDurationCache(
+            temporary.GetPath("duration-cache.jsonl"),
+            "fake-decoder-v1");
+        var payloadHash = new string('b', 64);
+        var record = new VoiceRecord(
+            "message",
+            "contact",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "1"),
+            AdapterId: "adapter",
+            AccountId: "account",
+            DataSetId: "dataset",
+            AdapterVersion: "1",
+            PayloadSha256: payloadHash,
+            PayloadByteLength: 9);
+        await cache.StoreAsync(
+            new VoiceDurationCacheEntry(new VoiceDurationCacheKey(record.SourceStableKey!, payloadHash, "fake-decoder-v1"), 987, DateTimeOffset.UtcNow),
+            CancellationToken.None);
+        var decoder = new CountingDurationResolver();
+
+        var result = await new CachedVoiceDurationResolver(decoder, cache).ResolveAsync(
+            new FakeCatalog(),
+            record,
+            CancellationToken.None);
+
+        Assert.Equal(987, result);
+        Assert.Equal(0, decoder.Calls);
+    }
     [Fact]
     public async Task Resolver_reads_duration_from_valid_pcm_wav_without_persisting_output()
     {
@@ -51,5 +103,18 @@ public sealed class DecoderVoiceDurationResolverTests
         public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
             => ValueTask.FromResult<Stream>(new MemoryStream("#!SILK_V3"u8.ToArray()));
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class CountingDurationResolver : IVersionedVoiceDurationResolver
+    {
+        public int Calls { get; private set; }
+
+        public string DecoderVersion => "fake-decoder-v1";
+
+        public Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromResult<long?>(1);
+        }
     }
 }

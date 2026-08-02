@@ -80,20 +80,70 @@ public sealed record MaterializationFile(
     string Sha256,
     long ByteLength);
 
-public sealed record MaterializationManifest(
-    string WorkspaceId,
-    string SourceSnapshotId,
-    string BackendId,
-    string BackendVersion,
-    string BackendSha256,
-    IReadOnlyList<MaterializedDatabase> Databases,
-    IReadOnlyList<MaterializationFile> Files,
-    string? KeyExtractionProfileId = null,
-    string? ProcessVersion = null,
-    string? ProcessImageSha256 = null,
-    string? WcdbModuleSha256 = null,
-    string? AccountSidFingerprint = null,
-    string? AccountId = null);
+public sealed record MaterializationManifest
+{
+    public MaterializationManifest(
+        string WorkspaceId,
+        string SourceSnapshotId,
+        string BackendId,
+        string BackendVersion,
+        string BackendSha256,
+        IReadOnlyList<MaterializedDatabase> Databases,
+        IReadOnlyList<MaterializationFile> Files,
+        string? KeyExtractionProfileId = null,
+        string? ProcessVersion = null,
+        string? ProcessImageSha256 = null,
+        string? WcdbModuleSha256 = null,
+        string? AccountSidFingerprint = null,
+        string? AccountId = null,
+        AccountEvidenceState AccountEvidenceState = AccountEvidenceState.Unknown,
+        UserConfirmationState UserConfirmationState = UserConfirmationState.NotConfirmed,
+        string? ConfirmedAccountId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(WorkspaceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(SourceSnapshotId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(BackendId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(BackendVersion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(BackendSha256);
+        ArgumentNullException.ThrowIfNull(Databases);
+        ArgumentNullException.ThrowIfNull(Files);
+        this.WorkspaceId = WorkspaceId;
+        this.SourceSnapshotId = SourceSnapshotId;
+        this.BackendId = BackendId;
+        this.BackendVersion = BackendVersion;
+        this.BackendSha256 = BackendSha256;
+        this.Databases = new ReadOnlyCollection<MaterializedDatabase>(Databases.ToArray());
+        this.Files = new ReadOnlyCollection<MaterializationFile>(Files.ToArray());
+        this.KeyExtractionProfileId = KeyExtractionProfileId;
+        this.ProcessVersion = ProcessVersion;
+        this.ProcessImageSha256 = ProcessImageSha256;
+        this.WcdbModuleSha256 = WcdbModuleSha256;
+        this.AccountSidFingerprint = AccountSidFingerprint;
+        this.AccountId = string.IsNullOrWhiteSpace(AccountId) ? null : AccountId;
+        this.AccountEvidenceState = AccountEvidenceState == WeChatVoice.Core.Models.AccountEvidenceState.Unknown && this.AccountId is not null
+            ? WeChatVoice.Core.Models.AccountEvidenceState.PathCandidate
+            : AccountEvidenceState;
+        this.UserConfirmationState = UserConfirmationState;
+        this.ConfirmedAccountId = string.IsNullOrWhiteSpace(ConfirmedAccountId) ? null : ConfirmedAccountId;
+    }
+
+    public string WorkspaceId { get; }
+    public string SourceSnapshotId { get; }
+    public string BackendId { get; }
+    public string BackendVersion { get; }
+    public string BackendSha256 { get; }
+    public IReadOnlyList<MaterializedDatabase> Databases { get; }
+    public IReadOnlyList<MaterializationFile> Files { get; }
+    public string? KeyExtractionProfileId { get; }
+    public string? ProcessVersion { get; }
+    public string? ProcessImageSha256 { get; }
+    public string? WcdbModuleSha256 { get; }
+    public string? AccountSidFingerprint { get; }
+    public string? AccountId { get; }
+    public AccountEvidenceState AccountEvidenceState { get; }
+    public UserConfirmationState UserConfirmationState { get; }
+    public string? ConfirmedAccountId { get; }
+}
 
 public static class MaterializationCommitStates
 {

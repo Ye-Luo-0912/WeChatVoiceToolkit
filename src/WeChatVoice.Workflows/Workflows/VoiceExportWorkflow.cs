@@ -1,5 +1,6 @@
 using WeChatVoice.Application;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Export;
 
 namespace WeChatVoice.Workflows.Workflows;
@@ -12,7 +13,8 @@ namespace WeChatVoice.Workflows.Workflows;
 /// </summary>
 public sealed class VoiceExportWorkflow(
     Workspaces.VoiceCatalogOpener opener,
-    Workspaces.ContactResolver resolver) : IVoiceExportWorkflow
+    Workspaces.ContactResolver resolver,
+    Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null) : IVoiceExportWorkflow
 {
     public async Task<VoiceExportWorkflowResult> RunAsync(
         VoiceExportWorkflowRequest request,
@@ -30,6 +32,7 @@ public sealed class VoiceExportWorkflow(
         {
             context.Report(OperationPhase.VoiceExport, OperationStageIds.LoadingWorkspace);
             await using var session = await opener.OpenAsync(request.WorkspacePath, cancellationToken).ConfigureAwait(false);
+            await using var durationCache = durationCacheFactory?.Invoke(session.Workspace);
             context.Report(OperationPhase.VoiceExport, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(request.ExpectedContactId)
@@ -46,7 +49,10 @@ public sealed class VoiceExportWorkflow(
                 request.From,
                 request.To,
                 request.MaximumResults);
-            var service = new VoiceExportService(session.Catalog, new FileSystemVoiceExportStore(request.OutputDirectory));
+            var service = new VoiceExportService(
+                session.Catalog,
+                new FileSystemVoiceExportStore(request.OutputDirectory),
+                durationCache: durationCache);
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Exporting);
             var manifest = await service.ExportAsync(query, new VoiceExportOptions
             {

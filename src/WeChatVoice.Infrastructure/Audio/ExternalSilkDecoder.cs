@@ -54,8 +54,23 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder
         }
         finally
         {
-            TryDelete(temporaryInputPath);
-            TryDelete(temporaryOutputPath);
+            Exception? cleanupFailure = null;
+            foreach (var temporaryPath in new[] { temporaryInputPath, temporaryOutputPath })
+            {
+                try
+                {
+                    TryDelete(temporaryPath);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    cleanupFailure ??= exception;
+                }
+            }
+
+            if (cleanupFailure is not null)
+            {
+                throw cleanupFailure;
+            }
         }
     }
 
@@ -255,20 +270,23 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder
 
     private static void TryDelete(string path)
     {
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
         try
         {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
+            File.Delete(path);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Preserve the primary decoder result or failure.
+            throw new IOException("A temporary SILK decoder file could not be removed.", exception);
         }
-        catch (UnauthorizedAccessException)
+
+        if (File.Exists(path))
         {
-            // Preserve the primary decoder result or failure.
+            throw new IOException("A temporary SILK decoder file still exists after cleanup.");
         }
     }
 

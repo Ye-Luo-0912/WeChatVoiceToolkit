@@ -1,4 +1,20 @@
+using System.Diagnostics;
+using WeChatVoice.Core.Models;
+
 namespace WeChatVoice.Desktop.Infrastructure;
+
+public sealed record WeixinDataSourceDiscoveryOptions(
+    int MaxDepth = 8,
+    int MaxDirectories = 20_000,
+    TimeSpan? Timeout = null)
+{
+    public TimeSpan EffectiveTimeout => Timeout ?? TimeSpan.FromSeconds(5);
+}
+
+public sealed record WeixinDataSourceDiscoveryResult(
+    IReadOnlyList<WeixinDataSourceCandidate> Candidates,
+    bool WasTruncated,
+    int VisitedDirectoryCount);
 
 public sealed record WeixinDataSourceCandidate(
     string AccountDirectory,
@@ -12,65 +28,257 @@ public sealed record WeixinDataSourceCandidate(
     public bool IsSelectable => !IsReparsePoint && DatabaseCount > 0;
 }
 
-/// <summary>Discovers directory candidates only; it never infers a schema.</summary>
+/// <summary>
+/// Discovers directory candidates only; it never infers a schema. The search
+/// is intentionally bounded because an unrestricted AppData walk is both
+/// surprising for users and a poor UI operation under a damaged profile.
+/// </summary>
 public sealed class WeixinDataSourceDiscovery
 {
-    public IReadOnlyList<WeixinDataSourceCandidate> Discover(IEnumerable<string>? roots = null)
+    private readonly RecentWorkspaceStore _recentWorkspaces;
+
+    public WeixinDataSourceDiscovery(RecentWorkspaceStore? recentWorkspaces = null)
+        => _recentWorkspaces = recentWorkspaces ?? new RecentWorkspaceStore();
+
+    public IReadOnlyList<WeixinDataSourceCandidate> Discover(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null)
+        => DiscoverDetailed(roots, options, CancellationToken.None).Candidates;
+
+    public Task<IReadOnlyList<WeixinDataSourceCandidate>> DiscoverAsync(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => Task.Run(
+            () => DiscoverDetailed(roots, options, cancellationToken).Candidates,
+            cancellationToken);
+
+    public Task<WeixinDataSourceDiscoveryResult> DiscoverDetailedAsync(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => Task.Run(
+            () => DiscoverDetailed(roots, options, cancellationToken),
+            cancellationToken);
+
+    public WeixinDataSourceDiscoveryResult DiscoverDetailed(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
+        options ??= new WeixinDataSourceDiscoveryOptions();
+        if (options.MaxDepth < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxDepth cannot be negative.");
+        }
+
+        if (options.MaxDirectories <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxDirectories must be positive.");
+        }
+
+        if (options.EffectiveTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "The discovery timeout must be positive.");
+        }
+
+        var deadline = Stopwatch.GetTimestamp() +
+            (long)(Stopwatch.Frequency * options.EffectiveTimeout.TotalSeconds);
         var searchRoots = (roots ?? GetDefaultRoots())
-            .Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase);
+            .Where(static root => !string.IsNullOrWhiteSpace(root))
+            .Select(Path.GetFullPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         var candidates = new List<WeixinDataSourceCandidate>();
+        var pending = new Stack<(string Path, int Depth)>();
+        var visitedDirectories = 0;
+        var wasTruncated = false;
+
         foreach (var root in searchRoots)
         {
-            var pending = new Stack<string>([root]);
+            if (!Directory.Exists(root))
+            {
+                continue;
+            }
+
+            pending.Push((root, 0));
             while (pending.Count > 0)
             {
-                var current = pending.Pop();
+                if (!CanContinue(cancellationToken, deadline, options.MaxDirectories, visitedDirectories))
+                {
+                    wasTruncated = true;
+                    pending.Clear();
+                    break;
+                }
+
+                var (current, depth) = pending.Pop();
+                DirectoryInfo info;
                 try
                 {
-                    var info = new DirectoryInfo(current);
-                    var account = info.Parent?.FullName ?? current;
-                    var attributes = info.Attributes;
-                    if (info.Name.Equals("db_storage", StringComparison.OrdinalIgnoreCase))
+                    info = new DirectoryInfo(current);
+                    if (!info.Exists)
                     {
-                        candidates.Add(new WeixinDataSourceCandidate(
-                        account,
-                        info.Parent?.Name.StartsWith("wxid_", StringComparison.OrdinalIgnoreCase) == true ? info.Parent.Name : null,
-                        info.FullName,
-                        info.LastWriteTimeUtc,
-                        Directory.EnumerateFiles(current, "*.db", SearchOption.TopDirectoryOnly).Count(),
-                        (attributes & FileAttributes.ReparsePoint) != 0,
-                        File.Exists(Path.Combine(current, ".wechatvoice", "snapshot-manifest.json"))));
-                    }
-                    if ((attributes & FileAttributes.ReparsePoint) == 0)
-                    {
-                        foreach (var child in Directory.EnumerateDirectories(current)) pending.Push(child);
+                        continue;
                     }
                 }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
+                catch (IOException)
+                {
+                    continue;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    continue;
+                }
+
+                visitedDirectories++;
+                var isReparsePoint = (info.Attributes & FileAttributes.ReparsePoint) != 0;
+                if (info.Name.Equals("db_storage", StringComparison.OrdinalIgnoreCase))
+                {
+                    var databaseTree = CountDatabaseFiles(info, depth, options, cancellationToken, deadline, ref visitedDirectories, ref wasTruncated);
+                    var identity = SnapshotSourceIdentity.TryDerive(info.FullName, Array.Empty<SnapshotFileRecord>());
+                    candidates.Add(new WeixinDataSourceCandidate(
+                        info.Parent?.FullName ?? info.FullName,
+                        identity?.AccountCandidate,
+                        info.FullName,
+                        databaseTree.LastWriteTimeUtc,
+                        databaseTree.DatabaseCount,
+                        isReparsePoint,
+                        _recentWorkspaces.HasSnapshotForSource(info.FullName)));
+                    continue;
+                }
+
+                if (isReparsePoint || depth >= options.MaxDepth)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    foreach (var child in info.EnumerateDirectories())
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if ((child.Attributes & FileAttributes.ReparsePoint) == 0)
+                        {
+                            pending.Push((child.FullName, depth + 1));
+                        }
+                    }
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
             }
         }
-        return candidates
+
+        var ordered = candidates
             .GroupBy(item => item.DbStoragePath, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(item => item.LastWriteTimeUtc).First())
             .OrderBy(item => item.DbStoragePath, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        return new WeixinDataSourceDiscoveryResult(ordered, wasTruncated, visitedDirectories);
     }
+
+    private static DatabaseTreeStatistics CountDatabaseFiles(
+        DirectoryInfo root,
+        int rootDepth,
+        WeixinDataSourceDiscoveryOptions options,
+        CancellationToken cancellationToken,
+        long deadline,
+        ref int visitedDirectories,
+        ref bool wasTruncated)
+    {
+        var pending = new Stack<(DirectoryInfo Directory, int Depth)>([(root, rootDepth)]);
+        var count = 0;
+        var lastWrite = root.LastWriteTimeUtc;
+        while (pending.Count > 0)
+        {
+            if (!CanContinue(cancellationToken, deadline, options.MaxDirectories, visitedDirectories))
+            {
+                wasTruncated = true;
+                break;
+            }
+
+            var (current, depth) = pending.Pop();
+            if ((current.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                continue;
+            }
+
+            if (!ReferenceEquals(current, root))
+            {
+                visitedDirectories++;
+            }
+
+            try
+            {
+                lastWrite = Max(lastWrite, current.LastWriteTimeUtc);
+                foreach (var file in current.EnumerateFiles("*.db", SearchOption.TopDirectoryOnly))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    count++;
+                    lastWrite = Max(lastWrite, file.LastWriteTimeUtc);
+                }
+
+                foreach (var child in current.EnumerateDirectories())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if ((child.Attributes & FileAttributes.ReparsePoint) == 0 && depth < options.MaxDepth)
+                    {
+                        pending.Push((child, depth + 1));
+                    }
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return new DatabaseTreeStatistics(count, new DateTimeOffset(lastWrite, TimeSpan.Zero));
+    }
+
+    private static bool CanContinue(
+        CancellationToken cancellationToken,
+        long deadline,
+        int maxDirectories,
+        int visitedDirectories)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return visitedDirectories < maxDirectories && Stopwatch.GetTimestamp() < deadline;
+    }
+
+    private static DateTime Max(DateTime left, DateTime right)
+        => left >= right ? left : right;
 
     private static IEnumerable<string> GetDefaultRoots()
     {
+        var configuredRoot = Environment.GetEnvironmentVariable("WECHATVOICE_WEIXIN_DATA_ROOT");
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        return
+        // The modern xwechat_files roots are first. The legacy roots remain a
+        // bounded fallback for installations that have not migrated.
+        var roots = new List<string>();
+        if (!string.IsNullOrWhiteSpace(configuredRoot))
+        {
+            roots.Add(configuredRoot);
+        }
+
+        roots.AddRange(
         [
-            Path.Combine(documents, "WeChat Files"),
             Path.Combine(documents, "xwechat_files"),
-            Path.Combine(appData, "Tencent", "WeChat"),
-            Path.Combine(appData, "Tencent", "xwechat_files"),
-            Path.Combine(localAppData, "Tencent", "WeChat"),
             Path.Combine(localAppData, "Tencent", "xwechat_files"),
-        ];
+            Path.Combine(appData, "Tencent", "xwechat_files"),
+            Path.Combine(documents, "WeChat Files"),
+            Path.Combine(localAppData, "Tencent", "WeChat"),
+            Path.Combine(appData, "Tencent", "WeChat"),
+        ]);
+        return roots;
     }
+
+    private sealed record DatabaseTreeStatistics(int DatabaseCount, DateTimeOffset LastWriteTimeUtc);
 }

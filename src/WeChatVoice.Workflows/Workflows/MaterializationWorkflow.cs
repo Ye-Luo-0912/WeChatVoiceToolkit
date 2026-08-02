@@ -131,7 +131,7 @@ public sealed class MaterializationWorkflow : IMaterializationWorkflow
             // atomically rewritten and verified again before it crosses back
             // to the host.
             var identity = confirmedAccountId is not null
-                ? new AccountIdentity(AccountIdentityState.Candidate, null, UserConfirmationState.Confirmed)
+                ? new AccountIdentity(AccountIdentityState.Candidate, null, UserConfirmationState.Confirmed, confirmedAccountId)
                 : AccountIdentity.CandidateOnly;
             var persistedWorkspace = verifiedWorkspace.Workspace.WithAccountIdentity(identity);
             if (verifiedWorkspace.Workspace.AccountIdentity != identity)

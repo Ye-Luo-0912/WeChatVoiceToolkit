@@ -28,6 +28,7 @@ public sealed class DesktopServices
         InvokeOnUi = invokeOnUi;
         Project = new ExportProjectSession();
         FolderPicker = new DesktopFolderPicker();
+        DataSourceDiscovery = new WeixinDataSourceDiscovery(recentWorkspaces);
     }
 
     public static DesktopServices Create(bool allowDevelopmentBroker = false, string? appDataDirectory = null)
@@ -68,5 +69,5 @@ public sealed class DesktopServices
 
     public DesktopFolderPicker FolderPicker { get; }
 
-    public WeixinDataSourceDiscovery DataSourceDiscovery { get; } = new();
+    public WeixinDataSourceDiscovery DataSourceDiscovery { get; }
 }

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace WeChatVoice.Core.Models;
 
 /// <summary>
@@ -15,6 +17,18 @@ public enum AccountIdentityState
     Confirmed,
 }
 
+/// <summary>
+/// The technical evidence level is independent from the user's decision to
+/// process a path candidate. Path-derived evidence must never be promoted by
+/// a confirmation click.
+/// </summary>
+public enum AccountEvidenceState
+{
+    Unknown,
+    PathCandidate,
+    DatabaseConfirmed,
+}
+
 public enum UserConfirmationState
 {
     NotConfirmed,
@@ -24,9 +38,19 @@ public enum UserConfirmationState
 public sealed record AccountIdentity(
     AccountIdentityState State,
     string? ConfirmedBy,
-    UserConfirmationState UserConfirmation = UserConfirmationState.NotConfirmed)
+    UserConfirmationState UserConfirmation = UserConfirmationState.NotConfirmed,
+    string? ConfirmedAccountId = null)
 {
     public static AccountIdentity CandidateOnly { get; } = new(AccountIdentityState.Candidate, null);
+
+    [JsonPropertyName("accountEvidenceState")]
+    public AccountEvidenceState AccountEvidenceState
+        => State switch
+        {
+            AccountIdentityState.Confirmed => AccountEvidenceState.DatabaseConfirmed,
+            AccountIdentityState.Candidate => AccountEvidenceState.PathCandidate,
+            _ => AccountEvidenceState.Unknown,
+        };
 }
 
 /// <summary>

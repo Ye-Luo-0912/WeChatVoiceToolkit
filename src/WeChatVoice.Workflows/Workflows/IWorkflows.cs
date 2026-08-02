@@ -53,6 +53,12 @@ public interface IWorkspaceWorkflow
         WorkflowContext context,
         CancellationToken cancellationToken);
 
+    Task<MaterializationRecoveryAssessment> AssessMaterializationRecoveryAsync(
+        string outputDirectory,
+        string? workspaceOutputPath,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
     Task<WorkspaceDeletionPreview> PreviewDeleteMaterializedAsync(
         string workspacePath,
         WorkflowContext context,

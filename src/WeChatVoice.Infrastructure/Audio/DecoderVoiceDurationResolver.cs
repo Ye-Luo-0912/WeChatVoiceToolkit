@@ -10,13 +10,17 @@ namespace WeChatVoice.Infrastructure.Audio;
 /// A single resolver instance serializes decoder calls, avoiding unbounded
 /// process and temporary-file pressure during a scan.
 /// </summary>
-public sealed class DecoderVoiceDurationResolver : IVoiceDurationResolver, IAsyncDisposable
+public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolver, IAsyncDisposable
 {
+    public const string CurrentDecoderVersion = "silk-wav-decoder-v1";
+
     private readonly IVoiceDecoder _decoder;
     private readonly SemaphoreSlim _decoderGate = new(1, 1);
 
     public DecoderVoiceDurationResolver(IVoiceDecoder decoder)
         => _decoder = decoder ?? throw new ArgumentNullException(nameof(decoder));
+
+    public string DecoderVersion => CurrentDecoderVersion;
 
     public async Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
     {
@@ -63,8 +67,23 @@ public sealed class DecoderVoiceDurationResolver : IVoiceDurationResolver, IAsyn
 
     private static void TryDelete(string path)
     {
-        try { if (File.Exists(path)) File.Delete(path); }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new IOException("The temporary duration WAV could not be removed.", exception);
+        }
+
+        if (File.Exists(path))
+        {
+            throw new IOException("The temporary duration WAV still exists after cleanup.");
+        }
     }
 }

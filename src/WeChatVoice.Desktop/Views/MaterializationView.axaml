@@ -28,11 +28,13 @@
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="16">
         <Button Content="开始物料化" Command="{Binding MaterializeCommand}" IsEnabled="{Binding CanStartOperation}" />
+        <Button Content="恢复 Workspace（不重新解密）" Command="{Binding RecoverMaterializationCommand}" IsVisible="{Binding CanRecoverMaterialization}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
         <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
       </StackPanel>
       <TextBlock Text="{Binding ResultSummary}" FontWeight="SemiBold" />
       <TextBlock Text="{Binding IdentitySummary}" />
+      <TextBlock Text="{Binding RecoverySummary}" TextWrapping="Wrap" />
     </StackPanel>
 
     <Border IsVisible="{Binding IsConfirmDialogOpen}"
