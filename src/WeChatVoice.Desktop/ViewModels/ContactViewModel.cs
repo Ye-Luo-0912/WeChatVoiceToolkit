@@ -13,7 +13,12 @@ namespace WeChatVoice.Desktop.ViewModels;
 public sealed partial class ContactViewModel : PageViewModelBase
 {
     public ContactViewModel(DesktopServices services)
-        : base(services)
+        : this(services, marshal: null)
+    {
+    }
+
+    internal ContactViewModel(DesktopServices services, Action<Action>? marshal)
+        : base(services, marshal)
     {
     }
 
@@ -74,6 +79,7 @@ public sealed partial class ContactViewModel : PageViewModelBase
     {
         Services.Project.SelectedContact = value;
         Services.Project.Scan = null;
+        Services.Project.SelectionPlan = null;
         Services.Project.LastExportRun = null;
     }
 }

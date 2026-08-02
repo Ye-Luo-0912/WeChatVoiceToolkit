@@ -243,17 +243,17 @@ internal static class BrokerHost
         }
         await using (stream)
         {
-        var manifest = await JsonSerializer.DeserializeAsync<SnapshotManifest>(stream, JsonOptions, cancellationToken).ConfigureAwait(false)
-            ?? throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest was empty.");
-        if (!string.Equals(manifest.SnapshotId, request.SnapshotId, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new AppFailureException(ErrorCode.SnapshotInvalid, "The requested SnapshotId does not match the manifest.");
-        }
+            var manifest = await JsonSerializer.DeserializeAsync<SnapshotManifest>(stream, JsonOptions, cancellationToken).ConfigureAwait(false)
+                ?? throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest was empty.");
+            if (!string.Equals(manifest.SnapshotId, request.SnapshotId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new AppFailureException(ErrorCode.SnapshotInvalid, "The requested SnapshotId does not match the manifest.");
+            }
 
-        var metadataDirectory = Path.GetDirectoryName(manifestPath)!;
-        var snapshotRoot = Directory.GetParent(metadataDirectory)?.FullName
-            ?? throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest has no snapshot root.");
-        return await new RawSnapshotVerifier().VerifyAsync(new RawSnapshot(manifest, snapshotRoot), cancellationToken).ConfigureAwait(false);
+            var metadataDirectory = Path.GetDirectoryName(manifestPath)!;
+            var snapshotRoot = Directory.GetParent(metadataDirectory)?.FullName
+                ?? throw new AppFailureException(ErrorCode.SnapshotInvalid, "The snapshot manifest has no snapshot root.");
+            return await new RawSnapshotVerifier().VerifyAsync(new RawSnapshot(manifest, snapshotRoot), cancellationToken).ConfigureAwait(false);
         }
     }
 

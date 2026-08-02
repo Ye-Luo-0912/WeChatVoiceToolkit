@@ -1,6 +1,6 @@
 using Avalonia;
 using Avalonia.Headless;
-using WeChatVoice.Desktop;
+using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Desktop.ViewModels;
 using WeChatVoice.Desktop.Views;
 
@@ -25,5 +25,12 @@ public sealed class AvaloniaHeadlessSmokeTests
         Assert.NotNull(new ScanView());
         Assert.NotNull(new ExportView());
         Assert.NotNull(new HistoryDiagnosticsView());
+    }
+
+    [Fact]
+    public async Task Folder_picker_requires_a_real_attached_storage_owner()
+    {
+        var picker = new DesktopFolderPicker();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => picker.PickFolderAsync("test"));
     }
 }

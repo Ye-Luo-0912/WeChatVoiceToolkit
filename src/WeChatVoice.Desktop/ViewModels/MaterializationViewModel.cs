@@ -87,24 +87,24 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
             {
                 throw new AppFailureException(ErrorCode.SnapshotInvalid, "此快照来自活动源，不可用于解密或导出。");
             }
-                if (string.IsNullOrWhiteSpace(snapshotDirectory) || string.IsNullOrWhiteSpace(outputDirectory))
-                {
-                    throw new AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Snapshot and output directories are required.");
-                }
+            if (string.IsNullOrWhiteSpace(snapshotDirectory) || string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                throw new AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Snapshot and output directories are required.");
+            }
 
-                return await Workflows.Materialization.RunAsync(
-                    new MaterializationWorkflowRequest(
-                        snapshotDirectory,
-                        SnapshotManifestPath: null,
-                        BackendId: "weixin-windows-4",
-                        ExternalDecryptorPath: null,
-                        AllowUntrustedBackend: false,
-                        RequestedAccountId: requestedAccount,
-                        outputDirectory,
-                        WorkspaceOutputPath: workspaceOutputPath),
-                    context,
-                    cancellationToken).ConfigureAwait(false);
-            },
+            return await Workflows.Materialization.RunAsync(
+                new MaterializationWorkflowRequest(
+                    snapshotDirectory,
+                    SnapshotManifestPath: null,
+                    BackendId: "weixin-windows-4",
+                    ExternalDecryptorPath: null,
+                    AllowUntrustedBackend: false,
+                    RequestedAccountId: requestedAccount,
+                    outputDirectory,
+                    WorkspaceOutputPath: workspaceOutputPath),
+                context,
+                cancellationToken).ConfigureAwait(false);
+        },
             result =>
             {
                 Services.Project.Materialization = result;

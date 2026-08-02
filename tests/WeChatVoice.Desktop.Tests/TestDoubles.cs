@@ -26,9 +26,10 @@ public sealed class FakeEnvironmentWorkflow : IEnvironmentAssessmentWorkflow
         Workspace: null);
 
     public Exception? Throw { get; set; }
+    public Func<CancellationToken, Task<EnvironmentAssessmentResult>>? RunOverride { get; set; }
 
     public Task<EnvironmentAssessmentResult> RunAsync(EnvironmentAssessmentRequest request, WorkflowContext context, CancellationToken cancellationToken)
-        => Throw is null ? Task.FromResult(Result) : Task.FromException<EnvironmentAssessmentResult>(Throw);
+        => RunOverride is not null ? RunOverride(cancellationToken) : Throw is null ? Task.FromResult(Result) : Task.FromException<EnvironmentAssessmentResult>(Throw);
 }
 
 public sealed class FakeMaterializationWorkflow : IMaterializationWorkflow
@@ -62,6 +63,17 @@ public sealed class FakeMaterializationWorkflow : IMaterializationWorkflow
 
         return Result;
     }
+}
+
+public sealed class FakeContactWorkflow : IContactDiscoveryWorkflow
+{
+    public Task<ContactDiscoveryResult> RunAsync(ContactDiscoveryRequest request, WorkflowContext context, CancellationToken cancellationToken)
+        => Task.FromResult(new ContactDiscoveryResult(
+            [
+                new ContactRecord("contact-a", "wxid_a", "A", "Remark A", Nickname: "Nick A"),
+                new ContactRecord("contact-b", "wxid_b", "B", "Remark B", Nickname: "Nick B"),
+            ],
+            TestDoubles.Verified()));
 }
 
 public sealed class FakeScanWorkflow : IVoiceScanWorkflow

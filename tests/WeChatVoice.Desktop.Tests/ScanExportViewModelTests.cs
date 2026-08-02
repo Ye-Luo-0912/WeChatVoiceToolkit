@@ -1,9 +1,9 @@
+using WeChatVoice.Core.Errors;
+using WeChatVoice.Core.Models;
 using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Desktop.ViewModels;
-using WeChatVoice.Core.Errors;
 using WeChatVoice.Workflows.Composition;
 using WeChatVoice.Workflows.Workflows;
-using WeChatVoice.Core.Models;
 
 namespace WeChatVoice.Desktop.Tests;
 
@@ -17,11 +17,13 @@ public sealed class ScanExportViewModelTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "WeChatVoiceToolkit.DesktopTests", Guid.NewGuid().ToString("N"));
     private readonly FakeScanWorkflow _scan = new();
     private readonly FakeExportWorkflow _export = new();
+    private readonly FakeContactWorkflow _contacts = new();
 
     public ScanExportViewModelTests()
     {
         var root = new WorkflowCompositionRoot(
             new TestDoubles.SilentConfirmation(),
+            contactDiscovery: _contacts,
             voiceScan: _scan,
             voiceExport: _export);
         Services = new DesktopServices(root, new DesktopLog(_root), new RecentWorkspaceStore(_root));
@@ -88,6 +90,35 @@ public sealed class ScanExportViewModelTests : IDisposable
         Assert.Single(viewModel.Failures);
         Assert.Contains("含失败", viewModel.ExportSummary, StringComparison.Ordinal);
         Assert.Equal(WorkflowState.Completed, viewModel.RunHost.State);
+    }
+
+    [Fact]
+    public async Task Guided_flow_uses_the_second_explicit_contact_and_invalidates_the_plan_on_change()
+    {
+        var contacts = new ContactViewModel(Services, action => action()) { WorkspacePath = "C:\\workspace.json" };
+        await contacts.LoadContactsCommand.ExecuteAsync(null);
+        Assert.Null(contacts.SelectedContact);
+
+        contacts.SelectedContact = contacts.Contacts[1];
+        var scan = new ScanViewModel(Services, action => action()) { WorkspacePath = "C:\\workspace.json" };
+        await scan.ScanCommand.ExecuteAsync(null);
+        Assert.Equal("contact-b", Services.Project.SelectionPlan?.ContactId);
+
+        contacts.SelectedContact = contacts.Contacts[0];
+        Assert.Null(Services.Project.SelectionPlan);
+        Assert.Null(Services.Project.Scan);
+
+        contacts.SelectedContact = contacts.Contacts[1];
+        await scan.ScanCommand.ExecuteAsync(null);
+        var export = new ExportViewModel(Services, action => action())
+        {
+            WorkspacePath = "C:\\workspace.json",
+            OutputDirectory = "C:\\exports",
+        };
+        await export.ExportCommand.ExecuteAsync(null);
+
+        Assert.Equal(WorkflowState.Completed, export.RunHost.State);
+        Assert.Equal(1, export.ExportedCount);
     }
 
     [Fact]

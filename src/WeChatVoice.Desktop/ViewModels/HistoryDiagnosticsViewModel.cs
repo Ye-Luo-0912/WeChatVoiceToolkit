@@ -1,7 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Core.Errors;
+using WeChatVoice.Desktop.Infrastructure;
 
 namespace WeChatVoice.Desktop.ViewModels;
 
