@@ -15,7 +15,9 @@ public static class VoiceQueryBuilder
         ContactRecord contact,
         VoiceDirection? direction,
         DateTimeOffset? from,
-        DateTimeOffset? to)
+        DateTimeOffset? to,
+        int? maximumResults = null,
+        bool deepScan = false)
     {
         ArgumentNullException.ThrowIfNull(contact);
         if (!string.IsNullOrWhiteSpace(conversationId)
@@ -30,7 +32,9 @@ public static class VoiceQueryBuilder
             from,
             to,
             ContactUsername: contact.Username,
-            ContactId: contact.ContactId);
+            ContactId: contact.ContactId,
+            MaximumResults: maximumResults,
+            DeepScan: deepScan);
     }
 
     public static DateTimeOffset? ParseUtc(string? value, string optionName)

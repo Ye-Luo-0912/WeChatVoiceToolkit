@@ -45,6 +45,9 @@ public sealed partial class ScanViewModel : PageViewModelBase
     [ObservableProperty]
     private string? _toText;
 
+    [ObservableProperty] private bool _deepScan;
+    [ObservableProperty] private string? _maximumResultsText;
+
     [ObservableProperty]
     private string? _scanSummary;
 
@@ -79,18 +82,24 @@ public sealed partial class ScanViewModel : PageViewModelBase
     private string? _accountSummary;
 
     [RelayCommand]
-    private Task ScanAsync() => RunHost.RunAsync(
+    private Task ScanAsync()
+    {
+        var selected = Services.Project.SelectedContact;
+        var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
+        var contactUsername = selected?.Username;
+        var direction = ParseDirection();
+        var from = VoiceQueryBuilder.ParseUtc(FromText, "from");
+        var to = VoiceQueryBuilder.ParseUtc(ToText, "to");
+        var maximumResults = ParseMaximumResults();
+        var deepScan = DeepScan;
+        return RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
-            var selected = Services.Project.SelectedContact;
             if (selected is null || string.IsNullOrWhiteSpace(selected.Username))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Please select a contact before scanning.");
             }
 
-            var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath)
-                ? Services.Project.WorkspacePath
-                : WorkspacePath;
             if (string.IsNullOrWhiteSpace(workspacePath))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Workspace path is required.");
@@ -99,11 +108,12 @@ public sealed partial class ScanViewModel : PageViewModelBase
             return await Workflows.VoiceScan.RunAsync(
                 new VoiceScanWorkflowRequest(
                     workspacePath,
-                    ContactUsername: selected.Username,
+                    ContactUsername: contactUsername,
                     ConversationId: null,
-                    Direction: ParseDirection(),
-                    From: VoiceQueryBuilder.ParseUtc(FromText, "from"),
-                    To: VoiceQueryBuilder.ParseUtc(ToText, "to")),
+                    Direction: direction,
+                    From: from,
+                    To: to,
+                    MaximumResults: maximumResults, DeepScan: deepScan),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
@@ -113,15 +123,12 @@ public sealed partial class ScanViewModel : PageViewModelBase
             Services.Project.Workspace = result.Workspace;
             var report = result.Report;
             var contact = Services.Project.SelectedContact!;
-            var direction = ParseDirection();
-            var from = VoiceQueryBuilder.ParseUtc(FromText, "from");
-            var to = VoiceQueryBuilder.ParseUtc(ToText, "to");
             var dataSetId = result.Workspace.DataSet.DataSetId ?? "";
             var accountId = result.Workspace.DataSet.AccountId ?? "";
             var fingerprint = VoiceSelectionPlan.ComputeFingerprint(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
-                contact.ContactId, contact.Username!, direction, from, to, null);
+                contact.ContactId, contact.Username!, direction, from, to, maximumResults);
             Services.Project.SelectionPlan = new VoiceSelectionPlan(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
-                contact.ContactId, contact.Username!, direction, from, to, null, fingerprint, report);
+                contact.ContactId, contact.Username!, direction, from, to, maximumResults, fingerprint, report);
             MatchedVoiceCount = report.MatchedVoiceCount;
             MissingCount = report.UnassociatedMediaCount;
             EmptyCount = report.EmptyBlobCount;
@@ -132,8 +139,9 @@ public sealed partial class ScanViewModel : PageViewModelBase
             RejectedVoiceCount = report.RejectedVoiceCount;
             TotalPayloadBytes = report.TotalPayloadBytes;
             AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
-            ScanSummary = $"扫描完成：可导出 {report.ExportableVoiceCount} 条 / 匹配 {report.MatchedVoiceCount} 条；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；疑似重复 {DuplicateCount}";
+            ScanSummary = $"扫描完成：可导出 {report.ExportableVoiceCount} 条 / 匹配 {report.MatchedVoiceCount} 条；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；重复统计：{(deepScan ? DuplicateCount.ToString() : "未执行")}";
         });
+    }
 
     private VoiceDirection ParseDirection()
     {
@@ -145,4 +153,7 @@ public sealed partial class ScanViewModel : PageViewModelBase
     partial void OnDirectionTextChanged(string? value) => Services.Project.SelectionPlan = null;
     partial void OnFromTextChanged(string? value) => Services.Project.SelectionPlan = null;
     partial void OnToTextChanged(string? value) => Services.Project.SelectionPlan = null;
+    partial void OnDeepScanChanged(bool value) => Services.Project.SelectionPlan = null;
+    partial void OnMaximumResultsTextChanged(string? value) => Services.Project.SelectionPlan = null;
+    private int? ParseMaximumResults() => string.IsNullOrWhiteSpace(MaximumResultsText) ? null : int.TryParse(MaximumResultsText, out var value) && value > 0 ? value : throw new AppFailureException(ErrorCode.InvalidRequest, "Maximum results must be a positive integer.");
 }

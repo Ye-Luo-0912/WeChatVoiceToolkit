@@ -21,6 +21,8 @@
         <TextBlock Width="180" Text="仅对方发来的语音（incoming）" />
         <TextBox Width="180" PlaceholderText="起始 UTC 时间" Text="{Binding FromText}" />
         <TextBox Width="180" PlaceholderText="结束 UTC 时间" Text="{Binding ToText}" />
+        <CheckBox Content="深度扫描（读取并 Hash 完整 Payload）" IsChecked="{Binding DeepScan}" />
+        <TextBox Width="120" PlaceholderText="最大条数（可选）" Text="{Binding MaximumResultsText}" />
         <Button Content="扫描" Command="{Binding ScanCommand}" />
         <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
         <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />

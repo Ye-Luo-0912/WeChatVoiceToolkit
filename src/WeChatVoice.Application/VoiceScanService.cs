@@ -69,7 +69,7 @@ public sealed class VoiceScanService
                 ambiguous++;
             }
 
-            if (!string.IsNullOrWhiteSpace(record.PayloadSha256))
+            if (query.DeepScan && !string.IsNullOrWhiteSpace(record.PayloadSha256))
             {
                 payloadHashes[record.PayloadSha256] = payloadHashes.TryGetValue(record.PayloadSha256, out var hashCount) ? hashCount + 1 : 1;
             }

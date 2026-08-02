@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Desktop.Infrastructure;
+using WeChatVoice.Core.Errors;
 
 namespace WeChatVoice.Desktop.ViewModels;
 
@@ -32,6 +33,54 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
 
     [ObservableProperty]
     private string? _workspaceDeleteSummary;
+    private bool _deleteArmed;
+
+    [RelayCommand]
+    private Task LoadSelectedWorkspaceAsync() => RunHost.RunAsync(
+        async (context, cancellationToken) =>
+        {
+            if (SelectedWorkspace is null) throw new AppFailureException(ErrorCode.InvalidRequest, "Please select a recent Workspace.");
+            return await Workflows.Workspace.VerifyAsync(SelectedWorkspace.WorkspacePath, context, cancellationToken).ConfigureAwait(false);
+        },
+        result =>
+        {
+            Services.Project.Workspace = result;
+            Services.Project.WorkspacePath = SelectedWorkspace?.WorkspacePath;
+            Services.Project.Scan = null;
+            Services.Project.SelectionPlan = null;
+            WorkspaceDeleteSummary = $"Workspace 已验证并恢复：{result.Workspace.WorkspaceId}";
+        });
+
+    [RelayCommand]
+    private Task DeleteMaterializedWorkspaceAsync()
+    {
+        if (SelectedWorkspace is null)
+        {
+            WorkspaceDeleteSummary = "请先选择 Workspace。";
+            return Task.CompletedTask;
+        }
+        if (!_deleteArmed)
+        {
+            _deleteArmed = true;
+            WorkspaceDeleteSummary = "将重新验证并删除 Manifest 覆盖的明文 Workspace。再次点击确认；源快照和 SILK 导出不会删除。";
+            return Task.CompletedTask;
+        }
+        _deleteArmed = false;
+        var path = SelectedWorkspace.WorkspacePath;
+        return RunHost.RunAsync(
+            async (context, cancellationToken) => await Workflows.Workspace.DeleteMaterializedAsync(path, context, cancellationToken).ConfigureAwait(false),
+            result =>
+            {
+                WorkspaceDeleteSummary = $"已删除明文 Workspace：{result.DatabaseCount} 个数据库，{result.TotalBytes} bytes。";
+                Services.RecentWorkspaces.Remove(path);
+                if (string.Equals(Services.Project.WorkspacePath, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    Services.Project.Workspace = null;
+                    Services.Project.WorkspacePath = null;
+                }
+                Refresh();
+            });
+    }
 
     [RelayCommand]
     private void Refresh()

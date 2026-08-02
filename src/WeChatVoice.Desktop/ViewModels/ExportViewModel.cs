@@ -67,14 +67,15 @@ public sealed partial class ExportViewModel : PageViewModelBase
     private string? _manifestPath;
 
     [RelayCommand]
-    private Task ExportAsync() => RunHost.RunAsync(
+    private Task ExportAsync()
+    {
+        var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
+        var outputDirectory = OutputDirectory;
+        var plan = Services.Project.SelectionPlan;
+        var contact = Services.Project.SelectedContact;
+        return RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
-            var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath)
-                ? Services.Project.WorkspacePath
-                : WorkspacePath;
-            var plan = Services.Project.SelectionPlan;
-            var contact = Services.Project.SelectedContact;
             if (plan is null || Services.Project.Scan is null || plan.ScanReport.ExportableVoiceCount == 0 || contact is null || string.IsNullOrWhiteSpace(contact.Username))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Complete contact selection and an exportable scan before exporting.");
@@ -85,7 +86,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 throw new AppFailureException(ErrorCode.InvalidRequest, "The scan plan is no longer valid for this workspace.");
             }
 
-            if (string.IsNullOrWhiteSpace(workspacePath) || string.IsNullOrWhiteSpace(OutputDirectory))
+            if (string.IsNullOrWhiteSpace(workspacePath) || string.IsNullOrWhiteSpace(outputDirectory))
             {
                 throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace and output directories are required.");
             }
@@ -93,7 +94,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
             return await Workflows.VoiceExport.RunAsync(
                 new VoiceExportWorkflowRequest(
                     workspacePath,
-                    OutputDirectory,
+                    outputDirectory,
                     ContactUsername: plan.ContactUsername,
                     ConversationId: null,
                     Direction: plan.Direction,
@@ -106,7 +107,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
         {
             Services.Project.LastExportRun = result;
             Services.Project.Workspace = result.Workspace;
-            Services.Project.ExportDirectory = OutputDirectory;
+            Services.Project.ExportDirectory = outputDirectory;
             var manifest = result.Manifest;
             ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
             SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
@@ -120,6 +121,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 _ => $"导出失败：{FailureCount} 条",
             };
         });
+    }
 
     /// <summary>Recovers a manifest from a flushed run journal after a crash.</summary>
     [RelayCommand]

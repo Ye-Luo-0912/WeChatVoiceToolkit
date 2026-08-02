@@ -47,6 +47,11 @@ public interface IWorkspaceWorkflow
         string workspacePath,
         WorkflowContext context,
         CancellationToken cancellationToken);
+
+    Task<WorkspaceDeletionResult> DeleteMaterializedAsync(
+        string workspacePath,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
 }
 
 public interface IContactDiscoveryWorkflow
@@ -112,6 +117,7 @@ public sealed record SnapshotWorkflowResult(
 public sealed record WorkspaceCreateRequest(string RootDirectory, string OutputPath);
 
 public sealed record WorkspaceCreateResult(LocalWorkspace Workspace, string OutputPath);
+public sealed record WorkspaceDeletionResult(string WorkspaceId, string RootDirectory, int DatabaseCount, long TotalBytes);
 
 public sealed record ContactDiscoveryRequest(
     string WorkspacePath,
@@ -128,7 +134,9 @@ public sealed record VoiceScanWorkflowRequest(
     string? ConversationId = null,
     VoiceDirection? Direction = null,
     DateTimeOffset? From = null,
-    DateTimeOffset? To = null);
+    DateTimeOffset? To = null,
+    int? MaximumResults = null,
+    bool DeepScan = false);
 
 public sealed record VoiceScanWorkflowResult(
     VoiceScanReport Report,

@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Workflows.Workflows;
+using WeChatVoice.Desktop.Infrastructure;
 
 namespace WeChatVoice.Desktop.ViewModels;
 
@@ -37,32 +38,56 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
     [ObservableProperty]
     private bool _isPotentiallyInconsistent;
 
+    [ObservableProperty] private IReadOnlyList<WeixinDataSourceCandidate> _sourceCandidates = [];
+    [ObservableProperty] private WeixinDataSourceCandidate? _selectedSourceCandidate;
+
+    public bool IsLiveSourceAdvancedOptionVisible => false;
+
     [RelayCommand]
-    private Task CreateSnapshotAsync() => RunHost.RunAsync(
+    private async Task DiscoverSourcesAsync()
+    {
+        var candidates = await Task.Run(() => Services.DataSourceDiscovery.Discover()).ConfigureAwait(true);
+        SourceCandidates = candidates;
+        SelectedSourceCandidate = null;
+        SnapshotSummary = candidates.Count == 0 ? "未发现 Weixin db_storage。" : $"发现 {candidates.Count} 个数据源，请明确选择。";
+    }
+
+    partial void OnSelectedSourceCandidateChanged(WeixinDataSourceCandidate? value)
+    {
+        if (value is not null) SourceDirectory = value.DbStoragePath;
+    }
+
+    [RelayCommand]
+    private Task CreateSnapshotAsync()
+    {
+        var sourceDirectory = SourceDirectory;
+        var outputDirectory = OutputDirectory;
+        var allowLiveSource = AllowLiveSource;
+        if (!string.IsNullOrWhiteSpace(sourceDirectory)) Services.Project.ResetFromSource(sourceDirectory);
+        return RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
-            if (string.IsNullOrWhiteSpace(SourceDirectory) || string.IsNullOrWhiteSpace(OutputDirectory))
+            if (string.IsNullOrWhiteSpace(sourceDirectory) || string.IsNullOrWhiteSpace(outputDirectory))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Source and output directories are required.");
             }
 
-            Services.Project.ResetFromSource(SourceDirectory);
-
             return await Workflows.Snapshot.RunAsync(
-                new SnapshotWorkflowRequest(SourceDirectory, OutputDirectory, AllowLiveSource: AllowLiveSource, MaxAttempts: 3),
+                new SnapshotWorkflowRequest(sourceDirectory, outputDirectory, AllowLiveSource: allowLiveSource, MaxAttempts: 3),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
         result =>
         {
             Services.Project.Snapshot = result;
-            Services.Project.SnapshotDirectory = OutputDirectory;
+            Services.Project.SnapshotDirectory = outputDirectory;
             AccountCandidate = result.SourceIdentity?.AccountCandidate;
             IsPotentiallyInconsistent = result.Manifest.PotentiallyInconsistent;
             SnapshotSummary = $"快照 {result.Manifest.SnapshotId[..16]}… 已创建：{result.Manifest.Files.Count} 个文件"
                 + (result.SourceIdentity?.AccountCandidate is { } candidate ? $"；检测到账号：{candidate}" : string.Empty)
                 + (result.Manifest.PotentiallyInconsistent ? "；⚠ 源为活动状态（potentiallyInconsistent）" : string.Empty);
         });
+    }
 
     [RelayCommand]
     private async Task BrowseSourceAsync()

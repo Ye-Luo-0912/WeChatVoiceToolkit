@@ -59,4 +59,6 @@ public sealed class DesktopServices
     public ExportProjectSession Project { get; }
 
     public DesktopFolderPicker FolderPicker { get; }
+
+    public WeixinDataSourceDiscovery DataSourceDiscovery { get; } = new();
 }

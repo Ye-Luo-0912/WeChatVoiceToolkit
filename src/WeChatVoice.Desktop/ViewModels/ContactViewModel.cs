@@ -42,17 +42,20 @@ public sealed partial class ContactViewModel : PageViewModelBase
     private string _contactSummary = "尚未加载";
 
     [RelayCommand]
-    private Task LoadContactsAsync() => RunHost.RunAsync(
+    private Task LoadContactsAsync()
+    {
+        var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
+        var searchTerm = string.IsNullOrWhiteSpace(SearchTerm) ? null : SearchTerm;
+        return RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
-            var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
             if (string.IsNullOrWhiteSpace(workspacePath))
             {
                 throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace path is required.");
             }
 
             return await Workflows.ContactDiscovery.RunAsync(
-                new ContactDiscoveryRequest(workspacePath, SearchTerm: string.IsNullOrWhiteSpace(SearchTerm) ? null : SearchTerm),
+                new ContactDiscoveryRequest(workspacePath!, SearchTerm: searchTerm),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
@@ -65,6 +68,7 @@ public sealed partial class ContactViewModel : PageViewModelBase
             AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
             ContactSummary = $"共 {result.Contacts.Count} 个一对一联系人（群聊已排除）";
         });
+    }
 
     partial void OnSelectedContactChanged(ContactRecord? value)
     {

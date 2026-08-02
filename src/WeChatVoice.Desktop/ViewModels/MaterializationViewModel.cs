@@ -77,8 +77,12 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
         UacRejected = false;
         return RunHost.RunAsync(
             CreateConfirmationSession,
-            async (context, cancellationToken) =>
+        async (context, cancellationToken) =>
+        {
+            if (Services.Project.Snapshot?.Manifest.PotentiallyInconsistent == true)
             {
+                throw new AppFailureException(ErrorCode.SnapshotInvalid, "此快照来自活动源，不可用于解密或导出。");
+            }
                 var snapshotDirectory = string.IsNullOrWhiteSpace(SnapshotDirectory)
                     ? Services.Project.SnapshotDirectory
                     : SnapshotDirectory;

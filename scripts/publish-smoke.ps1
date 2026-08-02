@@ -3,12 +3,14 @@ param(
     [string]$PfxPath = '',
     [string]$PfxPassword = '',
     [switch]$RequireSignature,
-    [switch]$ReleaseTrustSmoke
+    [switch]$ReleaseTrustSmoke,
+    [string]$OutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$out = Join-Path ([System.IO.Path]::GetTempPath()) ('wechatvoice-publish-' + [guid]::NewGuid().ToString('N'))
+$generatedOutput = [string]::IsNullOrWhiteSpace($OutputDirectory)
+$out = if ($generatedOutput) { Join-Path ([System.IO.Path]::GetTempPath()) ('wechatvoice-publish-' + [guid]::NewGuid().ToString('N')) } else { [IO.Path]::GetFullPath($OutputDirectory) }
 $install = $null
 
 function Assert-GeneratedDirectory([string]$path, [string]$prefix) {
@@ -103,6 +105,14 @@ try {
         }
     }
 
+    $packageFiles = @(Get-ChildItem -LiteralPath $out -File -Recurse | Where-Object { $_.Name -notin @('package-manifest.json', 'SHA256SUMS.txt') } | ForEach-Object {
+        [pscustomobject]@{ path = [IO.Path]::GetRelativePath($out, $_.FullName).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); length = $_.Length }
+    })
+    [IO.File]::WriteAllText((Join-Path $out 'package-manifest.json'), (@{ format = 'wechatvoice-package-v1'; files = $packageFiles } | ConvertTo-Json -Depth 5))
+    $checksums = @(Get-ChildItem -LiteralPath $out -File | Sort-Object Name | ForEach-Object { "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" })
+    [IO.File]::WriteAllLines((Join-Path $out 'SHA256SUMS.txt'), $checksums)
+    [IO.File]::WriteAllText((Join-Path $out 'sbom.spdx.json'), (@{ spdxVersion = 'SPDX-2.3'; name = 'WeChatVoiceToolkit'; creationInfo = @{ created = [DateTime]::UtcNow.ToString('O'); creators = @('Tool: publish-smoke.ps1') }; files = $packageFiles } | ConvertTo-Json -Depth 6))
+
     $desktopDirectory = $out
     $smokeArguments = @('--smoke-check')
     if ($ReleaseTrustSmoke) {
@@ -130,5 +140,5 @@ finally {
         Restore-InstallDirectoryAcl $install
         Remove-GeneratedDirectory $install 'wechatvoice-install-'
     }
-    Remove-GeneratedDirectory $out 'wechatvoice-publish-'
+    if ($generatedOutput) { Remove-GeneratedDirectory $out 'wechatvoice-publish-' }
 }

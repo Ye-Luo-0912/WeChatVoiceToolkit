@@ -87,6 +87,9 @@ public sealed class WorkspaceWorkflow : IWorkspaceWorkflow
         }
     }
 
+    public Task<WorkspaceDeletionResult> DeleteMaterializedAsync(string workspacePath, WorkflowContext context, CancellationToken cancellationToken)
+        => new DeleteMaterializedWorkspaceWorkflow().RunAsync(workspacePath, context, cancellationToken);
+
     private static async Task WriteJsonFileAsync<T>(string outputPath, T value, CancellationToken cancellationToken)
     {
         var options = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)

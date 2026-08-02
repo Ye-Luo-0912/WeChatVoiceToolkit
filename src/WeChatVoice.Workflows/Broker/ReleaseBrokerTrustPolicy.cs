@@ -3,6 +3,13 @@ using WeChatVoice.Windows;
 
 namespace WeChatVoice.Workflows.Broker;
 
+public enum UserWriteability
+{
+    Writable,
+    NotWritable,
+    Indeterminate,
+}
+
 /// <summary>
 /// Full trust chain for released Broker binaries: a regular adjacent file,
 /// a hash-bound publish manifest, a WinVerifyTrust-validated Authenticode
@@ -15,12 +22,14 @@ public sealed class ReleaseBrokerTrustPolicy : IBrokerTrustPolicy
     private readonly IAuthenticodeVerifier _verifier;
     private readonly string _installDirectory;
     private readonly Func<string, bool> _isUserWritable;
+    private readonly Func<string, UserWriteability>? _writeabilityProbe;
 
-    public ReleaseBrokerTrustPolicy(IAuthenticodeVerifier? verifier = null, string? installDirectory = null, Func<string, bool>? isUserWritable = null)
+    public ReleaseBrokerTrustPolicy(IAuthenticodeVerifier? verifier = null, string? installDirectory = null, Func<string, bool>? isUserWritable = null, Func<string, UserWriteability>? writeabilityProbe = null)
     {
         _verifier = verifier ?? AuthenticodeVerifier.Instance;
         _installDirectory = Path.GetFullPath(installDirectory ?? AppContext.BaseDirectory);
         _isUserWritable = isUserWritable ?? IsUserWritable;
+        _writeabilityProbe = writeabilityProbe;
     }
 
     public BrokerTrustResult Verify(string brokerPath)
@@ -73,7 +82,22 @@ public sealed class ReleaseBrokerTrustPolicy : IBrokerTrustPolicy
             return BrokerTrustResult.Deny("broker-publisher-mismatch");
         }
 
-        if (_isUserWritable(_installDirectory))
+        UserWriteability writeability;
+        try
+        {
+            writeability = _writeabilityProbe?.Invoke(_installDirectory)
+                ?? (_isUserWritable(_installDirectory) ? UserWriteability.Writable : UserWriteability.NotWritable);
+        }
+        catch (InvalidOperationException)
+        {
+            writeability = UserWriteability.Indeterminate;
+        }
+        if (writeability == UserWriteability.Indeterminate)
+        {
+            return BrokerTrustResult.Deny("install-directory-writeability-indeterminate");
+        }
+
+        if (writeability == UserWriteability.Writable)
         {
             return BrokerTrustResult.Deny("install-directory-user-writable");
         }
@@ -102,9 +126,9 @@ public sealed class ReleaseBrokerTrustPolicy : IBrokerTrustPolicy
         {
             return false;
         }
-        catch (IOException)
+        catch (IOException exception) when (exception is not null)
         {
-            return false;
+            throw new InvalidOperationException("The install directory writeability probe was indeterminate.", exception);
         }
     }
 

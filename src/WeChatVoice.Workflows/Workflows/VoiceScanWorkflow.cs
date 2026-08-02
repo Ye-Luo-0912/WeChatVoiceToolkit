@@ -30,7 +30,8 @@ public sealed class VoiceScanWorkflow(
             await using var session = await opener.OpenAsync(request.WorkspacePath, cancellationToken).ConfigureAwait(false);
             context.Report(OperationPhase.VoiceScan, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
-            var query = VoiceQueryBuilder.Build(request.ConversationId, contact, request.Direction, request.From, request.To);
+            var query = VoiceQueryBuilder.Build(request.ConversationId, contact, request.Direction, request.From, request.To,
+                request.MaximumResults, request.DeepScan);
             context.Report(OperationPhase.VoiceScan, OperationStageIds.QueryingVoices);
             var report = await new VoiceScanService(session.Catalog).ScanAsync(query, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
