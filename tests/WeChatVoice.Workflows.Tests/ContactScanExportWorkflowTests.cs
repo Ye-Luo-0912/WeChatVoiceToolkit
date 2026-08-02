@@ -109,6 +109,28 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task Export_forwards_the_global_maximum_results_to_the_catalog_query()
+    {
+        _backend.Fill(
+            FakeBackend.Linked("m1", 1_700_000_000, VoiceDirection.Incoming),
+            FakeBackend.Linked("m2", 1_700_000_060, VoiceDirection.Incoming));
+        var workflow = new VoiceExportWorkflow(_opener, new ContactResolver());
+        var context = new WorkflowContext(new TestConfirmation());
+
+        var result = await workflow.RunAsync(
+            new VoiceExportWorkflowRequest(
+                _workspacePath,
+                Path.Combine(_root, "limited-export"),
+                FakeBackend.ContactUsername,
+                MaximumResults: 1),
+            context,
+            CancellationToken.None);
+
+        Assert.Single(result.Manifest.Entries);
+        Assert.Equal(1, _backend.LastVoiceQuery?.MaximumResults);
+    }
+
+    [Fact]
     public async Task Export_cancellation_transitions_to_cancelled()
     {
         var backend = new FakeBackend(voicesFactory: token => AsyncThrowOn(token));

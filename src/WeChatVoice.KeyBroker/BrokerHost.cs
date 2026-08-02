@@ -64,6 +64,8 @@ internal static class BrokerHost
         BrokerRequest? request = null;
         var snapshotVerified = false;
         var snapshotStaged = false;
+        MaterializationStateLock? materializationLock = null;
+        var operationId = Guid.NewGuid().ToString("N");
         try
         {
             request = BrokerProtocol.Parse(line);
@@ -138,6 +140,7 @@ internal static class BrokerHost
                 new KeyAcquisitionOptions(profile.Id, TimeSpan.FromSeconds(60), 1024L * 1024 * 1024, 256, allowExperimentalProfile),
                 new MaterializationOptions(Path.GetFullPath(outputRoot)),
                 cancellationToken).ConfigureAwait(false);
+            materializationLock = await MaterializationStateStore.AcquireLockAsync(outputRoot, cancellationToken).ConfigureAwait(false);
             var sourceIdentity = SnapshotSourceIdentity.TryDerive(
                 verifiedSnapshot.Snapshot.Manifest.SourceDirectory,
                 verifiedSnapshot.Snapshot.Manifest.Files);
@@ -166,10 +169,22 @@ internal static class BrokerHost
                 await JsonSerializer.SerializeAsync(workspaceStream, workspace, JsonOptions, cancellationToken).ConfigureAwait(false);
                 await workspaceStream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
-            var stateDirectory = Path.Combine(outputRoot, ".wechatvoice");
-            Directory.CreateDirectory(stateDirectory);
-            await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.WorkspaceCommitted, cancellationToken).ConfigureAwait(false);
-            await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.Completed, cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.TransitionAsync(
+                outputRoot,
+                [MaterializationCommitStates.DatabasesCommitted, MaterializationCommitStates.FailedRecoverable],
+                MaterializationCommitStates.WorkspaceCommitted,
+                operationId,
+                failureCode: null,
+                cancellationToken: cancellationToken,
+                heldLock: materializationLock!).ConfigureAwait(false);
+            await MaterializationStateStore.TransitionAsync(
+                outputRoot,
+                [MaterializationCommitStates.WorkspaceCommitted],
+                MaterializationCommitStates.Completed,
+                operationId,
+                failureCode: null,
+                cancellationToken: cancellationToken,
+                heldLock: materializationLock!).ConfigureAwait(false);
 
             BrokerProtocol.Write(output, new BrokerResponse(
                 "completed",
@@ -191,7 +206,7 @@ internal static class BrokerHost
         }
         catch (AppFailureException exception)
         {
-            await TryMarkRecoverableMaterializationAsync(outputRoot).ConfigureAwait(false);
+            await TryMarkRecoverableMaterializationAsync(outputRoot, operationId, materializationLock).ConfigureAwait(false);
             return Fail(request, exception.Code, exception.Message, snapshotVerified, snapshotStaged, reportStage, output);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
@@ -202,12 +217,12 @@ internal static class BrokerHost
             var code = !snapshotVerified || !snapshotStaged
                 ? ErrorCode.SnapshotInvalid
                 : ErrorCode.MaterializationInvalid;
-            await TryMarkRecoverableMaterializationAsync(outputRoot).ConfigureAwait(false);
+            await TryMarkRecoverableMaterializationAsync(outputRoot, operationId, materializationLock).ConfigureAwait(false);
             return Fail(request, code, null, snapshotVerified, snapshotStaged, reportStage, output);
         }
         catch (OperationCanceledException)
         {
-            await TryMarkRecoverableMaterializationAsync(outputRoot).ConfigureAwait(false);
+            await TryMarkRecoverableMaterializationAsync(outputRoot, operationId, materializationLock).ConfigureAwait(false);
             reportStage?.Invoke(new BrokerStageEvent("operation-cancelled"));
             BrokerProtocol.Write(output, Failed(request?.RequestId, "cancelled", "The one-shot Broker operation was cancelled."));
             return 130;
@@ -217,14 +232,24 @@ internal static class BrokerHost
             // A one-shot elevated process must still return a bounded,
             // non-sensitive terminal response for unexpected runtime errors.
             // Exception messages and stack traces never cross the pipe.
-            await TryMarkRecoverableMaterializationAsync(outputRoot).ConfigureAwait(false);
+            await TryMarkRecoverableMaterializationAsync(outputRoot, operationId, materializationLock).ConfigureAwait(false);
             reportStage?.Invoke(new BrokerStageEvent("operation-failed-runtime"));
             BrokerProtocol.Write(output, Failed(request?.RequestId, "broker_internal", "The Key Broker encountered an internal runtime failure."));
             return 1;
         }
+        finally
+        {
+            if (materializationLock is not null)
+            {
+                await materializationLock.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
-    private static async Task TryMarkRecoverableMaterializationAsync(string? outputRoot)
+    private static async Task TryMarkRecoverableMaterializationAsync(
+        string? outputRoot,
+        string operationId,
+        MaterializationStateLock? heldLock)
     {
         if (string.IsNullOrWhiteSpace(outputRoot))
         {
@@ -239,10 +264,23 @@ internal static class BrokerHost
                 return;
             }
 
-            await MaterializationStateStore.WriteAsync(
-                fullRoot,
-                MaterializationCommitStates.FailedRecoverable,
-                CancellationToken.None).ConfigureAwait(false);
+            if (heldLock is not null)
+            {
+                await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                    fullRoot,
+                    operationId,
+                    ErrorCode.MaterializationInvalid.ToString(),
+                    CancellationToken.None,
+                    heldLock).ConfigureAwait(false);
+            }
+            else
+            {
+                await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                    fullRoot,
+                    operationId,
+                    ErrorCode.MaterializationInvalid.ToString(),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
         }
         catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidDataException)
         {

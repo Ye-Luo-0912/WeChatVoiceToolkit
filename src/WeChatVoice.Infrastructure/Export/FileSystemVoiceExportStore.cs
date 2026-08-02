@@ -256,17 +256,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             await EnsureArtifactIndexLoadedAsync(cancellationToken).ConfigureAwait(false);
             var lastWriteTicks = info.LastWriteTimeUtc.Ticks;
             var fileId = ArtifactFileIdentity.Read(path);
-            if (_artifactIndex!.TryGetValue(relativePath, out var cached)
-                && string.Equals(cached.FileId, fileId, StringComparison.Ordinal)
-                && cached.Length == info.Length
-                && cached.LastWriteUtcTicks == lastWriteTicks)
-            {
-                return new ExportArtifact(relativePath, cached.Length, cached.Sha256);
-            }
-
+            // The index is deliberately only a reuse hint for bookkeeping.
+            // File ID, length, and timestamps are not cryptographic evidence:
+            // a file can be rewritten in place and have its timestamp restored.
+            // Always hash the current bytes before declaring an existing
+            // artifact VerifiedExisting.
             var sha256 = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
             var entry = new ArtifactIndexEntry(relativePath, fileId, info.Length, lastWriteTicks, sha256, DateTimeOffset.UtcNow);
-            _artifactIndex[relativePath] = entry;
+            _artifactIndex![relativePath] = entry;
             var indexPath = Path.Combine(_exportRoot, "artifact-index.jsonl");
             Directory.CreateDirectory(_exportRoot);
             await File.AppendAllTextAsync(indexPath, JsonSerializer.Serialize(entry, InfrastructureJson.Compact) + Environment.NewLine, Encoding.UTF8, cancellationToken).ConfigureAwait(false);

@@ -28,6 +28,7 @@ public static class ErrorCatalog
         ErrorCode.WorkflowFailed => new AppError(code, IsRetryable: true, "retry", "workflow-failed"),
         ErrorCode.InvalidRequest => new AppError(code, IsRetryable: false, "complete-request", "invalid-request"),
         ErrorCode.OperationBusy => new AppError(code, IsRetryable: true, "wait-for-active-operation", "operation-busy"),
+        ErrorCode.SelectionPlanMismatch => new AppError(code, IsRetryable: true, "re-scan-before-export", "selection-plan-mismatch"),
         _ => new AppError(code, IsRetryable: false, "retry", "unknown-error"),
     };
 }

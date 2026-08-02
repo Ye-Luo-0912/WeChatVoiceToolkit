@@ -28,14 +28,18 @@ public sealed class MaterializationRecoveryService
         PathOverlapGuard.EnsureDisjoint(fullRoot, fullWorkspacePath);
         WorkspacePathSafety.EnsureNoReparsePoints(fullRoot);
 
-        var state = await MaterializationStateStore.ReadAsync(fullRoot, cancellationToken).ConfigureAwait(false);
-        if (state.State is MaterializationCommitStates.Staging)
-        {
-            throw new InvalidDataException("A staging-only materialization cannot be adopted.");
-        }
-
+        MaterializationStateLock? stateLock = null;
+        MaterializationStateDocument? state = null;
+        var operationId = Guid.NewGuid().ToString("N");
         try
         {
+            stateLock = await MaterializationStateStore.AcquireLockAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+            state = await MaterializationStateStore.ReadAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+            if (state.State is MaterializationCommitStates.Staging)
+            {
+                throw new InvalidDataException("A staging-only materialization cannot be adopted.");
+            }
+
             var manifestPath = Path.Combine(fullRoot, ".wechatvoice", "materialization-manifest.json");
             var manifest = await ReadManifestAsync(manifestPath, cancellationToken).ConfigureAwait(false);
             ValidateManifest(manifest);
@@ -46,6 +50,10 @@ public sealed class MaterializationRecoveryService
             if (File.Exists(fullWorkspacePath))
             {
                 verified = await ReadAndVerifyWorkspaceAsync(fullWorkspacePath, fullRoot, manifest, effectiveAccountId, cancellationToken).ConfigureAwait(false);
+            }
+            else if (state.State is MaterializationCommitStates.Completed or MaterializationCommitStates.WorkspaceCommitted)
+            {
+                throw new InvalidDataException("The committed local workspace document is missing.");
             }
             else
             {
@@ -73,21 +81,73 @@ public sealed class MaterializationRecoveryService
                 verified = await ReadAndVerifyWorkspaceAsync(fullWorkspacePath, fullRoot, manifest, effectiveAccountId, cancellationToken).ConfigureAwait(false);
             }
 
-            await MaterializationStateStore.WriteAsync(fullRoot, MaterializationCommitStates.WorkspaceCommitted, cancellationToken).ConfigureAwait(false);
-            await MaterializationStateStore.WriteAsync(fullRoot, MaterializationCommitStates.Completed, cancellationToken).ConfigureAwait(false);
+            if (state.State is MaterializationCommitStates.DatabasesCommitted or MaterializationCommitStates.FailedRecoverable)
+            {
+                await MaterializationStateStore.TransitionAsync(
+                    fullRoot,
+                    [MaterializationCommitStates.DatabasesCommitted, MaterializationCommitStates.FailedRecoverable],
+                    MaterializationCommitStates.WorkspaceCommitted,
+                    operationId,
+                    failureCode: null,
+                    cancellationToken: cancellationToken,
+                    heldLock: stateLock!).ConfigureAwait(false);
+                await MaterializationStateStore.TransitionAsync(
+                    fullRoot,
+                    [MaterializationCommitStates.WorkspaceCommitted],
+                    MaterializationCommitStates.Completed,
+                    operationId,
+                    failureCode: null,
+                    cancellationToken: cancellationToken,
+                    heldLock: stateLock!).ConfigureAwait(false);
+            }
+            else if (state.State is MaterializationCommitStates.WorkspaceCommitted)
+            {
+                await MaterializationStateStore.TransitionAsync(
+                    fullRoot,
+                    [MaterializationCommitStates.WorkspaceCommitted],
+                    MaterializationCommitStates.Completed,
+                    operationId,
+                    failureCode: null,
+                    cancellationToken: cancellationToken,
+                    heldLock: stateLock!).ConfigureAwait(false);
+            }
+
             return verified;
         }
         catch (Exception)
         {
             try
             {
-                await MaterializationStateStore.WriteAsync(fullRoot, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+                if (stateLock is not null)
+                {
+                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                        fullRoot,
+                        operationId,
+                        "materialization-recovery-failed",
+                        CancellationToken.None,
+                        stateLock).ConfigureAwait(false);
+                }
+                else
+                {
+                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                        fullRoot,
+                        operationId: null,
+                        failureCode: "materialization-recovery-failed",
+                        cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                }
             }
             catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
             {
             }
 
             throw;
+        }
+        finally
+        {
+            if (stateLock is not null)
+            {
+                await stateLock.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -123,6 +183,7 @@ public sealed class MaterializationRecoveryService
         {
             var path = NormalizeRelative(file.OutputRelativePath);
             if (MaterializationStateStore.IsStatePath(path)
+                || MaterializationStateStore.IsLockPath(path)
                 || path.Equals(".wechatvoice/materialization-manifest.json", StringComparison.OrdinalIgnoreCase)
                 || !paths.Add(path))
             {
@@ -222,6 +283,7 @@ public sealed class MaterializationRecoveryService
     {
         var relative = NormalizeRelative(Path.GetRelativePath(root, path));
         return MaterializationStateStore.IsStatePath(relative)
+            || MaterializationStateStore.IsLockPath(relative)
             || relative.Equals(".wechatvoice/materialization-manifest.json", StringComparison.OrdinalIgnoreCase);
     }
 

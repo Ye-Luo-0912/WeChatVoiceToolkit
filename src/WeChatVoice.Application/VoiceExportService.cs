@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 
@@ -40,6 +41,15 @@ public sealed class VoiceExportService
             throw new ArgumentOutOfRangeException(nameof(options), "MaxDegreeOfParallelism must be greater than zero.");
         }
 
+        // A guided export must not start writing artifacts until the catalog
+        // has independently re-enumerated the immutable selection. The final
+        // streaming pass below verifies the same fingerprint again, closing
+        // the smaller window between this preflight and export.
+        if (options.ExpectedResultSetFingerprint is not null)
+        {
+            await EnsureExpectedResultSetAsync(query, options, cancellationToken).ConfigureAwait(false);
+        }
+
         var context = _voiceCatalog.Context;
         // Export performs one streaming read of each source BLOB and computes
         // its identity at commit time; a DeepScan pre-hash is deliberately not
@@ -55,12 +65,14 @@ public sealed class VoiceExportService
         var activeExports = new List<Task>(options.MaxDegreeOfParallelism);
         var cancellationObserved = false;
         var runFailed = false;
+        using var resultSetFingerprint = new VoiceResultSetFingerprintBuilder();
 
         try
         {
             await foreach (var record in _voiceCatalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                resultSetFingerprint.Append(record);
                 if (activeExports.Count >= options.MaxDegreeOfParallelism)
                 {
                     await DrainOneAsync(activeExports, cancellationToken).ConfigureAwait(false);
@@ -89,6 +101,33 @@ public sealed class VoiceExportService
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 cancellationObserved = true;
+            }
+        }
+
+        if (!cancellationObserved
+            && !runFailed
+            && options.ExpectedResultSetFingerprint is not null)
+        {
+            var actualFingerprint = resultSetFingerprint.Complete();
+            if (!string.Equals(actualFingerprint, options.ExpectedResultSetFingerprint, StringComparison.OrdinalIgnoreCase)
+                || (options.ExpectedResultCount is not null && resultSetFingerprint.Count != options.ExpectedResultCount.Value)
+                || (options.ExpectedTotalPayloadBytes is not null && resultSetFingerprint.TotalPayloadBytes != options.ExpectedTotalPayloadBytes.Value))
+            {
+                var failure = new VoiceExportFailure(
+                    null,
+                    "selection-plan",
+                    "The voice result set changed after the scan; export was not committed.",
+                    nameof(ErrorCode.SelectionPlanMismatch));
+                await AppendAsync(journal, new VoiceExportJournalEvent(
+                    "run-failed",
+                    runId,
+                    DateTimeOffset.UtcNow,
+                    Context: context,
+                    Failure: failure),
+                    CancellationToken.None).ConfigureAwait(false);
+                throw new AppFailureException(
+                    ErrorCode.SelectionPlanMismatch,
+                    "The voice result set changed after the scan; export was not committed.");
             }
         }
 
@@ -136,6 +175,28 @@ public sealed class VoiceExportService
         }
 
         return manifest;
+    }
+
+    private async Task EnsureExpectedResultSetAsync(
+        VoiceQuery query,
+        VoiceExportOptions options,
+        CancellationToken cancellationToken)
+    {
+        using var fingerprint = new VoiceResultSetFingerprintBuilder();
+        await foreach (var record in _voiceCatalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            fingerprint.Append(record);
+        }
+
+        var actual = fingerprint.Complete();
+        if (!string.Equals(actual, options.ExpectedResultSetFingerprint, StringComparison.OrdinalIgnoreCase)
+            || (options.ExpectedResultCount is not null && fingerprint.Count != options.ExpectedResultCount.Value)
+            || (options.ExpectedTotalPayloadBytes is not null && fingerprint.TotalPayloadBytes != options.ExpectedTotalPayloadBytes.Value))
+        {
+            throw new AppFailureException(
+                ErrorCode.SelectionPlanMismatch,
+                "The voice result set changed after the scan; export was not started.");
+        }
     }
 
     private async Task DrainOneAsync(List<Task> activeExports, CancellationToken cancellationToken)

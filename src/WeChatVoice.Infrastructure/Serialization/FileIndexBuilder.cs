@@ -1,4 +1,5 @@
 using WeChatVoice.Core.Models;
+using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Snapshots;
 
 namespace WeChatVoice.Infrastructure.Serialization;
@@ -29,6 +30,15 @@ public static class FileIndexBuilder
         {
             cancellationToken.ThrowIfCancellationRequested();
             var relative = Path.GetRelativePath(fullRoot, path).Replace('\\', '/');
+            // The materialization lock is intentionally held open with a
+            // byte-range lock during Recovery/Delete. It is control metadata,
+            // not a workspace artifact, and reading it here would conflict
+            // with the held range lock on Windows.
+            if (MaterializationStateStore.IsLockPath(relative))
+            {
+                continue;
+            }
+
             var metadata = await FileHashing.ComputeMetadataAsync(path, cancellationToken).ConfigureAwait(false);
             entries[relative] = new VerifiedFileEntry(
                 metadata.ByteLength,

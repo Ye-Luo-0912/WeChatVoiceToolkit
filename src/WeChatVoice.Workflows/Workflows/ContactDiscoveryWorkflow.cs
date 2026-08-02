@@ -35,7 +35,7 @@ public sealed class ContactDiscoveryWorkflow(
 
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.ContactDiscovery, OperationStageIds.Completing);
-            return new ContactDiscoveryResult(contacts, session.Workspace);
+            return new ContactDiscoveryResult(contacts, session.Workspace, Path.GetFullPath(request.WorkspacePath));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

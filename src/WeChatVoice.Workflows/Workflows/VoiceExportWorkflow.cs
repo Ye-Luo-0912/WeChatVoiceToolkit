@@ -32,10 +32,22 @@ public sealed class VoiceExportWorkflow(
             await using var session = await opener.OpenAsync(request.WorkspacePath, cancellationToken).ConfigureAwait(false);
             context.Report(OperationPhase.VoiceExport, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
-            var query = VoiceQueryBuilder.Build(request.ConversationId, contact, request.Direction, request.From, request.To);
+            var query = VoiceQueryBuilder.Build(
+                request.ConversationId,
+                contact,
+                request.Direction,
+                request.From,
+                request.To,
+                request.MaximumResults);
             var service = new VoiceExportService(session.Catalog, new FileSystemVoiceExportStore(request.OutputDirectory));
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Exporting);
-            var manifest = await service.ExportAsync(query, new VoiceExportOptions { DecodeToWav = false }, cancellationToken).ConfigureAwait(false);
+            var manifest = await service.ExportAsync(query, new VoiceExportOptions
+            {
+                DecodeToWav = false,
+                ExpectedResultSetFingerprint = request.ExpectedResultSetFingerprint,
+                ExpectedResultCount = request.ExpectedResultCount,
+                ExpectedTotalPayloadBytes = request.ExpectedTotalPayloadBytes,
+            }, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing);
             return new VoiceExportWorkflowResult(manifest, session.Workspace);

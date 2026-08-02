@@ -8,9 +8,15 @@ internal static class FileIdentity
     {
         var fullPath = Path.GetFullPath(path);
         using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return Read(stream);
+    }
+
+    internal static string Read(FileStream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
         if (!OperatingSystem.IsWindows())
         {
-            var info = new FileInfo(fullPath);
+            var info = new FileInfo(stream.Name);
             return $"fallback:{info.Length}:{info.LastWriteTimeUtc.Ticks}";
         }
 

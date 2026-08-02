@@ -65,4 +65,7 @@ public enum ErrorCode
 
     /// <summary>A different high-cost Desktop operation is currently active.</summary>
     OperationBusy,
+
+    /// <summary>The voice set changed between the immutable scan and export.</summary>
+    SelectionPlanMismatch,
 }

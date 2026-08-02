@@ -110,7 +110,8 @@ public static class MaterializationCommitStates
 public sealed record MaterializationStateDocument(
     string State,
     DateTimeOffset UpdatedAtUtc,
-    string? FailureCode = null);
+    string? FailureCode = null,
+    string? OperationId = null);
 
 /// <summary>
 /// Fixed output contract emitted by a materialization backend. The backend,

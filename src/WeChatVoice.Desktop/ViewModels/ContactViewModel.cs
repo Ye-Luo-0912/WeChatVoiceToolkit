@@ -69,7 +69,8 @@ public sealed partial class ContactViewModel : PageViewModelBase
             Contacts = result.Contacts;
             SelectedContact = null;
             Services.Project.Workspace = result.Workspace;
-            Services.Project.WorkspacePath = result.Workspace.Workspace.SourceRoot;
+            WorkspacePath = result.WorkspaceDocumentPath;
+            Services.Project.WorkspacePath = result.WorkspaceDocumentPath;
             AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
             ContactSummary = $"共 {result.Contacts.Count} 个一对一联系人（群聊已排除）";
         });

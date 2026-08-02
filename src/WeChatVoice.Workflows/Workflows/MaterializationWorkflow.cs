@@ -152,7 +152,11 @@ public sealed class MaterializationWorkflow : IMaterializationWorkflow
             {
                 try
                 {
-                    await MaterializationStateStore.WriteAsync(request.OutputDirectory, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                        request.OutputDirectory,
+                        operationId: null,
+                        failureCode: ErrorCode.MaterializationInvalid.ToString(),
+                        cancellationToken: CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
                 {

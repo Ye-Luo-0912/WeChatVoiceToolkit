@@ -19,7 +19,8 @@ public sealed record VoiceScanReport
         bool DeepScan = false,
         int? ExportableVoiceCount = null,
         long TotalPayloadBytes = 0,
-        int DurationKnownCount = 0)
+        int DurationKnownCount = 0,
+        string? ResultSetFingerprint = null)
     {
         this.MatchedVoiceCount = MatchedVoiceCount;
         this.TotalDurationMs = TotalDurationMs;
@@ -36,6 +37,7 @@ public sealed record VoiceScanReport
         this.ExportableVoiceCount = ExportableVoiceCount ?? (PayloadStateCounts?.TryGetValue(nameof(VoicePayloadState.Linked), out var linked) == true ? linked : 0);
         this.TotalPayloadBytes = TotalPayloadBytes;
         this.DurationKnownCount = DurationKnownCount;
+        this.ResultSetFingerprint = string.IsNullOrWhiteSpace(ResultSetFingerprint) ? string.Empty : ResultSetFingerprint;
     }
 
     public int MatchedVoiceCount { get; }
@@ -55,4 +57,6 @@ public sealed record VoiceScanReport
     public long TotalPayloadBytes { get; }
     public int DurationKnownCount { get; }
     public int DurationUnknownCount => Math.Max(0, MatchedVoiceCount - DurationKnownCount);
+
+    public string ResultSetFingerprint { get; }
 }

@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using WeChatVoice.Application;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Export;
@@ -128,6 +129,32 @@ public sealed class VoiceExportServiceTests
         // once while streaming into the temporary file.
         Assert.Equal(payload.Length, counting.BytesRead);
         Assert.Empty(manifest.Failures);
+    }
+
+    [Fact]
+    public async Task ExportAsync_rejects_a_changed_selection_before_writing_artifacts()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var plannedRecord = CreateRecord("voice-planned");
+        using var fingerprint = new VoiceResultSetFingerprintBuilder();
+        fingerprint.Append(plannedRecord);
+        var expectedFingerprint = fingerprint.Complete();
+        var exportRoot = temporary.GetPath("export");
+        var service = new VoiceExportService(
+            new TestVoiceCatalog([(CreateRecord("voice-current"), () => new MemoryStream([1, 2, 3], writable: false))]),
+            new FileSystemVoiceExportStore(exportRoot));
+
+        var exception = await Assert.ThrowsAsync<AppFailureException>(() => service.ExportAsync(
+            new VoiceQuery(),
+            new VoiceExportOptions
+            {
+                ExpectedResultSetFingerprint = expectedFingerprint,
+                ExpectedResultCount = 1,
+                ExpectedTotalPayloadBytes = 3,
+            }));
+
+        Assert.Equal(ErrorCode.SelectionPlanMismatch, exception.Code);
+        Assert.False(Directory.Exists(exportRoot));
     }
 
     [Fact]

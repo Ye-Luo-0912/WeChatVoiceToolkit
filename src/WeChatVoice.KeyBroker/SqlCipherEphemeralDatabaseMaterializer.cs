@@ -88,7 +88,14 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             BrokerDirectorySecurity.RestrictToSystemAndAdministrators(staging);
         }
 
-        await MaterializationStateStore.WriteAsync(staging, MaterializationCommitStates.Staging, cancellationToken).ConfigureAwait(false);
+        var operationId = Guid.NewGuid().ToString("N");
+        await MaterializationStateStore.TransitionAsync(
+            staging,
+            Array.Empty<string>(),
+            MaterializationCommitStates.Staging,
+            operationId,
+            failureCode: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         checkpoint?.Invoke("materialization-staging-created");
         Exception? primaryFailure = null;
         try
@@ -228,7 +235,13 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await MaterializationStateStore.WriteAsync(staging, MaterializationCommitStates.DatabasesCommitted, cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.TransitionAsync(
+                staging,
+                [MaterializationCommitStates.Staging],
+                MaterializationCommitStates.DatabasesCommitted,
+                operationId,
+                failureCode: null,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, options.OutputDirectory);
             if (BrokerDirectorySecurity.IsElevated())
             {
@@ -243,7 +256,6 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 }
             }
             var movedManifestPath = Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json");
-            await MaterializationStateStore.WriteAsync(options.OutputDirectory, MaterializationCommitStates.DatabasesCommitted, cancellationToken).ConfigureAwait(false);
             return new VerifiedMaterialization(new MaterializationResult(
                 workspaceId,
                 snapshot.Snapshot.SnapshotId,
@@ -267,7 +279,11 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             {
                 try
                 {
-                    await MaterializationStateStore.WriteAsync(options.OutputDirectory, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                        options.OutputDirectory,
+                        operationId,
+                        ErrorCode.MaterializationInvalid.ToString(),
+                        CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
                 {
@@ -511,7 +527,9 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         foreach (var path in EnumerateRegularFilesStrict(root))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (MaterializationStateStore.IsStatePath(Path.GetRelativePath(root, path)))
+            var relativePath = Path.GetRelativePath(root, path);
+            if (MaterializationStateStore.IsStatePath(relativePath)
+                || MaterializationStateStore.IsLockPath(relativePath))
             {
                 continue;
             }

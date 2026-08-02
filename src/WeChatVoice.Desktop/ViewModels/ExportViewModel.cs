@@ -93,6 +93,11 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 throw new AppFailureException(ErrorCode.InvalidRequest, "The scan result no longer matches the immutable export plan.");
             }
 
+            if (string.IsNullOrWhiteSpace(plan.ResultSetFingerprint))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "The scan did not produce a verifiable result-set fingerprint; run the scan again.");
+            }
+
             if (string.IsNullOrWhiteSpace(workspacePath) || string.IsNullOrWhiteSpace(outputDirectory))
             {
                 throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace and output directories are required.");
@@ -106,7 +111,11 @@ public sealed partial class ExportViewModel : PageViewModelBase
                     ConversationId: null,
                     Direction: plan.Direction,
                     From: plan.FromUtc,
-                    To: plan.ToUtc),
+                    To: plan.ToUtc,
+                    MaximumResults: plan.MaximumResults,
+                    ExpectedResultSetFingerprint: plan.ResultSetFingerprint,
+                    ExpectedResultCount: plan.ResultCount,
+                    ExpectedTotalPayloadBytes: plan.TotalPayloadBytes),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },

@@ -104,7 +104,14 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         Directory.CreateDirectory(parent);
         var staging = Path.Combine(parent, $".{Path.GetFileName(options.OutputDirectory)}.{Guid.NewGuid():N}.tmp");
         Directory.CreateDirectory(staging);
-        await MaterializationStateStore.WriteAsync(staging, MaterializationCommitStates.Staging, cancellationToken).ConfigureAwait(false);
+        var operationId = Guid.NewGuid().ToString("N");
+        await MaterializationStateStore.TransitionAsync(
+            staging,
+            Array.Empty<string>(),
+            MaterializationCommitStates.Staging,
+            operationId,
+            failureCode: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         Exception? primaryFailure = null;
         try
         {
@@ -150,7 +157,13 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
                 await manifestStream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await MaterializationStateStore.WriteAsync(staging, MaterializationCommitStates.DatabasesCommitted, cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.TransitionAsync(
+                staging,
+                [MaterializationCommitStates.Staging],
+                MaterializationCommitStates.DatabasesCommitted,
+                operationId,
+                failureCode: null,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, options.OutputDirectory);
             var movedManifestPath = Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json");
             return new VerifiedMaterialization(new MaterializationResult(
@@ -171,7 +184,11 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
             {
                 try
                 {
-                    await MaterializationStateStore.WriteAsync(options.OutputDirectory, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                        options.OutputDirectory,
+                        operationId,
+                        ErrorCode.MaterializationInvalid.ToString(),
+                        CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
                 {
@@ -241,7 +258,8 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         CancellationToken cancellationToken)
     {
         var outputFiles = EnumerateRegularFilesStrict(outputRoot)
-            .Where(path => !MaterializationStateStore.IsStatePath(Path.GetRelativePath(outputRoot, path)))
+            .Where(path => !MaterializationStateStore.IsStatePath(Path.GetRelativePath(outputRoot, path))
+                && !MaterializationStateStore.IsLockPath(Path.GetRelativePath(outputRoot, path)))
             .ToArray();
         var files = new List<MaterializationFile>();
         foreach (var path in outputFiles.Order(StringComparer.OrdinalIgnoreCase))

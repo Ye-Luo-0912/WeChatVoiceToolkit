@@ -89,8 +89,17 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
             .ThenBy(static artifact => artifact.DatabasePath, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var accountIdentity = await ValidateAccountIdentityAsync(contact, messages, dataSet.AccountId, cancellationToken).ConfigureAwait(false);
-        return new WeixinWindows4VoiceCatalog(workspace, contact, messages, media, accountIdentity);
+        var fileLease = await VerifiedWorkspaceFileLease.OpenAsync(workspace, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var accountIdentity = await ValidateAccountIdentityAsync(contact, messages, dataSet.AccountId, cancellationToken).ConfigureAwait(false);
+            return new WeixinWindows4VoiceCatalog(workspace, contact, messages, media, accountIdentity, fileLease);
+        }
+        catch
+        {
+            await fileLease.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>
@@ -218,7 +227,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
     private readonly DatabaseArtifact _contact;
     private readonly IReadOnlyList<DatabaseArtifact> _messages;
     private readonly DatabaseArtifact _media;
-    private readonly IReadOnlyDictionary<string, string> _fileLease;
+    private readonly VerifiedWorkspaceFileLease _fileLease;
     private bool _disposed;
 
     internal WeixinWindows4VoiceCatalog(
@@ -226,13 +235,14 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         DatabaseArtifact contact,
         IReadOnlyList<DatabaseArtifact> messages,
         DatabaseArtifact media,
-        AccountIdentity accountIdentity)
+        AccountIdentity accountIdentity,
+        VerifiedWorkspaceFileLease fileLease)
     {
         _workspace = workspace;
         _contact = contact;
         _messages = messages;
         _media = media;
-        _fileLease = workspace.DataSet.Databases.ToDictionary(item => item.LocalPath ?? item.DatabasePath, item => FileIdentity.Read(item.LocalPath ?? item.DatabasePath), StringComparer.OrdinalIgnoreCase);
+        _fileLease = fileLease;
         var dataSet = workspace.DataSet;
         Context = new VoiceCatalogContext(
             dataSet.DataSetId,
@@ -253,7 +263,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        VerifyFileLease();
+        await _fileLease.VerifyAsync(cancellationToken).ConfigureAwait(false);
         ArgumentNullException.ThrowIfNull(query);
         await using var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(_contact, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
@@ -306,7 +316,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        VerifyFileLease();
+        await _fileLease.VerifyAsync(cancellationToken).ConfigureAwait(false);
         ArgumentNullException.ThrowIfNull(query);
         var username = RequireStableContact(query);
         if (query.Direction == VoiceDirection.Unknown)
@@ -388,6 +398,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             throw new InvalidDataException("The payload locator is not valid for this verified media database.");
         }
 
+        await _fileLease.VerifyAsync(cancellationToken, logicalRole: "media").ConfigureAwait(false);
         var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(_media, cancellationToken).ConfigureAwait(false);
         var command = connection.CreateCommand();
         command.CommandText = "SELECT voice_data FROM VoiceInfo WHERE rowid = $rowid;";
@@ -416,10 +427,15 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
-        return ValueTask.CompletedTask;
+        await _fileLease.DisposeAsync().ConfigureAwait(false);
     }
 
     private async IAsyncEnumerable<MessageRow> ReadMessageRowsAsync(
@@ -673,15 +689,6 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         }
 
         return query.ContactUsername;
-    }
-
-    private void VerifyFileLease()
-    {
-        foreach (var (path, expected) in _fileLease)
-        {
-            if (!string.Equals(FileIdentity.Read(path), expected, StringComparison.Ordinal))
-                throw new InvalidDataException("A verified workspace database changed before query execution.");
-        }
     }
 
     private static string EscapeLike(string value)

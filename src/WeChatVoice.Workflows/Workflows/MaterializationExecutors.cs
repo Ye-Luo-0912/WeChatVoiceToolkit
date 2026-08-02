@@ -89,8 +89,11 @@ public sealed class ExternalMaterializationExecutor(
             snapshot,
             new MaterializationOptions(Path.GetFullPath(outputRoot)),
             cancellationToken).ConfigureAwait(false);
+        MaterializationStateLock? stateLock = null;
+        var operationId = Guid.NewGuid().ToString("N");
         try
         {
+            stateLock = await MaterializationStateStore.AcquireLockAsync(outputRoot, cancellationToken).ConfigureAwait(false);
             var localWorkspace = await workspaceCreator.CreateAsync(
                 materialization,
                 confirmedAccountId,
@@ -107,21 +110,58 @@ public sealed class ExternalMaterializationExecutor(
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.WorkspaceCommitted, cancellationToken).ConfigureAwait(false);
-            await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.Completed, cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.TransitionAsync(
+                outputRoot,
+                [MaterializationCommitStates.DatabasesCommitted, MaterializationCommitStates.FailedRecoverable],
+                MaterializationCommitStates.WorkspaceCommitted,
+                operationId,
+                failureCode: null,
+                cancellationToken: cancellationToken,
+                heldLock: stateLock!).ConfigureAwait(false);
+            await MaterializationStateStore.TransitionAsync(
+                outputRoot,
+                [MaterializationCommitStates.WorkspaceCommitted],
+                MaterializationCommitStates.Completed,
+                operationId,
+                failureCode: null,
+                cancellationToken: cancellationToken,
+                heldLock: stateLock!).ConfigureAwait(false);
             return new ExecutedMaterialization(fullWorkspacePath, null, materialization.Result.WorkspaceId);
         }
         catch (Exception)
         {
             try
             {
-                await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+                if (stateLock is not null)
+                {
+                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                        outputRoot,
+                        operationId,
+                        ErrorCode.MaterializationInvalid.ToString(),
+                        CancellationToken.None,
+                        stateLock).ConfigureAwait(false);
+                }
+                else
+                {
+                    await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+                        outputRoot,
+                        operationId,
+                        ErrorCode.MaterializationInvalid.ToString(),
+                        CancellationToken.None).ConfigureAwait(false);
+                }
             }
             catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
             {
             }
 
             throw;
+        }
+        finally
+        {
+            if (stateLock is not null)
+            {
+                await stateLock.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 }

@@ -33,6 +33,8 @@ public sealed class FakeBackend
 
     public int OpenPayloadCount { get; private set; }
 
+    public VoiceQuery? LastVoiceQuery { get; private set; }
+
     /// <summary>Replaces the canned voice set (used to make failures retryable).</summary>
     public void Fill(params VoiceRecord[] records)
     {
@@ -67,6 +69,7 @@ public sealed class FakeBackend
 
     public IAsyncEnumerable<VoiceRecord> QueryVoicesAsync(VoiceQuery query, CancellationToken cancellationToken)
     {
+        LastVoiceQuery = query;
         OnQueryCancellation?.Invoke(cancellationToken);
         if (_voicesFactory is not null)
         {
@@ -76,6 +79,11 @@ public sealed class FakeBackend
         var matching = _voices.Where(record =>
             string.Equals(record.ConversationId, query.ConversationId, StringComparison.Ordinal)
             && (query.Direction is null || record.Direction == query.Direction)).ToList();
+        if (query.MaximumResults is not null)
+        {
+            matching = matching.Take(query.MaximumResults.Value).ToList();
+        }
+
         return ToAsync(matching, cancellationToken);
     }
 

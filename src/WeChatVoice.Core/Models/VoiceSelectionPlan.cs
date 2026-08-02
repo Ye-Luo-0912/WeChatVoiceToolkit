@@ -16,6 +16,14 @@ public sealed record VoiceSelectionPlan(
     string PlanFingerprint,
     VoiceScanReport ScanReport)
 {
+    public string QueryFingerprint => PlanFingerprint;
+
+    public string ResultSetFingerprint => ScanReport.ResultSetFingerprint;
+
+    public int ResultCount => ScanReport.MatchedVoiceCount;
+
+    public long TotalPayloadBytes => ScanReport.TotalPayloadBytes;
+
     public static string ComputeFingerprint(string workspaceId, string dataSetId, string accountId,
         string contactId, string contactUsername, VoiceDirection direction,
         DateTimeOffset? fromUtc, DateTimeOffset? toUtc, int? maximumResults)

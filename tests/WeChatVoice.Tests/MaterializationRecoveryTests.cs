@@ -9,6 +9,65 @@ namespace WeChatVoice.Tests;
 public sealed class MaterializationRecoveryTests
 {
     [Fact]
+    public async Task Materialization_state_is_monotonic_and_completed_is_terminal()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var outputRoot = temporary.CreateDirectory("state-machine");
+        var operationId = "state-test";
+
+        await MaterializationStateStore.TransitionAsync(
+            outputRoot,
+            Array.Empty<string>(),
+            MaterializationCommitStates.Staging,
+            operationId,
+            null,
+            CancellationToken.None);
+        await MaterializationStateStore.TransitionAsync(
+            outputRoot,
+            [MaterializationCommitStates.Staging],
+            MaterializationCommitStates.DatabasesCommitted,
+            operationId,
+            null,
+            CancellationToken.None);
+        await MaterializationStateStore.TransitionAsync(
+            outputRoot,
+            [MaterializationCommitStates.DatabasesCommitted],
+            MaterializationCommitStates.WorkspaceCommitted,
+            operationId,
+            null,
+            CancellationToken.None);
+        await MaterializationStateStore.TransitionAsync(
+            outputRoot,
+            [MaterializationCommitStates.WorkspaceCommitted],
+            MaterializationCommitStates.Completed,
+            operationId,
+            null,
+            CancellationToken.None);
+
+        Assert.False(await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
+            outputRoot,
+            operationId,
+            "late-response-failure",
+            CancellationToken.None));
+
+        var state = await MaterializationStateStore.ReadAsync(outputRoot, CancellationToken.None);
+        Assert.Equal(MaterializationCommitStates.Completed, state.State);
+        Assert.Equal(operationId, state.OperationId);
+    }
+
+    [Fact]
+    public async Task Materialization_lock_can_coexist_with_root_cleanup()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var outputRoot = temporary.CreateDirectory("locked-delete");
+        await using var stateLock = await MaterializationStateStore.AcquireLockAsync(outputRoot, CancellationToken.None);
+
+        Directory.Delete(outputRoot, recursive: true);
+
+        Assert.False(Directory.Exists(outputRoot));
+    }
+
+    [Fact]
     public async Task RecoverAsync_adopts_databases_committed_without_redecrypting()
     {
         using var temporary = new TestTemporaryDirectory();

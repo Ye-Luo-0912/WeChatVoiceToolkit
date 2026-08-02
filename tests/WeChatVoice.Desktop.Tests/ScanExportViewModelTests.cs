@@ -85,11 +85,17 @@ public sealed class ScanExportViewModelTests : IDisposable
         viewModel.WorkspacePath = "C:\\workspace.json";
         viewModel.OutputDirectory = "C:\\exports";
         Services.Project.SelectedContact = new ContactRecord("contact-1", "wxid_peer", "Peer", null);
-        var scan = new ScanViewModel(Services, DirectInvokeAsync) { WorkspacePath = "C:\\workspace.json" };
+        var scan = new ScanViewModel(Services, DirectInvokeAsync)
+        {
+            WorkspacePath = "C:\\workspace.json",
+            MaximumResultsText = "1",
+        };
         await scan.ScanCommand.ExecuteAsync(null);
 
         await viewModel.ExportCommand.ExecuteAsync(null);
 
+        Assert.Equal(1, _scan.LastRequest?.MaximumResults);
+        Assert.Equal(1, _export.LastRequest?.MaximumResults);
         Assert.Equal(1, viewModel.ExportedCount);
         Assert.Equal(0, viewModel.SkippedCount);
         Assert.Equal(1, viewModel.FailureCount);
@@ -106,7 +112,11 @@ public sealed class ScanExportViewModelTests : IDisposable
         Assert.Null(contacts.SelectedContact);
 
         contacts.SelectedContact = contacts.Contacts[1];
-        var scan = new ScanViewModel(Services, DirectInvokeAsync) { WorkspacePath = "C:\\workspace.json" };
+        var scan = new ScanViewModel(Services, DirectInvokeAsync)
+        {
+            WorkspacePath = "C:\\workspace.json",
+            MaximumResultsText = "1",
+        };
         await scan.ScanCommand.ExecuteAsync(null);
         Assert.Equal("contact-b", Services.Project.SelectionPlan?.ContactId);
 
@@ -116,6 +126,9 @@ public sealed class ScanExportViewModelTests : IDisposable
 
         contacts.SelectedContact = contacts.Contacts[1];
         await scan.ScanCommand.ExecuteAsync(null);
+        Assert.Equal(Path.GetFullPath("C:\\workspace.json"), Services.Project.WorkspacePath);
+        Assert.Equal(Path.GetFullPath("C:\\workspace.json"), _contacts.LastRequest?.WorkspacePath);
+        Assert.Equal(Path.GetFullPath("C:\\workspace.json"), _scan.LastRequest?.WorkspacePath);
         var export = new ExportViewModel(Services, DirectInvokeAsync)
         {
             WorkspacePath = "C:\\workspace.json",
@@ -125,6 +138,9 @@ public sealed class ScanExportViewModelTests : IDisposable
 
         Assert.Equal(WorkflowState.Completed, export.RunHost.State);
         Assert.Equal(1, export.ExportedCount);
+        Assert.Equal(Path.GetFullPath("C:\\workspace.json"), _export.LastRequest?.WorkspacePath);
+        Assert.Equal(_scan.LastRequest?.MaximumResults, _export.LastRequest?.MaximumResults);
+        Assert.Equal(_scan.Result.Report.ResultSetFingerprint, _export.LastRequest?.ExpectedResultSetFingerprint);
         Assert.Contains("Remark B", export.ContactSelectionSummary, StringComparison.Ordinal);
         Assert.Contains("wxid_b", export.ContactSelectionSummary, StringComparison.Ordinal);
         Assert.Contains("incoming", export.SelectionPlanSummary, StringComparison.OrdinalIgnoreCase);

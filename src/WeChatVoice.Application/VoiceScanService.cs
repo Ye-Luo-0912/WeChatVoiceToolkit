@@ -34,9 +34,11 @@ public sealed class VoiceScanService
         var exportable = 0;
         long totalPayloadBytes = 0;
         var durationKnown = 0;
+        using var resultSetFingerprint = new VoiceResultSetFingerprintBuilder();
 
         await foreach (var record in _catalog.QueryVoicesAsync(query, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
         {
+            resultSetFingerprint.Append(record);
             count++;
             if (record.DurationMs is > 0)
             {
@@ -106,6 +108,7 @@ public sealed class VoiceScanService
             query.DeepScan,
             exportable,
             totalPayloadBytes,
-            durationKnown);
+            durationKnown,
+            resultSetFingerprint.Complete());
     }
 }

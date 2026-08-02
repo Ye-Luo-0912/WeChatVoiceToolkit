@@ -187,6 +187,10 @@ static Command CreateVoiceCommand()
     {
         Description = "Inclusive UTC end date/time.",
     };
+    var maximumResultsOption = new Option<int?>("--maximum-results")
+    {
+        Description = "Optional global result limit.",
+    };
     var formatOption = new Option<string>("--format")
     {
         Description = "Export format. The first available chain supports silk only.",
@@ -199,6 +203,7 @@ static Command CreateVoiceCommand()
     exportCommand.Options.Add(directionOption);
     exportCommand.Options.Add(fromOption);
     exportCommand.Options.Add(toOption);
+    exportCommand.Options.Add(maximumResultsOption);
     exportCommand.Options.Add(formatOption);
     exportCommand.SetAction(async (parseResult, cancellationToken) =>
     {
@@ -209,6 +214,7 @@ static Command CreateVoiceCommand()
         var directionText = parseResult.GetValue(directionOption);
         var fromText = parseResult.GetValue(fromOption);
         var toText = parseResult.GetValue(toOption);
+        var maximumResults = parseResult.GetValue(maximumResultsOption);
         var format = parseResult.GetValue(formatOption);
 
         if (workspacePath is null || output is null)
@@ -234,7 +240,8 @@ static Command CreateVoiceCommand()
                     ConversationId: conversationId,
                     Direction: ParseDirection(directionText),
                     From: VoiceQueryBuilder.ParseUtc(fromText, "--from"),
-                    To: VoiceQueryBuilder.ParseUtc(toText, "--to")),
+                    To: VoiceQueryBuilder.ParseUtc(toText, "--to"),
+                    MaximumResults: maximumResults),
                 context,
                 cancellationToken).ConfigureAwait(false);
             WriteJson(result.Manifest);

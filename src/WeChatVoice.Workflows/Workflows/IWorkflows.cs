@@ -135,7 +135,8 @@ public sealed record ContactDiscoveryRequest(
 
 public sealed record ContactDiscoveryResult(
     IReadOnlyList<ContactRecord> Contacts,
-    VerifiedLocalWorkspace Workspace);
+    VerifiedLocalWorkspace Workspace,
+    string WorkspaceDocumentPath);
 
 public sealed record VoiceScanWorkflowRequest(
     string WorkspacePath,
@@ -159,7 +160,11 @@ public sealed record VoiceExportWorkflowRequest(
     string? ConversationId = null,
     VoiceDirection? Direction = null,
     DateTimeOffset? From = null,
-    DateTimeOffset? To = null);
+    DateTimeOffset? To = null,
+    int? MaximumResults = null,
+    string? ExpectedResultSetFingerprint = null,
+    int? ExpectedResultCount = null,
+    long? ExpectedTotalPayloadBytes = null);
 
 public sealed record VoiceExportWorkflowResult(
     VoiceExportManifest Manifest,

@@ -67,13 +67,19 @@ public sealed class FakeMaterializationWorkflow : IMaterializationWorkflow
 
 public sealed class FakeContactWorkflow : IContactDiscoveryWorkflow
 {
+    public ContactDiscoveryRequest? LastRequest { get; private set; }
+
     public Task<ContactDiscoveryResult> RunAsync(ContactDiscoveryRequest request, WorkflowContext context, CancellationToken cancellationToken)
-        => Task.FromResult(new ContactDiscoveryResult(
+    {
+        LastRequest = request;
+        return Task.FromResult(new ContactDiscoveryResult(
             [
                 new ContactRecord("contact-a", "wxid_a", "A", "Remark A", Nickname: "Nick A"),
                 new ContactRecord("contact-b", "wxid_b", "B", "Remark B", Nickname: "Nick B"),
             ],
-            TestDoubles.Verified()));
+            TestDoubles.Verified(),
+            Path.GetFullPath(request.WorkspacePath)));
+    }
 }
 
 public sealed class FakeScanWorkflow : IVoiceScanWorkflow
@@ -91,17 +97,25 @@ public sealed class FakeScanWorkflow : IVoiceScanWorkflow
             InvalidHeaderCount: 1,
             AmbiguousPayloadCount: 1,
             ExportableVoiceCount: 1,
-            TotalPayloadBytes: 10),
+            TotalPayloadBytes: 10,
+            ResultSetFingerprint: "fake-result-set"),
         TestDoubles.Verified());
+
+    public VoiceScanWorkflowRequest? LastRequest { get; private set; }
 
     public Func<CancellationToken, Task<VoiceScanWorkflowResult>>? RunOverride { get; set; }
 
     public Task<VoiceScanWorkflowResult> RunAsync(VoiceScanWorkflowRequest request, WorkflowContext context, CancellationToken cancellationToken)
-        => RunOverride is not null ? RunOverride(cancellationToken) : Task.FromResult(Result);
+    {
+        LastRequest = request;
+        return RunOverride is not null ? RunOverride(cancellationToken) : Task.FromResult(Result);
+    }
 }
 
 public sealed class FakeExportWorkflow : IVoiceExportWorkflow
 {
+    public VoiceExportWorkflowRequest? LastRequest { get; private set; }
+
     public VoiceExportManifest Manifest { get; set; } = new(
         DateTimeOffset.UtcNow,
         Entries: [new VoiceExportEntry("m1", "wxid_peer", DateTimeOffset.UtcNow, VoiceDirection.Incoming, "original/x.silk", 10, "aa", null, SourceStableKey: "k", WasSkipped: false)],
@@ -110,7 +124,10 @@ public sealed class FakeExportWorkflow : IVoiceExportWorkflow
         RunStatus: ExportRunStatus.CompletedWithFailures);
 
     public Task<VoiceExportWorkflowResult> RunAsync(VoiceExportWorkflowRequest request, WorkflowContext context, CancellationToken cancellationToken)
-        => Task.FromResult(new VoiceExportWorkflowResult(Manifest, TestDoubles.Verified()));
+    {
+        LastRequest = request;
+        return Task.FromResult(new VoiceExportWorkflowResult(Manifest, TestDoubles.Verified()));
+    }
 
     public Task<VoiceExportManifest> RecoverRunAsync(string journalPath, CancellationToken cancellationToken)
         => Task.FromResult(Manifest);

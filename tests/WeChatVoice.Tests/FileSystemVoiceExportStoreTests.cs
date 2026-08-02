@@ -285,6 +285,42 @@ public sealed class FileSystemVoiceExportStoreTests
     }
 
     [Fact]
+    public async Task Existing_artifact_index_never_trusts_same_metadata_after_in_place_rewrite()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var store = new FileSystemVoiceExportStore(temporary.GetPath("export"));
+        var firstRecord = CreateRecord("index-rewrite");
+        string originalPath;
+        DateTime originalWriteTime;
+        await using (var first = await store.BeginItemAsync(firstRecord, ExistingArtifactPolicy.Replace, CancellationToken.None))
+        {
+            originalPath = Path.Combine(store.ExportRoot, first.OriginalManifestPath.Replace('/', Path.DirectorySeparatorChar));
+            await using (var output = await first.OpenOriginalWriteAsync(CancellationToken.None))
+            {
+                await output.WriteAsync(new byte[] { 1, 2, 3 });
+            }
+
+            await first.CommitOriginalAsync(CancellationToken.None);
+            originalWriteTime = File.GetLastWriteTimeUtc(originalPath);
+        }
+
+        // Populate the index with the original bytes before the in-place rewrite.
+        await using (var indexed = await store.BeginItemAsync(firstRecord, ExistingArtifactPolicy.SkipIfHashMatches, CancellationToken.None))
+        {
+            Assert.Equal(ExportArtifactState.PendingExisting, indexed.OriginalState);
+        }
+
+        await File.WriteAllBytesAsync(originalPath, [4, 5, 6]);
+        File.SetLastWriteTimeUtc(originalPath, originalWriteTime);
+        var rewrittenHash = Hash([4, 5, 6]);
+        var rewrittenRecord = CreateRecord("index-rewrite", rewrittenHash, 3);
+
+        await using var verified = await store.BeginItemAsync(rewrittenRecord, ExistingArtifactPolicy.SkipIfHashMatches, CancellationToken.None);
+        Assert.Equal(ExportArtifactState.VerifiedExisting, verified.OriginalState);
+        Assert.Equal(rewrittenHash, verified.ExistingOriginalArtifact?.Sha256);
+    }
+
+    [Fact]
     public async Task Commit_with_a_matching_computed_artifact_skips_and_cleans_the_temporary_file()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -349,12 +385,14 @@ public sealed class FileSystemVoiceExportStoreTests
     private static string Hash(byte[] bytes)
         => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
 
-    private static VoiceRecord CreateRecord(string messageId) => new(
+    private static VoiceRecord CreateRecord(string messageId, string? payloadSha256 = null, long? payloadByteLength = null) => new(
         messageId,
         "contact@example",
         DateTimeOffset.UtcNow,
         VoiceDirection.Incoming,
         new VoicePayloadLocator("media", 0, messageId),
+        PayloadSha256: payloadSha256,
+        PayloadByteLength: payloadByteLength,
         AdapterId: "adapter",
         AccountId: "account",
         ShardId: "0");
