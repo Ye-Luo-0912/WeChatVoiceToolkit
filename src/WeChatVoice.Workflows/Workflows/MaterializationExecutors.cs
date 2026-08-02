@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Sqlite;
 
 namespace WeChatVoice.Workflows.Workflows;
@@ -88,19 +89,39 @@ public sealed class ExternalMaterializationExecutor(
             snapshot,
             new MaterializationOptions(Path.GetFullPath(outputRoot)),
             cancellationToken).ConfigureAwait(false);
-        var localWorkspace = await workspaceCreator.CreateAsync(
-            materialization,
-            confirmedAccountId,
-            SnapshotSourceIdentity.TryDerive(snapshot.Snapshot.Manifest.SourceDirectory, snapshot.Snapshot.Manifest.Files),
-            cancellationToken).ConfigureAwait(false);
-        var fullWorkspacePath = Path.GetFullPath(localWorkspacePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(fullWorkspacePath)!);
-        await using var stream = new FileStream(fullWorkspacePath, FileMode.Create, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await JsonSerializer.SerializeAsync(stream, localWorkspace, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        try
         {
-            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
-        }, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-        return new ExecutedMaterialization(fullWorkspacePath, null, materialization.Result.WorkspaceId);
+            var localWorkspace = await workspaceCreator.CreateAsync(
+                materialization,
+                confirmedAccountId,
+                SnapshotSourceIdentity.TryDerive(snapshot.Snapshot.Manifest.SourceDirectory, snapshot.Snapshot.Manifest.Files),
+                cancellationToken).ConfigureAwait(false);
+            var fullWorkspacePath = Path.GetFullPath(localWorkspacePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullWorkspacePath)!);
+            await using (var stream = new FileStream(fullWorkspacePath, FileMode.Create, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await JsonSerializer.SerializeAsync(stream, localWorkspace, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+                {
+                    Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+                }, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.WorkspaceCommitted, cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.Completed, cancellationToken).ConfigureAwait(false);
+            return new ExecutedMaterialization(fullWorkspacePath, null, materialization.Result.WorkspaceId);
+        }
+        catch (Exception)
+        {
+            try
+            {
+                await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+            }
+
+            throw;
+        }
     }
 }

@@ -48,6 +48,11 @@ public interface IWorkspaceWorkflow
         WorkflowContext context,
         CancellationToken cancellationToken);
 
+    Task<VerifiedLocalWorkspace> RecoverMaterializationAsync(
+        MaterializationRecoveryRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
     Task<WorkspaceDeletionResult> DeleteMaterializedAsync(
         string workspacePath,
         WorkflowContext context,
@@ -118,6 +123,10 @@ public sealed record WorkspaceCreateRequest(string RootDirectory, string OutputP
 
 public sealed record WorkspaceCreateResult(LocalWorkspace Workspace, string OutputPath);
 public sealed record WorkspaceDeletionResult(string WorkspaceId, string RootDirectory, int DatabaseCount, long TotalBytes);
+public sealed record MaterializationRecoveryRequest(
+    string OutputDirectory,
+    string? WorkspaceOutputPath = null,
+    string? AccountId = null);
 
 public sealed record ContactDiscoveryRequest(
     string WorkspacePath,

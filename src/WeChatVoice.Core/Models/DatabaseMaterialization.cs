@@ -92,7 +92,25 @@ public sealed record MaterializationManifest(
     string? ProcessVersion = null,
     string? ProcessImageSha256 = null,
     string? WcdbModuleSha256 = null,
-    string? AccountSidFingerprint = null);
+    string? AccountSidFingerprint = null,
+    string? AccountId = null);
+
+public static class MaterializationCommitStates
+{
+    public const string Staging = "Staging";
+    public const string DatabasesCommitted = "DatabasesCommitted";
+    public const string WorkspaceCommitted = "WorkspaceCommitted";
+    public const string Completed = "Completed";
+    public const string FailedRecoverable = "FailedRecoverable";
+
+    public static bool IsKnown(string? state)
+        => state is Staging or DatabasesCommitted or WorkspaceCommitted or Completed or FailedRecoverable;
+}
+
+public sealed record MaterializationStateDocument(
+    string State,
+    DateTimeOffset UpdatedAtUtc,
+    string? FailureCode = null);
 
 /// <summary>
 /// Fixed output contract emitted by a materialization backend. The backend,

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -103,6 +104,7 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         Directory.CreateDirectory(parent);
         var staging = Path.Combine(parent, $".{Path.GetFileName(options.OutputDirectory)}.{Guid.NewGuid():N}.tmp");
         Directory.CreateDirectory(staging);
+        await MaterializationStateStore.WriteAsync(staging, MaterializationCommitStates.Staging, cancellationToken).ConfigureAwait(false);
         Exception? primaryFailure = null;
         try
         {
@@ -140,13 +142,15 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
                 _backendVersion,
                 backendSha256,
                 validation.Databases,
-                validation.Files);
+                validation.Files,
+                AccountId: SnapshotSourceIdentity.TryDerive(rawSnapshot.Manifest.SourceDirectory, rawSnapshot.Manifest.Files)?.AccountCandidate);
             await using (var manifestStream = new FileStream(manifestPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
                 await JsonSerializer.SerializeAsync(manifestStream, manifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
                 await manifestStream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            await MaterializationStateStore.WriteAsync(staging, MaterializationCommitStates.DatabasesCommitted, cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, options.OutputDirectory);
             var movedManifestPath = Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json");
             return new VerifiedMaterialization(new MaterializationResult(
@@ -163,6 +167,16 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         catch (Exception exception)
         {
             primaryFailure = exception;
+            if (Directory.Exists(options.OutputDirectory))
+            {
+                try
+                {
+                    await MaterializationStateStore.WriteAsync(options.OutputDirectory, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
+                {
+                }
+            }
             throw;
         }
         finally
@@ -226,7 +240,9 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         IReadOnlyList<DatabaseArtifact> sourceDatabases,
         CancellationToken cancellationToken)
     {
-        var outputFiles = EnumerateRegularFilesStrict(outputRoot).ToArray();
+        var outputFiles = EnumerateRegularFilesStrict(outputRoot)
+            .Where(path => !MaterializationStateStore.IsStatePath(Path.GetRelativePath(outputRoot, path)))
+            .ToArray();
         var files = new List<MaterializationFile>();
         foreach (var path in outputFiles.Order(StringComparer.OrdinalIgnoreCase))
         {
@@ -498,7 +514,7 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception or UnauthorizedAccessException)
         {
         }
     }

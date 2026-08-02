@@ -1,9 +1,11 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Serialization;
 using WeChatVoice.Infrastructure.Snapshots;
 using WeChatVoice.Infrastructure.Sqlite;
@@ -86,6 +88,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             BrokerDirectorySecurity.RestrictToSystemAndAdministrators(staging);
         }
 
+        await MaterializationStateStore.WriteAsync(staging, MaterializationCommitStates.Staging, cancellationToken).ConfigureAwait(false);
         checkpoint?.Invoke("materialization-staging-created");
         Exception? primaryFailure = null;
         try
@@ -217,14 +220,15 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 acquisition.ProcessVersion,
                 acquisition.ProcessImageSha256,
                 acquisition.WcdbModuleSha256,
-                acquisition.AccountSidFingerprint);
+                acquisition.AccountSidFingerprint,
+                AccountId: SnapshotSourceIdentity.TryDerive(snapshot.Snapshot.Manifest.SourceDirectory, snapshot.Snapshot.Manifest.Files)?.AccountCandidate);
             await using (var stream = new FileStream(manifestPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
                 await JsonSerializer.SerializeAsync(stream, manifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await File.WriteAllTextAsync(Path.Combine(staging, ".wechatvoice", "materialization-state.json"), "{\"state\":\"DatabasesCommitted\"}", cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.WriteAsync(staging, MaterializationCommitStates.DatabasesCommitted, cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, options.OutputDirectory);
             if (BrokerDirectorySecurity.IsElevated())
             {
@@ -239,7 +243,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 }
             }
             var movedManifestPath = Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json");
-            await File.WriteAllTextAsync(Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-state.json"), "{\"state\":\"Completed\"}", cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.WriteAsync(options.OutputDirectory, MaterializationCommitStates.DatabasesCommitted, cancellationToken).ConfigureAwait(false);
             return new VerifiedMaterialization(new MaterializationResult(
                 workspaceId,
                 snapshot.Snapshot.SnapshotId,
@@ -259,6 +263,16 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         catch (Exception exception)
         {
             primaryFailure = exception;
+            if (Directory.Exists(options.OutputDirectory))
+            {
+                try
+                {
+                    await MaterializationStateStore.WriteAsync(options.OutputDirectory, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
+                {
+                }
+            }
             throw;
         }
         finally
@@ -497,6 +511,11 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         foreach (var path in EnumerateRegularFilesStrict(root))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (MaterializationStateStore.IsStatePath(Path.GetRelativePath(root, path)))
+            {
+                continue;
+            }
+
             var relative = NormalizeRelative(Path.GetRelativePath(root, path));
             var info = new FileInfo(path);
             files.Add(new MaterializationFile(relative, await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false), info.Length));
@@ -568,7 +587,7 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception or UnauthorizedAccessException)
         {
         }
     }

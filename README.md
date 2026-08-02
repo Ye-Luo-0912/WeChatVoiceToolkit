@@ -37,6 +37,8 @@ dotnet run --project src/WeChatVoice.Cli -- voice export --workspace .\.wechatvo
 dotnet run --project src/WeChatVoice.Cli -- voice export recover --journal .\exports\peer\runs\<run-id>.jsonl
 dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --backend weixin-windows-4 --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
+dotnet run --project src/WeChatVoice.Cli -- workspace adopt --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
+dotnet run --project src/WeChatVoice.Cli -- materialization recover --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
 ```
 
@@ -72,7 +74,11 @@ files are deliberately not accepted. The host verifies the raw snapshot file
 set and hashes, requires every source database to be mapped, then validates
 SQLite headers and `PRAGMA quick_check` on every output database. It writes a
 materialization manifest and creates the local workspace JSON as one closed
-workflow.
+workflow. If the database commit succeeds but the workspace JSON write is
+interrupted, `workspace adopt` / `materialization recover` revalidate the
+state marker, manifest, output hashes, and workspace before completing the
+commit; they never decrypt the databases again. Recoverable output is marked
+`FailedRecoverable` when validation or adoption fails.
 
 Export output is idempotent by `SourceStableKey` (adapter family, account,
 conversation, message primary key, and media primary key); physical paths use

@@ -168,8 +168,8 @@ internal static class BrokerHost
             }
             var stateDirectory = Path.Combine(outputRoot, ".wechatvoice");
             Directory.CreateDirectory(stateDirectory);
-            await File.WriteAllTextAsync(Path.Combine(stateDirectory, "materialization-state.json"), "{\"state\":\"WorkspaceCommitted\"}", cancellationToken).ConfigureAwait(false);
-            await File.WriteAllTextAsync(Path.Combine(stateDirectory, "materialization-state.json"), "{\"state\":\"Completed\"}", cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.WorkspaceCommitted, cancellationToken).ConfigureAwait(false);
+            await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.Completed, cancellationToken).ConfigureAwait(false);
 
             BrokerProtocol.Write(output, new BrokerResponse(
                 "completed",
@@ -191,6 +191,7 @@ internal static class BrokerHost
         }
         catch (AppFailureException exception)
         {
+            await TryMarkRecoverableMaterializationAsync(outputRoot).ConfigureAwait(false);
             return Fail(request, exception.Code, exception.Message, snapshotVerified, snapshotStaged, reportStage, output);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
@@ -201,10 +202,12 @@ internal static class BrokerHost
             var code = !snapshotVerified || !snapshotStaged
                 ? ErrorCode.SnapshotInvalid
                 : ErrorCode.MaterializationInvalid;
+            await TryMarkRecoverableMaterializationAsync(outputRoot).ConfigureAwait(false);
             return Fail(request, code, null, snapshotVerified, snapshotStaged, reportStage, output);
         }
         catch (OperationCanceledException)
         {
+            await TryMarkRecoverableMaterializationAsync(outputRoot).ConfigureAwait(false);
             reportStage?.Invoke(new BrokerStageEvent("operation-cancelled"));
             BrokerProtocol.Write(output, Failed(request?.RequestId, "cancelled", "The one-shot Broker operation was cancelled."));
             return 130;
@@ -214,9 +217,37 @@ internal static class BrokerHost
             // A one-shot elevated process must still return a bounded,
             // non-sensitive terminal response for unexpected runtime errors.
             // Exception messages and stack traces never cross the pipe.
+            await TryMarkRecoverableMaterializationAsync(outputRoot).ConfigureAwait(false);
             reportStage?.Invoke(new BrokerStageEvent("operation-failed-runtime"));
             BrokerProtocol.Write(output, Failed(request?.RequestId, "broker_internal", "The Key Broker encountered an internal runtime failure."));
             return 1;
+        }
+    }
+
+    private static async Task TryMarkRecoverableMaterializationAsync(string? outputRoot)
+    {
+        if (string.IsNullOrWhiteSpace(outputRoot))
+        {
+            return;
+        }
+
+        try
+        {
+            var fullRoot = Path.GetFullPath(outputRoot);
+            if (!Directory.Exists(fullRoot) || !File.Exists(MaterializationStateStore.GetPath(fullRoot)))
+            {
+                return;
+            }
+
+            await MaterializationStateStore.WriteAsync(
+                fullRoot,
+                MaterializationCommitStates.FailedRecoverable,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            // Recovery is best effort. The original typed Broker failure must
+            // remain the terminal result when the marker itself is unwritable.
         }
     }
 

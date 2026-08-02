@@ -28,7 +28,7 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
             throw new WorkspaceVerificationException($"The workspace source root does not exist: '{sourceRoot}'.");
         }
 
-        EnsureNoReparsePoints(sourceRoot);
+        WorkspacePathSafety.EnsureNoReparsePoints(sourceRoot);
         foreach (var artifact in workspace.DataSet.Databases)
         {
             if (string.IsNullOrWhiteSpace(artifact.LocalPath) || Path.IsPathRooted(artifact.DatabasePath))
@@ -179,34 +179,6 @@ public sealed class LocalWorkspaceVerifier : ILocalWorkspaceVerifier
             if (!verifiedFiles.Contains(database.OutputRelativePath.Replace('\\', '/')))
             {
                 throw new WorkspaceVerificationException($"The materialization manifest does not cover database output '{database.OutputRelativePath}'.");
-            }
-        }
-    }
-
-    private static void EnsureNoReparsePoints(string root)
-    {
-        if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
-        {
-            throw new WorkspaceVerificationException($"Reparse points are not allowed in a local workspace: '{root}'.");
-        }
-
-        var pending = new Stack<string>();
-        pending.Push(root);
-        while (pending.Count > 0)
-        {
-            var directory = pending.Pop();
-            foreach (var entry in Directory.EnumerateFileSystemEntries(directory).Order(StringComparer.OrdinalIgnoreCase))
-            {
-                var attributes = File.GetAttributes(entry);
-                if ((attributes & FileAttributes.ReparsePoint) != 0)
-                {
-                    throw new WorkspaceVerificationException($"Reparse points are not allowed in a local workspace: '{entry}'.");
-                }
-
-                if ((attributes & FileAttributes.Directory) != 0)
-                {
-                    pending.Push(entry);
-                }
             }
         }
     }

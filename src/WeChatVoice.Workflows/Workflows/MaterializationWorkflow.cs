@@ -148,6 +148,17 @@ public sealed class MaterializationWorkflow : IMaterializationWorkflow
         }
         catch
         {
+            if (Directory.Exists(request.OutputDirectory))
+            {
+                try
+                {
+                    await MaterializationStateStore.WriteAsync(request.OutputDirectory, MaterializationCommitStates.FailedRecoverable, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception stateException) when (stateException is IOException or UnauthorizedAccessException or InvalidDataException)
+                {
+                }
+            }
+
             context.StateMachine.TryFail();
             throw;
         }
