@@ -13,12 +13,12 @@ namespace WeChatVoice.Desktop.ViewModels;
 public sealed partial class ContactViewModel : PageViewModelBase
 {
     public ContactViewModel(DesktopServices services)
-        : this(services, marshal: null)
+        : this(services, invokeOnUi: null)
     {
     }
 
-    internal ContactViewModel(DesktopServices services, Action<Action>? marshal)
-        : base(services, marshal)
+    internal ContactViewModel(DesktopServices services, Func<Action, Task>? invokeOnUi)
+        : base(services, invokeOnUi)
     {
     }
 

@@ -18,13 +18,13 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     private DialogAccountConfirmation? _activeConfirmation;
 
     public MaterializationViewModel(DesktopServices services)
-        : this(services, marshal: null)
+        : this(services, invokeOnUi: null)
     {
     }
 
-    /// <summary>Test seam: a direct marshaler runs without a UI dispatcher.</summary>
-    internal MaterializationViewModel(DesktopServices services, Action<Action>? marshal)
-        : base(services, marshal)
+    /// <summary>Test seam: an awaitable UI dispatcher runs without Avalonia.</summary>
+    internal MaterializationViewModel(DesktopServices services, Func<Action, Task>? invokeOnUi)
+        : base(services, invokeOnUi)
     {
         RunHost.PropertyChanged += (_, eventArgs) =>
         {
@@ -75,6 +75,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     private Task MaterializeAsync()
     {
         UacRejected = false;
+        var snapshot = Services.Project.Snapshot;
         var snapshotDirectory = string.IsNullOrWhiteSpace(SnapshotDirectory) ? Services.Project.SnapshotDirectory : SnapshotDirectory;
         var outputDirectory = OutputDirectory;
         var requestedAccount = string.IsNullOrWhiteSpace(RequestedAccount) ? null : RequestedAccount;
@@ -83,7 +84,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
             CreateConfirmationSession,
         async (context, cancellationToken) =>
         {
-            if (Services.Project.Snapshot?.Manifest.PotentiallyInconsistent == true)
+            if (snapshot?.Manifest.PotentiallyInconsistent == true)
             {
                 throw new AppFailureException(ErrorCode.SnapshotInvalid, "此快照来自活动源，不可用于解密或导出。");
             }

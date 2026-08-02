@@ -6,13 +6,19 @@ using WeChatVoice.Workflows.Workflows;
 namespace WeChatVoice.Desktop.Tests;
 
 /// <summary>
-/// WorkflowRunHost drives the shared Workflow State Machine; a direct marshaler
+/// WorkflowRunHost drives the shared Workflow State Machine; a direct UI invoker
 /// replaces the UI thread so these are deterministic unit tests. Failures are
 /// surfaced through State and LastError, not by rethrowing to the caller.
 /// </summary>
 public sealed class WorkflowRunHostTests
 {
-    private static WorkflowRunHost CreateHost() => new(marshal: action => action());
+    private static WorkflowRunHost CreateHost() => new(invokeOnUi: DirectInvokeAsync);
+
+    private static Task DirectInvokeAsync(Action action)
+    {
+        action();
+        return Task.CompletedTask;
+    }
 
     [Fact]
     public async Task Completed_run_reaches_completed_and_reports_stage()
@@ -87,8 +93,8 @@ public sealed class WorkflowRunHostTests
     public async Task Application_coordinator_rejects_a_second_page_operation()
     {
         var coordinator = new OperationCoordinator();
-        var first = new WorkflowRunHost(marshal: action => action(), coordinator: coordinator);
-        var second = new WorkflowRunHost(marshal: action => action(), coordinator: coordinator);
+        var first = new WorkflowRunHost(invokeOnUi: DirectInvokeAsync, coordinator: coordinator);
+        var second = new WorkflowRunHost(invokeOnUi: DirectInvokeAsync, coordinator: coordinator);
         using var started = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
 
@@ -157,5 +163,34 @@ public sealed class WorkflowRunHostTests
 
         Assert.Equal(WorkflowState.Failed, host.State);
         Assert.Contains("AccountConfirmationRequired", host.LastError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Account_confirmation_waits_for_async_ui_dispatch()
+    {
+        var dispatchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDispatch = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requested = new TaskCompletionSource<AccountIdentityReport>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var confirmation = new DialogAccountConfirmation(async action =>
+        {
+            dispatchStarted.TrySetResult();
+            await releaseDispatch.Task;
+            action();
+        });
+        confirmation.ConfirmationRequested += (_, report) => requested.TrySetResult(report);
+
+        var run = confirmation.ConfirmAsync(
+            new AccountIdentityReport("wxid_owner", AccountIdentityState.Candidate, null),
+            CancellationToken.None);
+
+        await dispatchStarted.Task;
+        Assert.False(requested.Task.IsCompleted);
+
+        releaseDispatch.SetResult();
+        Assert.Equal("wxid_owner", (await requested.Task).AccountCandidate);
+        confirmation.Complete(true, "wxid_owner");
+        var result = await run;
+
+        Assert.True(result.Confirmed);
     }
 }

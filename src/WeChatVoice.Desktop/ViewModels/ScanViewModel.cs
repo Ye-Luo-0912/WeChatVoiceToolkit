@@ -14,21 +14,24 @@ namespace WeChatVoice.Desktop.ViewModels;
 public sealed partial class ScanViewModel : PageViewModelBase
 {
     public ScanViewModel(DesktopServices services)
-        : this(services, marshal: null)
+        : this(services, invokeOnUi: null)
     {
     }
 
-    /// <summary>Test seam: a direct marshaler runs without a UI dispatcher.</summary>
-    internal ScanViewModel(DesktopServices services, Action<Action>? marshal)
-        : base(services, marshal)
+    /// <summary>Test seam: an awaitable UI dispatcher runs without Avalonia.</summary>
+    internal ScanViewModel(DesktopServices services, Func<Action, Task>? invokeOnUi)
+        : base(services, invokeOnUi)
     {
     }
 
     public override string Title => "语音扫描";
 
-    public override bool CanNavigate => Services.Project.Workspace is not null;
+    public override bool CanNavigate
+        => Services.Project.Workspace is not null && Services.Project.SelectedContact is not null;
 
-    public override string? NavigationHint => CanNavigate ? null : "请先完成物料化或加载 Workspace";
+    public override string? NavigationHint => CanNavigate ? null : Services.Project.Workspace is null
+        ? "请先完成物料化或加载 Workspace"
+        : "请先在联系人页显式选择联系人";
 
     public bool DurationAnalysisAvailable => Services.Workflows.DurationAnalysisAvailable;
 
@@ -99,9 +102,13 @@ public sealed partial class ScanViewModel : PageViewModelBase
         var selected = Services.Project.SelectedContact;
         var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
         var contactUsername = selected?.Username;
-        var direction = ParseDirection();
-        var from = VoiceQueryBuilder.ParseUtc(FromText, "from");
-        var to = VoiceQueryBuilder.ParseUtc(ToText, "to");
+        var directionText = DirectionText;
+        var fromText = FromText;
+        var toText = ToText;
+        var maximumResultsText = MaximumResultsText;
+        var direction = ParseDirection(directionText);
+        var from = VoiceQueryBuilder.ParseUtc(fromText, "from");
+        var to = VoiceQueryBuilder.ParseUtc(toText, "to");
         var maximumResults = ParseMaximumResults();
         var deepScan = DeepScan;
         var resolveDurations = ResolveDurations;
@@ -132,10 +139,15 @@ public sealed partial class ScanViewModel : PageViewModelBase
         },
         result =>
         {
+            if (!IsCurrentRequest(selected, workspacePath, directionText, fromText, toText, maximumResultsText, deepScan, resolveDurations))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "扫描期间联系人或查询参数发生变化；请重新扫描当前选择。");
+            }
+
             Services.Project.Scan = result;
             Services.Project.Workspace = result.Workspace;
             var report = result.Report;
-            var contact = Services.Project.SelectedContact!;
+            var contact = selected!;
             var dataSetId = result.Workspace.DataSet.DataSetId ?? "";
             var accountId = result.Workspace.DataSet.AccountId ?? "";
             var fingerprint = VoiceSelectionPlan.ComputeFingerprint(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
@@ -159,9 +171,9 @@ public sealed partial class ScanViewModel : PageViewModelBase
         });
     }
 
-    private VoiceDirection ParseDirection()
+    private VoiceDirection ParseDirection(string? directionText)
     {
-        return Enum.TryParse<VoiceDirection>(DirectionText, true, out var direction)
+        return Enum.TryParse<VoiceDirection>(directionText, true, out var direction)
             ? direction
             : throw new AppFailureException(ErrorCode.InvalidRequest, "Direction must be incoming or outgoing.");
     }
@@ -172,5 +184,33 @@ public sealed partial class ScanViewModel : PageViewModelBase
     partial void OnDeepScanChanged(bool value) => Services.Project.SelectionPlan = null;
     partial void OnMaximumResultsTextChanged(string? value) => Services.Project.SelectionPlan = null;
     partial void OnResolveDurationsChanged(bool value) => Services.Project.SelectionPlan = null;
-    private int? ParseMaximumResults() => string.IsNullOrWhiteSpace(MaximumResultsText) ? null : int.TryParse(MaximumResultsText, out var value) && value > 0 ? value : throw new AppFailureException(ErrorCode.InvalidRequest, "Maximum results must be a positive integer.");
+    private int? ParseMaximumResults() => ParseMaximumResults(MaximumResultsText);
+
+    private static int? ParseMaximumResults(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? null
+            : int.TryParse(value, out var parsed) && parsed > 0
+                ? parsed
+                : throw new AppFailureException(ErrorCode.InvalidRequest, "Maximum results must be a positive integer.");
+
+    private bool IsCurrentRequest(
+        ContactRecord? selected,
+        string? workspacePath,
+        string? directionText,
+        string? fromText,
+        string? toText,
+        string? maximumResultsText,
+        bool deepScan,
+        bool resolveDurations)
+        => ReferenceEquals(Services.Project.SelectedContact, selected)
+            && string.Equals(
+                string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath,
+                workspacePath,
+                StringComparison.Ordinal)
+            && string.Equals(DirectionText, directionText, StringComparison.Ordinal)
+            && string.Equals(FromText, fromText, StringComparison.Ordinal)
+            && string.Equals(ToText, toText, StringComparison.Ordinal)
+            && string.Equals(MaximumResultsText, maximumResultsText, StringComparison.Ordinal)
+            && DeepScan == deepScan
+            && ResolveDurations == resolveDurations;
 }

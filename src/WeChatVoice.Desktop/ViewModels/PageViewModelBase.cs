@@ -13,18 +13,17 @@ public abstract partial class PageViewModelBase : ObservableObject
 {
     private readonly Func<Action, Task> _marshal;
 
-    protected PageViewModelBase(DesktopServices services, Action<Action>? marshal = null)
+    protected PageViewModelBase(DesktopServices services, Func<Action, Task>? invokeOnUi = null)
     {
         Services = services;
-        _marshal = marshal is null
-            ? action => Dispatcher.UIThread.InvokeAsync(action).GetTask()
-            : action => { marshal(action); return Task.CompletedTask; };
+        _marshal = invokeOnUi ?? (action => Dispatcher.UIThread.InvokeAsync(action).GetTask());
         RunHost = new WorkflowRunHost(invokeOnUi: _marshal, log: services.Log, coordinator: services.OperationCoordinator);
-        services.Project.PropertyChanged += (_, _) =>
-            _ = ApplyOnUiThreadAsync(() =>
+        services.Project.PropertyChanged += (_, eventArgs) =>
+        _ = ApplyOnUiThreadAsync(() =>
             {
                 OnPropertyChanged(nameof(CanNavigate));
                 OnPropertyChanged(nameof(NavigationHint));
+                OnProjectPropertyChanged(eventArgs.PropertyName);
             });
     }
 
@@ -36,7 +35,12 @@ public abstract partial class PageViewModelBase : ObservableObject
     protected Task ApplyOnUiThreadAsync(Action action) => _marshal(action);
 
     protected DialogAccountConfirmation CreateAccountConfirmation()
-        => new(action => _ = _marshal(action));
+        => new(_marshal);
+
+    /// <summary>Allows pages to refresh derived session summaries on the UI thread.</summary>
+    protected virtual void OnProjectPropertyChanged(string? propertyName)
+    {
+    }
 
     /// <summary>Owns the current run's state machine, progress, and cancellation.</summary>
     public WorkflowRunHost RunHost { get; }

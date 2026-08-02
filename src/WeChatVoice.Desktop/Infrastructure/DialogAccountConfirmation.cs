@@ -33,11 +33,15 @@ public sealed class PendingAccountConfirmation
 public sealed class DialogAccountConfirmation : IAccountConfirmation
 {
     private readonly object _gate = new();
-    private readonly Action<Action> _marshal;
+    private readonly Func<Action, Task> _marshal;
     private PendingAccountConfirmation? _pending;
 
-    public DialogAccountConfirmation(Action<Action>? marshal = null)
-        => _marshal = marshal ?? (action => action());
+    public DialogAccountConfirmation(Func<Action, Task>? invokeOnUi = null)
+        => _marshal = invokeOnUi ?? (action =>
+        {
+            action();
+            return Task.CompletedTask;
+        });
 
     public event EventHandler<AccountIdentityReport>? ConfirmationRequested;
 
@@ -85,7 +89,7 @@ public sealed class DialogAccountConfirmation : IAccountConfirmation
 
             if (shouldRaise)
             {
-                _marshal(() =>
+                await _marshal(() =>
                 {
                     lock (_gate)
                     {
@@ -96,7 +100,7 @@ public sealed class DialogAccountConfirmation : IAccountConfirmation
                     }
 
                     ConfirmationRequested?.Invoke(this, report);
-                });
+                }).ConfigureAwait(false);
             }
 
             return await pending.Completion.Task.ConfigureAwait(false);

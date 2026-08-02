@@ -23,22 +23,9 @@ public sealed partial class WorkflowRunHost : ObservableObject
     private Func<Task>? _retry;
     private long _runVersion;
 
-    public WorkflowRunHost(Action<Action>? marshal = null, DesktopLog? log = null, OperationCoordinator? coordinator = null)
+    public WorkflowRunHost(Func<Action, Task>? invokeOnUi = null, DesktopLog? log = null, OperationCoordinator? coordinator = null)
     {
-        _invokeOnUi = marshal is null
-            ? InvokeOnAvaloniaUiAsync
-            : action =>
-            {
-                marshal(action);
-                return Task.CompletedTask;
-            };
-        Log = log;
-        _coordinator = coordinator;
-    }
-
-    public WorkflowRunHost(Func<Action, Task> invokeOnUi, DesktopLog? log = null, OperationCoordinator? coordinator = null)
-    {
-        _invokeOnUi = invokeOnUi ?? throw new ArgumentNullException(nameof(invokeOnUi));
+        _invokeOnUi = invokeOnUi ?? InvokeOnAvaloniaUiAsync;
         Log = log;
         _coordinator = coordinator;
     }

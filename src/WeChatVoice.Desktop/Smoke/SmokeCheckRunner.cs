@@ -71,7 +71,11 @@ public static class SmokeCheckRunner
 
             // 5. WorkflowRunHost runs a fake workflow through the real state
             //    machine with a direct marshaler (no UI thread in smoke).
-            var host = new WorkflowRunHost(marshal: action => action(), log: services.Log);
+            var host = new WorkflowRunHost(invokeOnUi: static action =>
+            {
+                action();
+                return Task.CompletedTask;
+            }, log: services.Log);
             var confirmation = new DialogAccountConfirmation();
             host.RunAsync(confirmation, (context, cancellationToken) =>
             {

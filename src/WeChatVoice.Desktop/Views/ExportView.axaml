@@ -16,13 +16,12 @@
       <TextBlock Text="只导出原始 SILK，不生成 WAV。每个源 BLOB 只读取一次：复制、哈希、与已有文件比对后原子提交；重复运行会跳过已验证文件。" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBox Width="340" PlaceholderText="Workspace JSON 路径" Text="{Binding WorkspacePath}" />
-        <TextBlock Width="300" Text="已使用联系人选择页中的稳定联系人" />
         <TextBox Width="260" PlaceholderText="导出根目录" Text="{Binding OutputDirectory}" />
       </StackPanel>
+      <TextBlock Text="{Binding ContactSelectionSummary}" TextWrapping="Wrap" />
+      <TextBlock Text="{Binding SelectionPlanSummary}" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBlock Width="180" Text="仅对方发来的语音（incoming）" />
-        <TextBox Width="180" PlaceholderText="起始 UTC 时间" Text="{Binding FromText}" />
-        <TextBox Width="180" PlaceholderText="结束 UTC 时间" Text="{Binding ToText}" />
         <Button Content="导出" Command="{Binding ExportCommand}" />
         <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
         <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />

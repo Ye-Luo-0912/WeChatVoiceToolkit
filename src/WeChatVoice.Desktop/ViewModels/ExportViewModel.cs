@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.ViewModels;
@@ -14,21 +15,29 @@ namespace WeChatVoice.Desktop.ViewModels;
 public sealed partial class ExportViewModel : PageViewModelBase
 {
     public ExportViewModel(DesktopServices services)
-        : this(services, marshal: null)
+        : this(services, invokeOnUi: null)
     {
     }
 
-    /// <summary>Test seam: a direct marshaler runs without a UI dispatcher.</summary>
-    internal ExportViewModel(DesktopServices services, Action<Action>? marshal)
-        : base(services, marshal)
+    /// <summary>Test seam: an awaitable UI dispatcher runs without Avalonia.</summary>
+    internal ExportViewModel(DesktopServices services, Func<Action, Task>? invokeOnUi)
+        : base(services, invokeOnUi)
     {
     }
 
     public override string Title => "语音导出";
 
-    public override bool CanNavigate => Services.Project.Workspace is not null;
+    public override bool CanNavigate
+        => Services.Project.Workspace is not null
+            && Services.Project.SelectedContact is not null
+            && Services.Project.Scan is not null
+            && Services.Project.SelectionPlan is { ScanReport.ExportableVoiceCount: > 0 };
 
-    public override string? NavigationHint => CanNavigate ? null : "请先完成物料化或加载 Workspace";
+    public override string? NavigationHint => CanNavigate ? null : Services.Project.Workspace is null
+        ? "请先完成物料化或加载 Workspace"
+        : Services.Project.SelectedContact is null
+            ? "请先在联系人页显式选择联系人"
+            : "请先完成包含可导出语音的扫描";
 
     [ObservableProperty]
     private string? _workspacePath;
@@ -38,15 +47,6 @@ public sealed partial class ExportViewModel : PageViewModelBase
 
     [ObservableProperty]
     private string? _outputDirectory;
-
-    [ObservableProperty]
-    private string? _directionText = VoiceDirection.Incoming.ToString();
-
-    [ObservableProperty]
-    private string? _fromText;
-
-    [ObservableProperty]
-    private string? _toText;
 
     [ObservableProperty]
     private string? _exportSummary;
@@ -72,18 +72,25 @@ public sealed partial class ExportViewModel : PageViewModelBase
         var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
         var outputDirectory = OutputDirectory;
         var plan = Services.Project.SelectionPlan;
+        var scan = Services.Project.Scan;
         var contact = Services.Project.SelectedContact;
+        var workspace = Services.Project.Workspace;
         return RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
-            if (plan is null || Services.Project.Scan is null || plan.ScanReport.ExportableVoiceCount == 0 || contact is null || string.IsNullOrWhiteSpace(contact.Username))
+            if (plan is null || scan is null || plan.ScanReport.ExportableVoiceCount == 0 || contact is null || string.IsNullOrWhiteSpace(contact.Username))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Complete contact selection and an exportable scan before exporting.");
             }
 
-            if (Services.Project.Workspace is null || !string.Equals(plan.WorkspaceId, Services.Project.Workspace.Workspace.WorkspaceId, StringComparison.Ordinal))
+            if (workspace is null || !string.Equals(plan.WorkspaceId, workspace.Workspace.WorkspaceId, StringComparison.Ordinal))
             {
                 throw new AppFailureException(ErrorCode.InvalidRequest, "The scan plan is no longer valid for this workspace.");
+            }
+
+            if (!ReferenceEquals(scan.Report, plan.ScanReport))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "The scan result no longer matches the immutable export plan.");
             }
 
             if (string.IsNullOrWhiteSpace(workspacePath) || string.IsNullOrWhiteSpace(outputDirectory))
@@ -105,6 +112,11 @@ public sealed partial class ExportViewModel : PageViewModelBase
         },
         result =>
         {
+            if (plan is null || contact is null || !IsCurrentExportSelection(plan, contact))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "Contact or scan selection changed while exporting; review the plan and run again.");
+            }
+
             Services.Project.LastExportRun = result;
             Services.Project.Workspace = result.Workspace;
             Services.Project.ExportDirectory = outputDirectory;
@@ -150,10 +162,51 @@ public sealed partial class ExportViewModel : PageViewModelBase
     [ObservableProperty]
     private string? _lastError;
 
-    private VoiceDirection ParseDirection()
+    public string ContactSelectionSummary
     {
-        return Enum.TryParse<VoiceDirection>(DirectionText, true, out var direction)
-            ? direction
-            : throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Direction must be incoming or outgoing.");
+        get
+        {
+            var contact = Services.Project.SelectedContact;
+            return contact is null
+                ? "尚未显式选择联系人。"
+                : $"最终联系人：备注「{contact.Remark ?? "（无）"}」；昵称「{contact.Nickname ?? "（无）"}」；内部 username：{contact.Username}";
+        }
     }
+
+    public string SelectionPlanSummary
+    {
+        get
+        {
+            var plan = Services.Project.SelectionPlan;
+            return plan is null
+                ? "尚未完成不可变扫描计划。"
+                : $"导出计划：仅对方发来的语音（incoming）；可导出 {plan.ScanReport.ExportableVoiceCount} 条；"
+                    + $"时间 {FormatUtc(plan.FromUtc)} 至 {FormatUtc(plan.ToUtc)}；计划指纹 {ShortFingerprint(plan.PlanFingerprint)}";
+        }
+    }
+
+    protected override void OnProjectPropertyChanged(string? propertyName)
+    {
+        if (propertyName is nameof(ExportProjectSession.SelectedContact)
+            or nameof(ExportProjectSession.SelectionPlan)
+            or nameof(ExportProjectSession.Scan)
+            or nameof(ExportProjectSession.Workspace))
+        {
+            OnPropertyChanged(nameof(ContactSelectionSummary));
+            OnPropertyChanged(nameof(SelectionPlanSummary));
+        }
+    }
+
+    private static string FormatUtc(DateTimeOffset? value)
+        => value?.ToUniversalTime().ToString("O") ?? "不限";
+
+    private static string ShortFingerprint(string fingerprint)
+        => fingerprint.Length <= 16 ? fingerprint : fingerprint[..16] + "…";
+
+    private bool IsCurrentExportSelection(VoiceSelectionPlan plan, ContactRecord contact)
+        => ReferenceEquals(Services.Project.SelectionPlan, plan)
+            && ReferenceEquals(Services.Project.Scan?.Report, plan.ScanReport)
+            && Services.Project.SelectedContact is { } current
+            && string.Equals(current.ContactId, contact.ContactId, StringComparison.Ordinal)
+            && string.Equals(current.Username, contact.Username, StringComparison.Ordinal);
 }

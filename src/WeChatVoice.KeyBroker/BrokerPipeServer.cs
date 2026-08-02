@@ -54,18 +54,56 @@ internal static class BrokerPipeServer
         // expensive memory scan and materialization operation.
         using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         operationTimeout.CancelAfter(OperationTimeout);
+        using var brokerCancellation = CancellationTokenSource.CreateLinkedTokenSource(operationTimeout.Token);
+        var disconnectMonitor = MonitorClientConnectionAsync(pipe, brokerCancellation);
         using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false, 4096, leaveOpen: true);
         await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
-        return await BrokerHost.RunAsync(
-            reader,
-            writer,
-            snapshotManifestPath,
-            outputRoot,
-            workspaceOutput,
-            operationTimeout.Token,
-            allowExperimentalProfile,
-            stage => BrokerProtocol.Write(writer, stage),
-            callerSid).ConfigureAwait(false);
+        try
+        {
+            return await BrokerHost.RunAsync(
+                reader,
+                writer,
+                snapshotManifestPath,
+                outputRoot,
+                workspaceOutput,
+                brokerCancellation.Token,
+                allowExperimentalProfile,
+                stage => BrokerProtocol.Write(writer, stage),
+                callerSid).ConfigureAwait(false);
+        }
+        finally
+        {
+            brokerCancellation.Cancel();
+            await disconnectMonitor.ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The one-shot client has no second control channel. Closing the named
+    /// pipe is therefore the cancellation protocol: a disconnected client
+    /// cancels the elevated operation instead of leaving memory scanning or
+    /// database materialization running until the long operation timeout.
+    /// </summary>
+    private static async Task MonitorClientConnectionAsync(
+        NamedPipeServerStream pipe,
+        CancellationTokenSource brokerCancellation)
+    {
+        try
+        {
+            while (!brokerCancellation.IsCancellationRequested)
+            {
+                if (!pipe.IsConnected)
+                {
+                    brokerCancellation.Cancel();
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(250), brokerCancellation.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (brokerCancellation.IsCancellationRequested)
+        {
+        }
     }
 
     private static void ValidateOutputPath(string path, string parameterName)

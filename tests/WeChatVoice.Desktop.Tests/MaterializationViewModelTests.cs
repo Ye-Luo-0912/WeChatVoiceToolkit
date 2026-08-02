@@ -40,7 +40,13 @@ public sealed class MaterializationViewModelTests : IDisposable
 
     private DesktopServices Services { get; }
 
-    private MaterializationViewModel CreateViewModel() => new(Services, marshal: action => action());
+    private MaterializationViewModel CreateViewModel() => new(Services, DirectInvokeAsync);
+
+    private static Task DirectInvokeAsync(Action action)
+    {
+        action();
+        return Task.CompletedTask;
+    }
 
     [Fact]
     public async Task Materialize_prompts_for_account_then_completes()

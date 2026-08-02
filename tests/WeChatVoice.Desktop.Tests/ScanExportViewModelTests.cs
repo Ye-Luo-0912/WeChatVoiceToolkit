@@ -45,10 +45,16 @@ public sealed class ScanExportViewModelTests : IDisposable
 
     private DesktopServices Services { get; }
 
+    private static Task DirectInvokeAsync(Action action)
+    {
+        action();
+        return Task.CompletedTask;
+    }
+
     [Fact]
     public async Task Scan_reports_all_four_payload_states()
     {
-        var viewModel = new ScanViewModel(Services, marshal: action => action());
+        var viewModel = new ScanViewModel(Services, DirectInvokeAsync);
         viewModel.WorkspacePath = "C:\\workspace.json";
         Services.Project.SelectedContact = new ContactRecord("contact-1", "wxid_peer", "Peer", null);
 
@@ -65,7 +71,7 @@ public sealed class ScanExportViewModelTests : IDisposable
     [Fact]
     public async Task Scan_without_workspace_fails_with_a_clear_parameter_error()
     {
-        var viewModel = new ScanViewModel(Services, marshal: action => action());
+        var viewModel = new ScanViewModel(Services, DirectInvokeAsync);
         await viewModel.ScanCommand.ExecuteAsync(null);
 
         Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
@@ -75,11 +81,11 @@ public sealed class ScanExportViewModelTests : IDisposable
     [Fact]
     public async Task Export_reports_entries_and_partial_failures()
     {
-        var viewModel = new ExportViewModel(Services, marshal: action => action());
+        var viewModel = new ExportViewModel(Services, DirectInvokeAsync);
         viewModel.WorkspacePath = "C:\\workspace.json";
         viewModel.OutputDirectory = "C:\\exports";
         Services.Project.SelectedContact = new ContactRecord("contact-1", "wxid_peer", "Peer", null);
-        var scan = new ScanViewModel(Services, marshal: action => action()) { WorkspacePath = "C:\\workspace.json" };
+        var scan = new ScanViewModel(Services, DirectInvokeAsync) { WorkspacePath = "C:\\workspace.json" };
         await scan.ScanCommand.ExecuteAsync(null);
 
         await viewModel.ExportCommand.ExecuteAsync(null);
@@ -95,12 +101,12 @@ public sealed class ScanExportViewModelTests : IDisposable
     [Fact]
     public async Task Guided_flow_uses_the_second_explicit_contact_and_invalidates_the_plan_on_change()
     {
-        var contacts = new ContactViewModel(Services, action => action()) { WorkspacePath = "C:\\workspace.json" };
+        var contacts = new ContactViewModel(Services, DirectInvokeAsync) { WorkspacePath = "C:\\workspace.json" };
         await contacts.LoadContactsCommand.ExecuteAsync(null);
         Assert.Null(contacts.SelectedContact);
 
         contacts.SelectedContact = contacts.Contacts[1];
-        var scan = new ScanViewModel(Services, action => action()) { WorkspacePath = "C:\\workspace.json" };
+        var scan = new ScanViewModel(Services, DirectInvokeAsync) { WorkspacePath = "C:\\workspace.json" };
         await scan.ScanCommand.ExecuteAsync(null);
         Assert.Equal("contact-b", Services.Project.SelectionPlan?.ContactId);
 
@@ -110,7 +116,7 @@ public sealed class ScanExportViewModelTests : IDisposable
 
         contacts.SelectedContact = contacts.Contacts[1];
         await scan.ScanCommand.ExecuteAsync(null);
-        var export = new ExportViewModel(Services, action => action())
+        var export = new ExportViewModel(Services, DirectInvokeAsync)
         {
             WorkspacePath = "C:\\workspace.json",
             OutputDirectory = "C:\\exports",
@@ -119,6 +125,56 @@ public sealed class ScanExportViewModelTests : IDisposable
 
         Assert.Equal(WorkflowState.Completed, export.RunHost.State);
         Assert.Equal(1, export.ExportedCount);
+        Assert.Contains("Remark B", export.ContactSelectionSummary, StringComparison.Ordinal);
+        Assert.Contains("wxid_b", export.ContactSelectionSummary, StringComparison.Ordinal);
+        Assert.Contains("incoming", export.SelectionPlanSummary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Scan_result_is_discarded_when_contact_changes_during_run()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _scan.RunOverride = async cancellationToken =>
+        {
+            started.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+            return _scan.Result;
+        };
+
+        var firstContact = new ContactRecord("contact-a", "wxid_a", "A", "Remark A");
+        Services.Project.SelectedContact = firstContact;
+        var viewModel = new ScanViewModel(Services, DirectInvokeAsync) { WorkspacePath = "C:\\workspace.json" };
+        var run = viewModel.ScanCommand.ExecuteAsync(null);
+
+        await started.Task;
+        Services.Project.SelectedContact = new ContactRecord("contact-b", "wxid_b", "B", "Remark B");
+        release.SetResult();
+        await run;
+
+        Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
+        Assert.Equal(ErrorCode.InvalidRequest, viewModel.RunHost.LastErrorCode);
+        Assert.Null(Services.Project.Scan);
+    }
+
+    [Fact]
+    public async Task Navigation_requires_contact_then_exportable_scan()
+    {
+        Services.Project.Workspace = TestDoubles.Verified();
+        var scan = new ScanViewModel(Services, DirectInvokeAsync);
+        var export = new ExportViewModel(Services, DirectInvokeAsync);
+
+        Assert.False(scan.CanNavigate);
+        Assert.False(export.CanNavigate);
+
+        Services.Project.SelectedContact = new ContactRecord("contact-a", "wxid_a", "A", "Remark A");
+        Assert.True(scan.CanNavigate);
+        Assert.False(export.CanNavigate);
+
+        scan.WorkspacePath = "C:\\workspace.json";
+        await scan.ScanCommand.ExecuteAsync(null);
+
+        Assert.True(export.CanNavigate);
     }
 
     [Fact]
@@ -128,5 +184,7 @@ public sealed class ScanExportViewModelTests : IDisposable
         // decoding. There is no property on the ViewModel to toggle it.
         var properties = typeof(ExportViewModel).GetProperties().Select(static p => p.Name).ToArray();
         Assert.DoesNotContain(properties, name => name.Contains("Wav", StringComparison.OrdinalIgnoreCase) || name.Contains("Decode", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain("FromText", properties);
+        Assert.DoesNotContain("ToText", properties);
     }
 }

@@ -41,7 +41,7 @@ public sealed class FakeMaterializationWorkflow : IMaterializationWorkflow
     public MaterializationWorkflowResult Result { get; set; } = new(
         TestDoubles.Verified(),
         "C:\\out\\workspace.json",
-        new AccountIdentity(AccountIdentityState.Confirmed, "user-confirmed-materialization"),
+        new AccountIdentity(AccountIdentityState.Candidate, null, UserConfirmationState.Confirmed),
         "profile-id",
         "materialization-id");
 
@@ -94,8 +94,10 @@ public sealed class FakeScanWorkflow : IVoiceScanWorkflow
             TotalPayloadBytes: 10),
         TestDoubles.Verified());
 
+    public Func<CancellationToken, Task<VoiceScanWorkflowResult>>? RunOverride { get; set; }
+
     public Task<VoiceScanWorkflowResult> RunAsync(VoiceScanWorkflowRequest request, WorkflowContext context, CancellationToken cancellationToken)
-        => Task.FromResult(Result);
+        => RunOverride is not null ? RunOverride(cancellationToken) : Task.FromResult(Result);
 }
 
 public sealed class FakeExportWorkflow : IVoiceExportWorkflow
