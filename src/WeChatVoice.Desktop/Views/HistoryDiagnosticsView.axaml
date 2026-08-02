@@ -19,7 +19,7 @@
         <TextBlock Text="{Binding WorkspaceDeleteSummary}" Foreground="#A33A00" TextWrapping="Wrap" />
       </StackPanel>
 
-      <Grid RowDefinitions="*,*" RowSpacing="12">
+      <Grid RowDefinitions="*,Auto,*" RowSpacing="12">
         <DockPanel Grid.Row="0">
           <TextBlock DockPanel.Dock="Top" FontWeight="SemiBold" Text="最近 Workspace（LocalApplicationData）" Margin="0,0,0,6" />
           <ListBox ItemsSource="{Binding RecentWorkspaces}"
@@ -38,6 +38,15 @@
         </DockPanel>
 
         <DockPanel Grid.Row="1">
+          <TextBlock DockPanel.Dock="Top" FontWeight="SemiBold" Text="Export Run 历史" Margin="0,0,0,6" />
+          <ListBox ItemsSource="{Binding ExportRuns}" MaxHeight="120">
+            <ListBox.ItemTemplate>
+              <DataTemplate><TextBlock Text="{Binding RunId, StringFormat='Run {0}'}" /></DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+
+        <DockPanel Grid.Row="2">
           <TextBlock DockPanel.Dock="Top" FontWeight="SemiBold" Text="会话日志（已脱敏）" Margin="0,0,0,6" />
           <ListBox ItemsSource="{Binding LogLines}" FontFamily="Consolas" FontSize="11">
             <ListBox.ItemTemplate>

@@ -52,4 +52,12 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     [ObservableProperty]
     private string? _navigationHint;
+
+    public void CancelActiveOperations()
+    {
+        foreach (var page in Pages)
+        {
+            if (page.RunHost.CanCancel) page.RunHost.CancelCommand.Execute(null);
+        }
+    }
 }

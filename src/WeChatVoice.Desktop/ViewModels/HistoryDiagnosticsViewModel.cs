@@ -33,6 +33,7 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
 
     [ObservableProperty]
     private string? _workspaceDeleteSummary;
+    [ObservableProperty] private IReadOnlyList<ExportRunHistoryEntry> _exportRuns = [];
     private bool _deleteArmed;
 
     [RelayCommand]
@@ -91,7 +92,29 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
     {
         RecentWorkspaces = Services.RecentWorkspaces.Load();
         LogLines = Services.Log.GetRecentSnapshot();
+        ExportRuns = LoadExportRuns();
     }
+
+    private IReadOnlyList<ExportRunHistoryEntry> LoadExportRuns()
+    {
+        var root = Services.Project.ExportDirectory;
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(Path.Combine(root, "runs"))) return [];
+        var results = new List<ExportRunHistoryEntry>();
+        foreach (var path in Directory.EnumerateFiles(Path.Combine(root, "runs"), "*.manifest.json"))
+        {
+            try
+            {
+                using var stream = File.OpenRead(path);
+                var manifest = System.Text.Json.JsonSerializer.Deserialize<Core.Models.VoiceExportManifest>(stream);
+                if (manifest is not null) results.Add(new ExportRunHistoryEntry(manifest.RunId, manifest.RunStatus, manifest.Entries.Count, manifest.Failures.Count, File.GetLastWriteTimeUtc(path)));
+            }
+            catch (IOException) { }
+            catch (System.Text.Json.JsonException) { }
+        }
+        return results.OrderByDescending(item => item.GeneratedAtUtc).ToArray();
+    }
+
+    public sealed record ExportRunHistoryEntry(string RunId, Core.Models.ExportRunStatus Status, int EntryCount, int FailureCount, DateTime GeneratedAtUtc);
 
     [RelayCommand]
     private void RemoveSelectedWorkspace()
