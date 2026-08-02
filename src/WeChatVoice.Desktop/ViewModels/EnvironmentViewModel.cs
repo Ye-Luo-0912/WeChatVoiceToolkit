@@ -64,9 +64,12 @@ public sealed partial class EnvironmentViewModel : PageViewModelBase
     private string? _workspaceSummary;
 
     [RelayCommand]
-    private Task AssessAsync() => RunHost.RunAsync(
+    private Task AssessAsync()
+    {
+        var workspacePath = WorkspacePath;
+        return RunHost.RunAsync(
         async (context, cancellationToken) => await Workflows.EnvironmentAssessment.RunAsync(
-            new EnvironmentAssessmentRequest(WorkspacePath),
+            new EnvironmentAssessmentRequest(workspacePath),
             context,
             cancellationToken).ConfigureAwait(false),
         result =>
@@ -108,4 +111,5 @@ public sealed partial class EnvironmentViewModel : PageViewModelBase
                 ? null
                 : $"Workspace {result.Workspace.Workspace.WorkspaceId} 校验通过；账号：{(result.Workspace.DataSet.AccountId ?? "（未绑定）")}；匹配适配器：{string.Join("、", result.MatchingAdapters)}";
         });
+    }
 }

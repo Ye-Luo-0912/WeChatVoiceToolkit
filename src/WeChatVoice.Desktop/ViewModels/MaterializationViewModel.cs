@@ -75,6 +75,10 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     private Task MaterializeAsync()
     {
         UacRejected = false;
+        var snapshotDirectory = string.IsNullOrWhiteSpace(SnapshotDirectory) ? Services.Project.SnapshotDirectory : SnapshotDirectory;
+        var outputDirectory = OutputDirectory;
+        var requestedAccount = string.IsNullOrWhiteSpace(RequestedAccount) ? null : RequestedAccount;
+        var workspaceOutputPath = string.IsNullOrWhiteSpace(WorkspaceOutputPath) ? null : WorkspaceOutputPath;
         return RunHost.RunAsync(
             CreateConfirmationSession,
         async (context, cancellationToken) =>
@@ -83,10 +87,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
             {
                 throw new AppFailureException(ErrorCode.SnapshotInvalid, "此快照来自活动源，不可用于解密或导出。");
             }
-                var snapshotDirectory = string.IsNullOrWhiteSpace(SnapshotDirectory)
-                    ? Services.Project.SnapshotDirectory
-                    : SnapshotDirectory;
-                if (string.IsNullOrWhiteSpace(snapshotDirectory) || string.IsNullOrWhiteSpace(OutputDirectory))
+                if (string.IsNullOrWhiteSpace(snapshotDirectory) || string.IsNullOrWhiteSpace(outputDirectory))
                 {
                     throw new AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Snapshot and output directories are required.");
                 }
@@ -98,9 +99,9 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
                         BackendId: "weixin-windows-4",
                         ExternalDecryptorPath: null,
                         AllowUntrustedBackend: false,
-                        RequestedAccountId: string.IsNullOrWhiteSpace(RequestedAccount) ? null : RequestedAccount,
-                        OutputDirectory,
-                        WorkspaceOutputPath: string.IsNullOrWhiteSpace(WorkspaceOutputPath) ? null : WorkspaceOutputPath),
+                        RequestedAccountId: requestedAccount,
+                        outputDirectory,
+                        WorkspaceOutputPath: workspaceOutputPath),
                     context,
                     cancellationToken).ConfigureAwait(false);
             },

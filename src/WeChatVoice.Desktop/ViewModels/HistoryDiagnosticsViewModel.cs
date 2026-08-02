@@ -36,20 +36,24 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
     private bool _deleteArmed;
 
     [RelayCommand]
-    private Task LoadSelectedWorkspaceAsync() => RunHost.RunAsync(
+    private Task LoadSelectedWorkspaceAsync()
+    {
+        var selectedPath = SelectedWorkspace?.WorkspacePath;
+        return RunHost.RunAsync(
         async (context, cancellationToken) =>
         {
-            if (SelectedWorkspace is null) throw new AppFailureException(ErrorCode.InvalidRequest, "Please select a recent Workspace.");
-            return await Workflows.Workspace.VerifyAsync(SelectedWorkspace.WorkspacePath, context, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(selectedPath)) throw new AppFailureException(ErrorCode.InvalidRequest, "Please select a recent Workspace.");
+            return await Workflows.Workspace.VerifyAsync(selectedPath, context, cancellationToken).ConfigureAwait(false);
         },
         result =>
         {
             Services.Project.Workspace = result;
-            Services.Project.WorkspacePath = SelectedWorkspace?.WorkspacePath;
+            Services.Project.WorkspacePath = selectedPath;
             Services.Project.Scan = null;
             Services.Project.SelectionPlan = null;
             WorkspaceDeleteSummary = $"Workspace 已验证并恢复：{result.Workspace.WorkspaceId}";
         });
+    }
 
     [RelayCommand]
     private Task DeleteMaterializedWorkspaceAsync()

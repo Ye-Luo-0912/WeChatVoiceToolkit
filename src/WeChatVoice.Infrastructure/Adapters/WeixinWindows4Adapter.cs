@@ -218,6 +218,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
     private readonly DatabaseArtifact _contact;
     private readonly IReadOnlyList<DatabaseArtifact> _messages;
     private readonly DatabaseArtifact _media;
+    private readonly IReadOnlyDictionary<string, string> _fileLease;
     private bool _disposed;
 
     internal WeixinWindows4VoiceCatalog(
@@ -231,6 +232,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         _contact = contact;
         _messages = messages;
         _media = media;
+        _fileLease = workspace.DataSet.Databases.ToDictionary(item => item.LocalPath ?? item.DatabasePath, item => FileIdentity.Read(item.LocalPath ?? item.DatabasePath), StringComparer.OrdinalIgnoreCase);
         var dataSet = workspace.DataSet;
         Context = new VoiceCatalogContext(
             dataSet.DataSetId,
@@ -251,6 +253,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        VerifyFileLease();
         ArgumentNullException.ThrowIfNull(query);
         await using var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(_contact, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
@@ -303,6 +306,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        VerifyFileLease();
         ArgumentNullException.ThrowIfNull(query);
         var username = RequireStableContact(query);
         if (query.Direction == VoiceDirection.Unknown)
@@ -422,6 +426,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         DatabaseArtifact artifact,
         string username,
         VoiceQuery query,
+        bool applyMaximumResults,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var tableName = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(username))).ToLowerInvariant();
@@ -455,7 +460,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             command.Parameters.AddWithValue("$to", query.ToUtc.Value.ToUnixTimeSeconds());
         }
 
-        if (query.MaximumResults is not null)
+        if (applyMaximumResults && query.MaximumResults is not null)
         {
             command.Parameters.AddWithValue("$limit", query.MaximumResults.Value);
         }
@@ -466,7 +471,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             LEFT JOIN Name2Id AS n ON n.rowid = m.real_sender_id
             WHERE {string.Join(" AND ", where)}
             ORDER BY create_time, local_id, server_id
-            {(query.MaximumResults is null ? string.Empty : "LIMIT $limit")};
+            {(!applyMaximumResults || query.MaximumResults is null ? string.Empty : "LIMIT $limit")};
             """;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -670,6 +675,15 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         return query.ContactUsername;
     }
 
+    private void VerifyFileLease()
+    {
+        foreach (var (path, expected) in _fileLease)
+        {
+            if (!string.Equals(FileIdentity.Read(path), expected, StringComparison.Ordinal))
+                throw new InvalidDataException("A verified workspace database changed before query execution.");
+        }
+    }
+
     private static string EscapeLike(string value)
         => value.Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("%", "\\%", StringComparison.Ordinal)
@@ -706,7 +720,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var readers = artifacts
-            .Select(artifact => ReadMessageRowsAsync(artifact, username, query, cancellationToken).GetAsyncEnumerator(cancellationToken))
+            .Select(artifact => ReadMessageRowsAsync(artifact, username, query, applyMaximumResults: false, cancellationToken).GetAsyncEnumerator(cancellationToken))
             .ToArray();
         var queue = new PriorityQueue<MergeItem, MessageRowKey>(new MessageRowKeyComparer());
         try

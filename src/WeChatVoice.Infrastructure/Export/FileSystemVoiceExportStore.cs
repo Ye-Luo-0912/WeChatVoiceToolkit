@@ -255,7 +255,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         {
             await EnsureArtifactIndexLoadedAsync(cancellationToken).ConfigureAwait(false);
             var lastWriteTicks = info.LastWriteTimeUtc.Ticks;
+            var fileId = ArtifactFileIdentity.Read(path);
             if (_artifactIndex!.TryGetValue(relativePath, out var cached)
+                && string.Equals(cached.FileId, fileId, StringComparison.Ordinal)
                 && cached.Length == info.Length
                 && cached.LastWriteUtcTicks == lastWriteTicks)
             {
@@ -263,7 +265,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
 
             var sha256 = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
-            var entry = new ArtifactIndexEntry(relativePath, info.Length, lastWriteTicks, sha256, DateTimeOffset.UtcNow);
+            var entry = new ArtifactIndexEntry(relativePath, fileId, info.Length, lastWriteTicks, sha256, DateTimeOffset.UtcNow);
             _artifactIndex[relativePath] = entry;
             var indexPath = Path.Combine(_exportRoot, "artifact-index.jsonl");
             Directory.CreateDirectory(_exportRoot);
@@ -317,6 +319,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
     private sealed record ArtifactIndexEntry(
         string RelativePath,
+        string? FileId,
         long Length,
         long LastWriteUtcTicks,
         string Sha256,
