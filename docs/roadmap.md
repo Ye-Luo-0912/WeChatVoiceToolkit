@@ -71,22 +71,23 @@
     users can filter by duration/size/quality, choose duplicate representatives,
     persist opaque Selection Profiles, and reproduce a stable Selection
     Fingerprint without exposing account identifiers or local paths.
+22. The CLI composition root is split into focused command and support files;
+    command behavior and the shared verified workflow composition remain
+    unchanged.
 
 ## Next product work
 
-1. Split the oversized CLI composition file into command and service classes
-   without changing verified command behavior.
-2. Recover voice duration from a verified message metadata field only if the
+1. Recover voice duration from a verified message metadata field only if the
    user supplies schema evidence and test data for that field. Until then,
    `--resolve-durations` and the Desktop option use the reviewed external SILK
    decoder boundary and report unknown duration when it is not configured or
    cannot decode.
-3. The resident decoder boundary now supports the reviewed
+2. The resident decoder boundary now supports the reviewed
    `wechatvoice-decoder-jsonl-v1` protocol through
    `WECHATVOICE_SILK_DECODER_WORKER_PATH`; keep strict RIFF/PCM validation and
    never overwrite SILK. A decoder that does not implement this protocol uses
    the existing one-shot compatibility path.
-4. Expand installer certificate-rotation and multi-release update policy. The
+3. Expand installer certificate-rotation and multi-release update policy. The
    ZIP package remains a diagnostic-only artifact; formal Broker distribution
    uses the signed MSIX installed to a protected directory.
 
