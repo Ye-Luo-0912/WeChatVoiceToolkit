@@ -56,6 +56,8 @@ jobs:
             $env:WECHATVOICE_SIGNING_PFX_PASSWORD,
             [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
           try {
+            . "$env:GITHUB_WORKSPACE\scripts\publisher-fingerprint.ps1"
+            $publisherFingerprint = Get-CertificateSha256Fingerprint -Certificate $certificate
             $packageUri = if ($env:GITHUB_REF_NAME -like 'v*') {
               "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/WeChatVoiceToolkit-win-x64.msix"
             } else { '' }
@@ -63,7 +65,7 @@ jobs:
               -PackagePath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.msix" `
               -OutputPath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.update-manifest.json" `
               -Version $version `
-              -PublisherThumbprint $certificate.Thumbprint `
+              -PublisherThumbprint $publisherFingerprint `
               -PackageUri $packageUri
           }
           finally { $certificate.Dispose() }
@@ -81,6 +83,11 @@ jobs:
             [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
           [IO.File]::WriteAllBytes($publicCertificatePath, $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
           Import-Certificate -FilePath $publicCertificatePath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
+          # AppX deployment validates the package publisher through the
+          # machine trust store, even though Add-AppxPackage runs for the
+          # current user. The hosted Windows runner is administrative; clean
+          # this exact temporary certificate up in finally below.
+          Import-Certificate -FilePath $publicCertificatePath -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
           $certificateThumbprint = $certificate.Thumbprint
           try {
             ./scripts/install-msix.ps1 -PackagePath $packagePath -UpdateManifestPath $updateManifestPath -RunTrustSmoke -ForceUpdateFromAnyVersion
@@ -101,6 +108,7 @@ jobs:
           finally {
             ./scripts/uninstall-msix.ps1 -PackageName WeChatVoiceToolkit
             Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$certificateThumbprint" -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPeople\$certificateThumbprint" -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $publicCertificatePath -Force -ErrorAction SilentlyContinue
             $certificate.Dispose()
           }

@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'publisher-fingerprint.ps1')
 $package = [IO.Path]::GetFullPath($PackagePath.Trim().Trim('"'))
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "The MSIX package does not exist: $package" }
 if ([IO.Path]::GetExtension($package) -ne '.msix') { throw 'PackagePath must point to an .msix package.' }
@@ -42,15 +43,17 @@ if (-not [string]::IsNullOrWhiteSpace($UpdateManifestPath)) {
     if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
         throw "The MSIX Authenticode signature is not valid: $($signature.Status)."
     }
-    $actualPublisherThumbprint = $signature.SignerCertificate.Thumbprint.Replace(' ', '').ToLowerInvariant()
+    $actualPublisherThumbprint = Get-CertificateSha256Fingerprint -Certificate $signature.SignerCertificate
     if ($actualPublisherThumbprint -ne ([string]$metadata.publisherThumbprint).Replace(' ', '').ToLowerInvariant()) {
         throw 'The MSIX signer thumbprint does not match the update manifest.'
     }
 }
-$arguments = @('-Path', $package)
-if ($ForceUpdateFromAnyVersion) { $arguments += '-ForceUpdateFromAnyVersion' }
-& Add-AppxPackage @arguments
-if ($LASTEXITCODE -ne 0) { throw "Add-AppxPackage failed with exit code $LASTEXITCODE." }
+if ($ForceUpdateFromAnyVersion) {
+    Add-AppxPackage -Path $package -ForceUpdateFromAnyVersion
+}
+else {
+    Add-AppxPackage -Path $package
+}
 
 $installed = @(Get-AppxPackage -Name $PackageName | Sort-Object Version -Descending | Select-Object -First 1)
 if ($installed.Count -ne 1) { throw "The installed package '$PackageName' could not be found after installation." }

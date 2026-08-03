@@ -51,8 +51,9 @@ unless the user explicitly opts into the development policy.
 
 - **ReleaseBrokerTrustPolicy (default, fail-closed)** requires, in order:
   1. a regular, non-reparse-point file in the fixed CLI install directory;
-  2. a `WeChatVoice.KeyBroker.bundle.json` publish manifest whose `publisherThumbprint`
-     is pinned non-empty and whose EXE hash binds the actual binary;
+  2. a `WeChatVoice.KeyBroker.bundle.json` publish manifest whose
+     `publisherThumbprint` is a pinned SHA-256 signer-certificate fingerprint
+     and whose EXE hash binds the actual binary;
   3. full Authenticode verification of the EXE via `WinVerifyTrust`
      (`AuthenticodeVerifier` is the single authoritative implementation);
   4. the signer certificate SHA-256 digest equal to the pinned publisher

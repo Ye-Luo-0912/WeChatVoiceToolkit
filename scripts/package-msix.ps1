@@ -25,9 +25,16 @@ function Find-WindowsSdkTool([string]$name) {
     $roots += (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin')
     foreach ($root in $roots | Select-Object -Unique) {
         if (Test-Path -LiteralPath $root -PathType Container) {
-            $candidate = Get-ChildItem -LiteralPath $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue |
-                Sort-Object FullName -Descending | Select-Object -First 1
-            if ($candidate) { return $candidate.FullName }
+            $versions = Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+(?:\.\d+){2,3}$' } |
+                Sort-Object { [version]$_.Name } -Descending
+            foreach ($versionDirectory in $versions) {
+                # Prefer the x64 SDK tool for the win-x64 package. This also
+                # avoids accidentally selecting an arm64 tool from a newer
+                # SDK's sibling architecture directory.
+                $candidate = Join-Path $versionDirectory.FullName (Join-Path 'x64' $name)
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+            }
         }
     }
     throw "$name was not found in the installed Windows SDK. Install the Windows 10/11 SDK before building an MSIX."
@@ -109,9 +116,12 @@ try {
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Resources><Resource Language="en-us" /></Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
   <Applications>
     <Application Id="App" Executable="WeChatVoice.Desktop.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements AppListEntry="default" DisplayName="WeChatVoiceToolkit" Description="WeChat voice export toolkit" Square44x44Logo="Assets\Square44x44Logo.png" Square150x150Logo="Assets\Square150x150Logo.png" />
+      <uap:VisualElements AppListEntry="default" DisplayName="WeChatVoiceToolkit" Description="WeChat voice export toolkit" BackgroundColor="#FFFFFF" Square44x44Logo="Assets\Square44x44Logo.png" Square150x150Logo="Assets\Square150x150Logo.png" />
     </Application>
   </Applications>
   <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>

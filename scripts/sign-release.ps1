@@ -15,9 +15,14 @@ if ([string]::IsNullOrWhiteSpace($CertificateThumbprint) -and [string]::IsNullOr
 function Find-SignTool {
     $kit = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
     if (-not (Test-Path -LiteralPath $kit)) { return $null }
-    $candidates = Get-ChildItem -LiteralPath $kit -Directory | Sort-Object { [version]$_.Name } -Descending
-    foreach ($version in $candidates) {
-        $candidate = Join-Path $version.FullName 'x64\signtool.exe'
+    # Recent SDKs may place architecture directories beside versioned SDK
+    # directories. Only parse numeric SDK directory names and always use the
+    # x64 tool for the win-x64 release layout.
+    $candidates = Get-ChildItem -LiteralPath $kit -Directory |
+        Where-Object { $_.Name -match '^\d+(?:\.\d+){2,3}$' } |
+        Sort-Object { [version]$_.Name } -Descending
+    foreach ($versionDirectory in $candidates) {
+        $candidate = Join-Path $versionDirectory.FullName 'x64\signtool.exe'
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
     }
     return $null

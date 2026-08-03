@@ -92,7 +92,14 @@ public sealed class AuthenticodeVerifier : IAuthenticodeVerifier
     {
         try
         {
-            using var certificate = X509CertificateLoader.LoadCertificateFromFile(path);
+            // LoadCertificateFromFile expects a certificate container. A PE
+            // Authenticode signature is embedded in the image instead, so use
+            // the signed-file API to extract the authenticated signer, then
+            // hand its DER bytes to the current certificate loader.
+#pragma warning disable SYSLIB0057 // The signed-PE API has no non-obsolete replacement yet.
+            using var embeddedCertificate = X509Certificate.CreateFromSignedFile(path);
+#pragma warning restore SYSLIB0057
+            using var certificate = X509CertificateLoader.LoadCertificate(embeddedCertificate.GetRawCertData());
             return Convert.ToHexString(SHA256.HashData(certificate.RawData)).ToLowerInvariant();
         }
         catch (CryptographicException)

@@ -19,6 +19,10 @@ if ([IO.Path]::GetExtension($package) -ne '.msix') {
 }
 if ([string]::IsNullOrWhiteSpace($Version)) { throw 'Version is required.' }
 if ([string]::IsNullOrWhiteSpace($PublisherThumbprint)) { throw 'PublisherThumbprint is required.' }
+$publisherFingerprint = $PublisherThumbprint.Replace(' ', '').ToLowerInvariant()
+if ($publisherFingerprint -notmatch '^[0-9a-f]{64}$') {
+    throw 'PublisherThumbprint must be the 64-character SHA-256 fingerprint of the signer certificate.'
+}
 
 $parsedVersion = $null
 if (-not [version]::TryParse($Version, [ref]$parsedVersion)) {
@@ -33,7 +37,7 @@ $manifest = [ordered]@{
     packageFile = [IO.Path]::GetFileName($package)
     packageSha256 = $packageHash
     packageByteLength = (Get-Item -LiteralPath $package).Length
-    publisherThumbprint = $PublisherThumbprint.Replace(' ', '').ToLowerInvariant()
+    publisherThumbprint = $publisherFingerprint
     packageUri = if ([string]::IsNullOrWhiteSpace($PackageUri)) { $null } else { $PackageUri }
     generatedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
 }
