@@ -30,6 +30,15 @@ if ($null -ne $targetVersion -and $targetVersion -ge [version]$installed[0].Vers
 }
 
 $installer = Join-Path $PSScriptRoot 'install-msix.ps1'
-& $installer -PackagePath $package -PackageName $PackageName -RunTrustSmoke:$RunTrustSmoke -ForceUpdateFromAnyVersion
+$installerArguments = @{
+    PackagePath = $package
+    PackageName = $PackageName
+    RunTrustSmoke = $RunTrustSmoke
+    ForceUpdateFromAnyVersion = $true
+}
+if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+    $installerArguments.UpdateManifestPath = $manifest
+}
+& $installer @installerArguments
 if ($LASTEXITCODE -ne 0) { throw "MSIX rollback installation failed with exit code $LASTEXITCODE." }
 Write-Host "Rollback completed without touching Snapshot, Workspace, or Export data."

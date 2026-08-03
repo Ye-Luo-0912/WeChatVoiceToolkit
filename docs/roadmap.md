@@ -67,6 +67,10 @@
 20. Materialization page inputs follow the application session when a new
    snapshot is created, and state-transition retries validate their declared
    predecessor set even when the requested state is already durable.
+21. Dataset curation keeps successful export separate from training selection;
+    users can filter by duration/size/quality, choose duplicate representatives,
+    persist opaque Selection Profiles, and reproduce a stable Selection
+    Fingerprint without exposing account identifiers or local paths.
 
 ## Next product work
 

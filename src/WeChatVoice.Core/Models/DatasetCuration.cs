@@ -1,4 +1,7 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace WeChatVoice.Core.Models;
 
@@ -67,7 +70,7 @@ public sealed record DatasetSelectionProfile
         DatasetCurationFilters? Filters = null,
         IReadOnlyList<string>? SelectedItemIds = null,
         IReadOnlyList<string>? DuplicateRepresentativeItemIds = null,
-        DateTimeOffset? UpdatedAtUtc = null,
+        DateTimeOffset UpdatedAtUtc = default,
         string ProfileVersion = CurrentProfileVersion)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ManifestSha256);
@@ -83,8 +86,14 @@ public sealed record DatasetSelectionProfile
         this.Filters = Filters ?? new DatasetCurationFilters();
         this.SelectedItemIds = FreezeIds(SelectedItemIds);
         this.DuplicateRepresentativeItemIds = FreezeIds(DuplicateRepresentativeItemIds);
-        this.UpdatedAtUtc = (UpdatedAtUtc ?? DateTimeOffset.UtcNow).ToUniversalTime();
+        this.UpdatedAtUtc = (UpdatedAtUtc == default ? DateTimeOffset.UtcNow : UpdatedAtUtc).ToUniversalTime();
         this.ProfileVersion = ProfileVersion;
+        SelectionFingerprint = DatasetSelectionFingerprint.Compute(
+            this.ManifestSha256,
+            this.ProfileVersion,
+            this.Filters,
+            this.SelectedItemIds,
+            this.DuplicateRepresentativeItemIds);
     }
 
     public string ManifestSha256 { get; }
@@ -94,6 +103,7 @@ public sealed record DatasetSelectionProfile
     public IReadOnlyList<string> DuplicateRepresentativeItemIds { get; }
     public DateTimeOffset UpdatedAtUtc { get; }
     public string ProfileVersion { get; }
+    public string SelectionFingerprint { get; }
 
     private static IReadOnlyList<string> FreezeIds(IReadOnlyList<string>? values)
         => new ReadOnlyCollection<string>((values ?? Array.Empty<string>())
@@ -102,6 +112,70 @@ public sealed record DatasetSelectionProfile
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray());
+}
+
+/// <summary>
+/// Computes the stable identity of a curated training selection. The
+/// fingerprint binds the immutable export manifest, curation policy, and
+/// opaque item IDs; it deliberately excludes timestamps, paths, usernames,
+/// and other local/provenance details.
+/// </summary>
+public static class DatasetSelectionFingerprint
+{
+    public const string CurrentVersion = "dataset-selection-fingerprint-v1";
+
+    public static string Compute(
+        string manifestSha256,
+        string profileVersion,
+        DatasetCurationFilters filters,
+        IReadOnlyList<string> selectedItemIds,
+        IReadOnlyList<string> duplicateRepresentativeItemIds)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(manifestSha256);
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileVersion);
+        ArgumentNullException.ThrowIfNull(filters);
+        ArgumentNullException.ThrowIfNull(selectedItemIds);
+        ArgumentNullException.ThrowIfNull(duplicateRepresentativeItemIds);
+
+        var canonical = new StringBuilder(512);
+        AppendField(canonical, "version", CurrentVersion);
+        AppendField(canonical, "manifest", manifestSha256.ToLowerInvariant());
+        AppendField(canonical, "profile", profileVersion);
+        AppendField(canonical, "minimum-duration", Format(filters.MinimumDurationMs));
+        AppendField(canonical, "maximum-duration", Format(filters.MaximumDurationMs));
+        AppendField(canonical, "minimum-bytes", Format(filters.MinimumByteLength));
+        AppendField(canonical, "maximum-bytes", Format(filters.MaximumByteLength));
+        AppendField(canonical, "include-unknown-duration", filters.IncludeUnknownDuration ? "1" : "0");
+        AppendField(canonical, "incoming-only", filters.IncomingOnly ? "1" : "0");
+        AppendList(canonical, "excluded-quality-flags", filters.ExcludedQualityFlags);
+        AppendList(canonical, "selected-items", selectedItemIds);
+        AppendList(canonical, "duplicate-representatives", duplicateRepresentativeItemIds);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString()))).ToLowerInvariant();
+    }
+
+    private static void AppendList(StringBuilder builder, string name, IReadOnlyList<string> values)
+    {
+        AppendField(builder, name + ".count", values.Count.ToString(CultureInfo.InvariantCulture));
+        foreach (var value in values)
+        {
+            AppendField(builder, name + ".item", value);
+        }
+    }
+
+    private static void AppendField(StringBuilder builder, string name, string? value)
+    {
+        value ??= string.Empty;
+        builder.Append(name.Length.ToString(CultureInfo.InvariantCulture))
+            .Append(':')
+            .Append(name)
+            .Append(value.Length.ToString(CultureInfo.InvariantCulture))
+            .Append(':')
+            .Append(value)
+            .Append('\n');
+    }
+
+    private static string Format(long? value)
+        => value?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
 }
 
 public sealed record DatasetCurationItem(
@@ -142,4 +216,7 @@ public sealed record DatasetCurationResult(
     IReadOnlyList<DatasetDuplicateGroup> DuplicateGroups,
     DatasetSelectionProfile Profile,
     long SelectedDurationMs,
-    long SelectedByteLength);
+    long SelectedByteLength)
+{
+    public string SelectionFingerprint => Profile.SelectionFingerprint;
+}

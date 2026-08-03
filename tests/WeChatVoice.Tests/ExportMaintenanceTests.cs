@@ -83,6 +83,8 @@ public sealed class ExportMaintenanceTests
         Assert.DoesNotContain(first.Items, item => item.IsSelected);
         Assert.Equal(1, first.Items.Count(item => item.PassesFilters));
         Assert.Equal(0, first.SelectedDurationMs);
+        Assert.Equal(TrainingEligibility.Rejected, first.Items.Single(item => item.DurationMs is null).TrainingEligibility);
+        Assert.Equal(first.Profile.SelectionFingerprint, first.SelectionFingerprint);
 
         var firstId = ExportItemIdentity.ComputeItemId(entries[0]);
         var secondId = ExportItemIdentity.ComputeItemId(entries[1]);
@@ -104,6 +106,21 @@ public sealed class ExportMaintenanceTests
         Assert.Single(selected.Items, item => item.IsSelected);
         Assert.Equal(100, selected.SelectedDurationMs);
         Assert.Equal(TrainingEligibility.Eligible, selected.Items.Single(item => item.IsSelected).TrainingEligibility);
+
+        var repeated = await workflow.RunAsync(
+            new DatasetCurationRequest(
+                Path.GetDirectoryName(manifestPath)!,
+                SelectedItemIds: [firstId],
+                DuplicateRepresentativeItemIds: [firstId]),
+            NewContext(),
+            CancellationToken.None);
+        Assert.Equal(selected.SelectionFingerprint, repeated.SelectionFingerprint);
+        Assert.Equal(selected.Profile.SelectionFingerprint, repeated.Profile.SelectionFingerprint);
+
+        var profileStore = new DatasetSelectionProfileStore();
+        await profileStore.WriteAsync(Path.GetDirectoryName(manifestPath)!, selected.Profile, CancellationToken.None);
+        var loadedProfile = await profileStore.ReadAsync(Path.GetDirectoryName(manifestPath)!, CancellationToken.None);
+        Assert.Equal(selected.Profile.SelectionFingerprint, loadedProfile.SelectionFingerprint);
     }
 
     [Fact]

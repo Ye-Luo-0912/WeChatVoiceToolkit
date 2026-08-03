@@ -95,7 +95,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
                 await Workflows.DatasetCuration.SaveProfileAsync(exportDirectory, profile, context, cancellationToken).ConfigureAwait(false);
                 return profile;
             },
-            saved => ProfileSummary = $"Selection Profile 已保存：{saved.SelectedItemIds.Count} 条，绑定 Manifest {Short(saved.ManifestSha256)}");
+            saved => ProfileSummary = $"Selection Profile 已保存：{saved.SelectedItemIds.Count} 条，Fingerprint {Short(saved.SelectionFingerprint)}");
     }
 
     [RelayCommand]
@@ -177,7 +177,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         SelectedByteLength = result.SelectedByteLength;
         SelectedCount = result.Items.Count(static item => item.IsSelected);
         CurationSummary = $"候选 {result.Items.Count(static item => item.PassesFilters)} 条；重复组 {result.DuplicateGroups.Count}；当前训练集 {SelectedCount} 条。成功导出不会自动进入训练集。";
-        ProfileSummary = $"Manifest 已绑定：{Short(result.ManifestSha256)}；可保存 Selection Profile。";
+        ProfileSummary = $"Manifest 已绑定：{Short(result.ManifestSha256)}；Selection Fingerprint：{Short(result.SelectionFingerprint)}。";
         _profileToApply = null;
     }
 

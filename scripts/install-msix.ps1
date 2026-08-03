@@ -35,6 +35,17 @@ if (-not [string]::IsNullOrWhiteSpace($UpdateManifestPath)) {
     if ((Get-Item -LiteralPath $package).Length -ne [int64]$metadata.packageByteLength) {
         throw 'The MSIX package length does not match the update manifest.'
     }
+    if ([string]::IsNullOrWhiteSpace([string]$metadata.publisherThumbprint)) {
+        throw 'The update manifest has no publisher thumbprint.'
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $package
+    if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
+        throw "The MSIX Authenticode signature is not valid: $($signature.Status)."
+    }
+    $actualPublisherThumbprint = $signature.SignerCertificate.Thumbprint.Replace(' ', '').ToLowerInvariant()
+    if ($actualPublisherThumbprint -ne ([string]$metadata.publisherThumbprint).Replace(' ', '').ToLowerInvariant()) {
+        throw 'The MSIX signer thumbprint does not match the update manifest.'
+    }
 }
 $arguments = @('-Path', $package)
 if ($ForceUpdateFromAnyVersion) { $arguments += '-ForceUpdateFromAnyVersion' }
@@ -43,6 +54,11 @@ if ($LASTEXITCODE -ne 0) { throw "Add-AppxPackage failed with exit code $LASTEXI
 
 $installed = @(Get-AppxPackage -Name $PackageName | Sort-Object Version -Descending | Select-Object -First 1)
 if ($installed.Count -ne 1) { throw "The installed package '$PackageName' could not be found after installation." }
+$programFiles = [IO.Path]::GetFullPath([Environment]::GetFolderPath('ProgramFiles')).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$installLocation = [IO.Path]::GetFullPath([string]$installed[0].InstallLocation)
+if (-not $installLocation.StartsWith($programFiles, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "The package was not installed under the protected Program Files root: $installLocation"
+}
 Write-Host "Installed $PackageName version $($installed[0].Version)."
 
 if ($RunTrustSmoke) {
