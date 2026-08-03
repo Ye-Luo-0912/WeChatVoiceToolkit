@@ -263,6 +263,35 @@ public sealed class MaterializationRecoveryTests
     }
 
     [Fact]
+    public async Task RepairWorkspaceAsync_replaces_a_corrupt_document_after_manifest_verification()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var fixture = await CreateCommittedWorkspaceAsync(
+            temporary,
+            "repair-corrupt",
+            accountId: "wxid_owner",
+            recover: false);
+        var identity = new AccountIdentity(AccountIdentityState.Candidate, null, UserConfirmationState.Confirmed, "wxid_owner");
+        var original = await new MaterializationRecoveryService().RecoverAsync(
+            fixture.OutputRoot,
+            fixture.WorkspacePath,
+            "wxid_owner",
+            CancellationToken.None,
+            identity);
+        await File.WriteAllTextAsync(fixture.WorkspacePath, "{ not valid workspace json");
+
+        var repaired = await new MaterializationRecoveryService().RepairWorkspaceAsync(
+            fixture.OutputRoot,
+            fixture.WorkspacePath,
+            "wxid_owner",
+            CancellationToken.None,
+            identity);
+
+        Assert.Equal(original.Workspace.WorkspaceId, repaired.Workspace.WorkspaceId);
+        Assert.Equal(MaterializationCommitStates.Completed, (await MaterializationStateStore.ReadAsync(fixture.OutputRoot, CancellationToken.None)).State);
+    }
+
+    [Fact]
     public async Task Delete_materialized_workspace_revalidates_and_preserves_external_data()
     {
         using var temporary = new TestTemporaryDirectory();

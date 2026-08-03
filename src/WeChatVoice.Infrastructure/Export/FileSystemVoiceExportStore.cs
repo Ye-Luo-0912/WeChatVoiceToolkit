@@ -180,10 +180,58 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.csv"),
             recovered,
             cancellationToken).ConfigureAwait(false);
+        await RebuildArtifactIndexAsync(recovered, cancellationToken, allowMissingArtifacts: true).ConfigureAwait(false);
         return recovered;
     }
 
-    private static async Task<VoiceExportManifest> ReadManifestFromJournalAsync(
+    internal async Task RebuildArtifactIndexAsync(
+        VoiceExportManifest manifest,
+        CancellationToken cancellationToken,
+        bool allowMissingArtifacts = false)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        var entries = new List<ArtifactIndexEntry>();
+        foreach (var item in manifest.Entries)
+        {
+            AddIndexEntry(item.OriginalPath, item.OriginalSha256);
+            if (item.DecodedPath is not null && item.WavSha256 is not null)
+            {
+                AddIndexEntry(item.DecodedPath, item.WavSha256);
+            }
+        }
+
+        var indexPath = Path.Combine(_exportRoot, "artifact-index.jsonl");
+        var text = string.Join(
+            Environment.NewLine,
+            entries.Select(static entry => JsonSerializer.Serialize(entry, InfrastructureJson.Compact)))
+            + (entries.Count == 0 ? string.Empty : Environment.NewLine);
+        await AtomicFileWriter.WriteTextAsync(indexPath, text, cancellationToken).ConfigureAwait(false);
+
+        void AddIndexEntry(string relativePath, string sha256)
+        {
+            var fullPath = ExportPathSafety.CombineUnderRoot(_exportRoot, relativePath);
+            if (!File.Exists(fullPath))
+            {
+                if (allowMissingArtifacts)
+                {
+                    return;
+                }
+
+                throw new InvalidDataException("The artifact index cannot reference a missing export artifact.");
+            }
+
+            var info = new FileInfo(fullPath);
+            entries.Add(new ArtifactIndexEntry(
+                relativePath.Replace('\\', '/'),
+                ArtifactFileIdentity.Read(fullPath),
+                info.Length,
+                info.LastWriteTimeUtc.Ticks,
+                sha256,
+                DateTimeOffset.UtcNow));
+        }
+    }
+
+    internal static async Task<VoiceExportManifest> ReadManifestFromJournalAsync(
         VoiceExportManifest fallback,
         string journalPath,
         CancellationToken cancellationToken)
@@ -197,6 +245,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var failures = new List<VoiceExportFailure>();
         VoiceCatalogContext? journalContext = null;
         var runStatus = fallback.RunStatus;
+        DateTimeOffset? manifestGeneratedAtUtc = null;
         await using var journalStream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         using var journalReader = new StreamReader(journalStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 128 * 1024, leaveOpen: false);
         var journalText = await journalReader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
@@ -247,6 +296,11 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 journalContext = context;
             }
 
+            if (journalEvent.Event == "manifest-committed")
+            {
+                manifestGeneratedAtUtc = journalEvent.ManifestGeneratedAtUtc;
+            }
+
             if (journalEvent.Failure is { } failure && journalEvent.Event == "item-failed")
             {
                 failures.Add(failure);
@@ -262,11 +316,11 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
 
         return new VoiceExportManifest(
-            fallback.GeneratedAtUtc,
-            entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal),
+            manifestGeneratedAtUtc ?? fallback.GeneratedAtUtc,
+            entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal).ToArray(),
             failures.OrderBy(static failure => failure.MessageId ?? string.Empty, StringComparer.Ordinal)
                 .ThenBy(static failure => failure.Stage, StringComparer.Ordinal)
-                .ThenBy(static failure => failure.Error, StringComparer.Ordinal),
+                .ThenBy(static failure => failure.Error, StringComparer.Ordinal).ToArray(),
             fallback.RunId,
             journalContext?.SnapshotId ?? fallback.SnapshotId,
             journalContext?.AdapterId ?? fallback.AdapterId,
@@ -1060,9 +1114,16 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 await AtomicFileWriter.WriteJsonAsync(latestPrivatePath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
                 await VoiceManifestCsvWriter.WriteAsync(latestCsvPath, journalManifest, cancellationToken).ConfigureAwait(false);
                 await VoiceManifestCsvWriter.WriteAsync(latestDatasetPath, journalManifest, cancellationToken).ConfigureAwait(false);
+                await _store.RebuildArtifactIndexAsync(journalManifest, cancellationToken).ConfigureAwait(false);
                 // This is the durable commit marker. Every manifest file is
                 // complete before the event is flushed to the Journal.
-                await AppendCoreAsync(new VoiceExportJournalEvent("manifest-committed", _runId, DateTimeOffset.UtcNow, Context: null, ManifestSha256: manifestSha256), cancellationToken).ConfigureAwait(false);
+                await AppendCoreAsync(new VoiceExportJournalEvent(
+                    "manifest-committed",
+                    _runId,
+                    DateTimeOffset.UtcNow,
+                    Context: null,
+                    ManifestSha256: manifestSha256,
+                    ManifestGeneratedAtUtc: journalManifest.GeneratedAtUtc), cancellationToken).ConfigureAwait(false);
             }
             finally
             {

@@ -24,6 +24,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             new ContactViewModel(services),
             new ScanViewModel(services),
             new ExportViewModel(services),
+            new DatasetCurationViewModel(services),
             new HistoryDiagnosticsViewModel(services),
         ];
         SelectedPage = Pages[0];

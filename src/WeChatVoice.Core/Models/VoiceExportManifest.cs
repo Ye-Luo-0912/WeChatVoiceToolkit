@@ -10,8 +10,8 @@ public sealed record VoiceExportManifest
 {
     public VoiceExportManifest(
         DateTimeOffset GeneratedAtUtc,
-        IEnumerable<VoiceExportEntry>? Entries = null,
-        IEnumerable<VoiceExportFailure>? Failures = null,
+        IReadOnlyList<VoiceExportEntry>? Entries = null,
+        IReadOnlyList<VoiceExportFailure>? Failures = null,
         string? RunId = null,
         string? SnapshotId = null,
         string? AdapterId = null,
@@ -162,7 +162,8 @@ public sealed record VoiceExportJournalEvent(
     VoiceExportFailure? Failure = null,
     VoiceCatalogContext? Context = null,
     bool Cancelled = false,
-    string? ManifestSha256 = null)
+    string? ManifestSha256 = null,
+    DateTimeOffset? ManifestGeneratedAtUtc = null)
 {
     public DateTimeOffset OccurredAtUtc { get; init; } = OccurredAtUtc.ToUniversalTime();
 }

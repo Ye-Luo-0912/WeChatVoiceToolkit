@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Desktop.Infrastructure;
+using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.ViewModels;
 
@@ -71,6 +72,9 @@ public sealed partial class ExportViewModel : PageViewModelBase
 
     [ObservableProperty]
     private int _trainingEntryCount;
+
+    [ObservableProperty]
+    private string? _verificationSummary;
 
     [RelayCommand]
     private Task ExportAsync()
@@ -155,6 +159,37 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 _ => $"导出失败：{FailureCount} 条",
             };
         });
+    }
+
+    [RelayCommand]
+    private Task VerifyExportAsync()
+    {
+        var exportDirectory = OutputDirectory ?? Services.Project.ExportDirectory;
+        return RunHost.RunAsync(
+            async (context, cancellationToken) => await Workflows.VoiceExport.VerifyAsync(
+                new ExportVerificationRequest(exportDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required.")),
+                context,
+                cancellationToken).ConfigureAwait(false),
+            result =>
+            {
+                VerificationSummary = result.IsValid
+                    ? $"导出验证通过：{result.VerifiedOriginalCount} 个 SILK，Journal/Csv/训练选择一致。"
+                    : $"导出验证失败：{result.Issues.Count} 项；缺失 {result.MissingFileCount}，多余 {result.ExtraFileCount}。请查看错误码后执行修复。";
+            });
+    }
+
+    [RelayCommand]
+    private Task RepairExportAsync()
+    {
+        var exportDirectory = OutputDirectory ?? Services.Project.ExportDirectory;
+        return RunHost.RunAsync(
+            async (context, cancellationToken) => await Workflows.VoiceExport.RepairAsync(
+                new ExportRepairRequest(exportDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required.")),
+                context,
+                cancellationToken).ConfigureAwait(false),
+            result => VerificationSummary = result.Verification.IsValid
+                ? $"导出派生文件已修复并验证：{result.Verification.VerifiedOriginalCount} 个 SILK；原始 SILK 未修改。"
+                : $"导出修复后仍未通过验证：{result.Verification.Issues.Count} 项。");
     }
 
     /// <summary>Recovers a manifest from a flushed run journal after a crash.</summary>
@@ -246,7 +281,9 @@ public sealed partial class ExportViewModel : PageViewModelBase
         if (propertyName is nameof(ExportProjectSession.SelectedContact)
             or nameof(ExportProjectSession.SelectionPlan)
             or nameof(ExportProjectSession.Scan)
-            or nameof(ExportProjectSession.Workspace))
+            or nameof(ExportProjectSession.Workspace)
+            or nameof(ExportProjectSession.LastExportRun)
+            or nameof(ExportProjectSession.ExportDirectory))
         {
             OnPropertyChanged(nameof(ContactSelectionSummary));
             OnPropertyChanged(nameof(SelectionPlanSummary));

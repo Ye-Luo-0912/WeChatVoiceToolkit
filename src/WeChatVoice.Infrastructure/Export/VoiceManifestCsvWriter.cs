@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Serialization;
@@ -38,7 +37,7 @@ internal static class VoiceManifestCsvWriter
         {
             AppendRow(builder,
             [
-                ComputeItemId(entry),
+                ExportItemIdentity.ComputeItemId(entry),
                 entry.OriginalPath,
                 entry.OriginalSha256,
                 entry.DurationMs?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
@@ -73,12 +72,6 @@ internal static class VoiceManifestCsvWriter
         }
 
         builder.AppendLine();
-    }
-
-    private static string ComputeItemId(VoiceExportEntry entry)
-    {
-        var sourceIdentity = entry.SourceStableKey ?? $"{entry.MessageId}\n{entry.OriginalSha256}";
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourceIdentity))).ToLowerInvariant();
     }
 
     private static string SanitizeForSpreadsheet(string value)

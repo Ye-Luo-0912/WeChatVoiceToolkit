@@ -27,6 +27,7 @@ public sealed class WorkflowCompositionRoot
         IContactDiscoveryWorkflow? contactDiscovery = null,
         IVoiceScanWorkflow? voiceScan = null,
         IVoiceExportWorkflow? voiceExport = null,
+        IDatasetCurationWorkflow? datasetCuration = null,
         IVoiceDurationResolver? voiceDurationResolver = null)
     {
         ArgumentNullException.ThrowIfNull(accountConfirmation);
@@ -60,6 +61,7 @@ public sealed class WorkflowCompositionRoot
             new JsonlVoicePayloadHashCache(VoicePayloadHashCachePath.ForWorkspace(workspaceResult));
         VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory, deepScanCacheFactory);
         VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory, configuredDecoder);
+        DatasetCuration = datasetCuration ?? new DatasetCurationWorkflow();
         AccountConfirmation = accountConfirmation;
         AllowDevelopmentBroker = allowDevelopmentBroker;
     }
@@ -77,6 +79,8 @@ public sealed class WorkflowCompositionRoot
     public IVoiceScanWorkflow VoiceScan { get; }
 
     public IVoiceExportWorkflow VoiceExport { get; }
+
+    public IDatasetCurationWorkflow DatasetCuration { get; }
 
     public IAccountConfirmation AccountConfirmation { get; }
 

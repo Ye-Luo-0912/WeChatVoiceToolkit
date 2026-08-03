@@ -204,10 +204,10 @@ public sealed class VoiceExportService
                     : ExportRunStatus.Completed;
         var manifest = new VoiceExportManifest(
             DateTimeOffset.UtcNow,
-            entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal),
+            entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal).ToArray(),
             failures.OrderBy(static failure => failure.MessageId ?? string.Empty, StringComparer.Ordinal)
                 .ThenBy(static failure => failure.Stage, StringComparer.Ordinal)
-                .ThenBy(static failure => failure.Error, StringComparer.Ordinal),
+                .ThenBy(static failure => failure.Error, StringComparer.Ordinal).ToArray(),
             runId,
             context.SnapshotId,
             context.AdapterId,

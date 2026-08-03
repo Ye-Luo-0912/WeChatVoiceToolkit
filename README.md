@@ -131,3 +131,18 @@ The ZIP layout is retained only as a portable diagnostic attachment. It is not
 a formal Broker distribution because an ordinary user can extract it into a
 writable directory. Do not use a single-project `dotnet publish` as a release
 package.
+
+Formal MSIX lifecycle commands are also provided for operators and release
+automation:
+
+```powershell
+./scripts/install-msix.ps1 -PackagePath artifacts/WeChatVoiceToolkit-win-x64.msix `
+  -UpdateManifestPath artifacts/WeChatVoiceToolkit-win-x64.update-manifest.json `
+  -RunTrustSmoke
+./scripts/rollback-msix.ps1 -PackagePath artifacts/rollback/WeChatVoiceToolkit-win-x64.msix -RunTrustSmoke
+./scripts/uninstall-msix.ps1
+```
+
+Upgrade and rollback never remove Snapshot, Workspace, or Export data. The
+update manifest binds the package filename, version, publisher, length, and
+SHA-256 before installation.

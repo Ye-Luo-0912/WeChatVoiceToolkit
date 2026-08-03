@@ -15,8 +15,11 @@ public sealed class VoiceExportWorkflow(
     Workspaces.VoiceCatalogOpener opener,
     Workspaces.ContactResolver resolver,
     Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null,
-    IVoiceDurationResolver? durationResolver = null) : IVoiceExportWorkflow
+    IVoiceDurationResolver? durationResolver = null,
+    ExportVerificationService? verificationService = null) : IVoiceExportWorkflow
 {
+    private readonly ExportVerificationService _verificationService = verificationService ?? new();
+
     public async Task<VoiceExportWorkflowResult> RunAsync(
         PreparedVoiceSelection plan,
         ExportDestination destination,
@@ -150,6 +153,70 @@ public sealed class VoiceExportWorkflow(
         var exportRoot = Path.GetDirectoryName(Path.GetDirectoryName(fullJournalPath)!)
             ?? throw new InvalidDataException("The Journal path must be nested under an export root runs directory.");
         return await new FileSystemVoiceExportStore(exportRoot).RecoverRunAsync(fullJournalPath, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ExportVerificationResult> VerifyAsync(
+        ExportVerificationRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.LoadingWorkspace, "验证导出 Manifest 与 SILK");
+            var result = await _verificationService.VerifyAsync(request.ExportDirectory, request.RunId, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing);
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
+    public async Task<ExportRepairResult> RepairAsync(
+        ExportRepairRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.LoadingWorkspace, "验证并修复导出派生文件");
+            var result = await _verificationService.RepairAsync(request.ExportDirectory, request.RunId, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing);
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
     }
 
     private static void ValidatePlanIdentity(

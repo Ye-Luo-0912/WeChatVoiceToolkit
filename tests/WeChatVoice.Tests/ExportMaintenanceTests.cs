@@ -1,0 +1,228 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using WeChatVoice.Core.Models;
+using WeChatVoice.Infrastructure.Export;
+using WeChatVoice.Workflows.Workflows;
+
+namespace WeChatVoice.Tests;
+
+public sealed class ExportMaintenanceTests
+{
+    [Fact]
+    public async Task VerifyAsync_accepts_a_committed_export_and_validates_the_artifact_index()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+
+        var result = await new ExportVerificationService().VerifyAsync(
+            export.Root,
+            runId: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsValid, string.Join(Environment.NewLine, result.Issues.Select(issue => issue.Code)));
+        Assert.Equal(1, result.VerifiedOriginalCount);
+        Assert.True(File.Exists(Path.Combine(export.Root, "artifact-index.jsonl")));
+    }
+
+    [Fact]
+    public async Task VerifyAsync_rejects_a_modified_silk_even_when_the_length_is_unchanged()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var silkPath = Path.Combine(export.Root, export.Entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar));
+        var originalWriteTime = File.GetLastWriteTimeUtc(silkPath);
+        await File.WriteAllBytesAsync(silkPath, [9, 8, 7, 6]);
+        File.SetLastWriteTimeUtc(silkPath, originalWriteTime);
+
+        var result = await new ExportVerificationService().VerifyAsync(export.Root, null, CancellationToken.None);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Issues, issue => issue.Code == "artifact-hash-mismatch");
+    }
+
+    [Fact]
+    public async Task RepairAsync_rebuilds_only_derived_files_and_keeps_original_silk_bytes()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var silkPath = Path.Combine(export.Root, export.Entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar));
+        var originalBytes = await File.ReadAllBytesAsync(silkPath);
+        await File.WriteAllTextAsync(Path.Combine(export.Root, "dataset.csv"), "broken\n");
+        File.Delete(Path.Combine(export.Root, "artifact-index.jsonl"));
+
+        var repaired = await new ExportVerificationService().RepairAsync(export.Root, null, CancellationToken.None);
+
+        Assert.True(repaired.Verification.IsValid, string.Join(Environment.NewLine, repaired.Verification.Issues.Select(issue => issue.Code)));
+        Assert.False(repaired.OriginalArtifactsChanged);
+        Assert.Equal(originalBytes, await File.ReadAllBytesAsync(silkPath));
+        Assert.True(File.Exists(Path.Combine(export.Root, "dataset.csv")));
+        Assert.True(File.Exists(Path.Combine(export.Root, "artifact-index.jsonl")));
+    }
+
+    [Fact]
+    public async Task Dataset_curation_starts_unselected_and_rejects_multiple_duplicate_representatives()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var entries = new[]
+        {
+            CreateEntry("one", "original/one.silk", "same-hash", 100, 3, VoiceDirection.Incoming),
+            CreateEntry("two", "original/two.silk", "same-hash", null, 4, VoiceDirection.Incoming),
+            CreateEntry("three", "original/three.silk", "other-hash", 200, 5, VoiceDirection.Outgoing),
+        };
+        var manifestPath = Path.Combine(temporary.RootPath, "export", "latest.manifest.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
+        await WriteManifestAsync(manifestPath, entries);
+
+        var workflow = new DatasetCurationWorkflow();
+        var first = await workflow.RunAsync(
+            new DatasetCurationRequest(Path.GetDirectoryName(manifestPath)!),
+            NewContext(),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(first.Items, item => item.IsSelected);
+        Assert.Equal(1, first.Items.Count(item => item.PassesFilters));
+        Assert.Equal(0, first.SelectedDurationMs);
+
+        var firstId = ExportItemIdentity.ComputeItemId(entries[0]);
+        var secondId = ExportItemIdentity.ComputeItemId(entries[1]);
+        await Assert.ThrowsAsync<WeChatVoice.Core.Errors.AppFailureException>(() => workflow.RunAsync(
+            new DatasetCurationRequest(
+                Path.GetDirectoryName(manifestPath)!,
+                SelectedItemIds: [firstId, secondId],
+                DuplicateRepresentativeItemIds: [firstId, secondId]),
+            NewContext(),
+            CancellationToken.None));
+
+        var selected = await workflow.RunAsync(
+            new DatasetCurationRequest(
+                Path.GetDirectoryName(manifestPath)!,
+                SelectedItemIds: [firstId],
+                DuplicateRepresentativeItemIds: [firstId]),
+            NewContext(),
+            CancellationToken.None);
+        Assert.Single(selected.Items, item => item.IsSelected);
+        Assert.Equal(100, selected.SelectedDurationMs);
+        Assert.Equal(TrainingEligibility.Eligible, selected.Items.Single(item => item.IsSelected).TrainingEligibility);
+    }
+
+    [Fact]
+    public async Task Dataset_curation_requires_the_selection_profile_manifest_hash()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var entry = CreateEntry("one", "original/one.silk", "hash", 100, 3, VoiceDirection.Incoming);
+        var manifestPath = Path.Combine(temporary.RootPath, "export", "latest.manifest.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
+        await WriteManifestAsync(manifestPath, [entry]);
+
+        await Assert.ThrowsAsync<WeChatVoice.Core.Errors.AppFailureException>(() => new DatasetCurationWorkflow().RunAsync(
+            new DatasetCurationRequest(
+                Path.GetDirectoryName(manifestPath)!,
+                ExpectedManifestSha256: new string('0', 64)),
+            NewContext(),
+            CancellationToken.None));
+    }
+
+    private static async Task<(string Root, VoiceExportEntry Entry)> CreateCommittedExportAsync(TestTemporaryDirectory temporary)
+    {
+        var root = temporary.GetPath("export");
+        var bytes = new byte[] { 1, 2, 3, 4 };
+        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var record = new VoiceRecord(
+            "message",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "blob"),
+            SnapshotId: "snapshot",
+            AdapterId: "adapter",
+            AccountId: "account",
+            DataSetId: "dataset",
+            AdapterVersion: "1",
+            DatabaseFingerprints: ["database"],
+            AdapterFamily: "adapter",
+            AccountStableId: "account",
+            ConversationStableId: "conversation",
+            MessagePrimaryKey: "message",
+            MediaPrimaryKey: "media:0:blob",
+            PayloadSha256: hash,
+            PayloadByteLength: bytes.Length);
+
+        VoiceExportEntry entry;
+        var store = new FileSystemVoiceExportStore(root);
+        await using (var item = await store.BeginItemAsync(record, ExistingArtifactPolicy.Replace, CancellationToken.None))
+        {
+            await using (var output = await item.OpenOriginalWriteAsync(CancellationToken.None))
+            {
+                await output.WriteAsync(bytes);
+            }
+
+            var artifact = await item.CommitOriginalAsync(CancellationToken.None);
+            entry = new VoiceExportEntry(
+                record.MessageId,
+                record.ConversationId,
+                record.OccurredAtUtc,
+                record.Direction,
+                artifact.RelativePath,
+                artifact.ByteLength,
+                artifact.Sha256,
+                null,
+                record.SourceStableKey,
+                SourceDatabase: "messages.db",
+                ShardId: "0",
+                DurationMs: 100);
+        }
+
+        var context = new VoiceCatalogContext("dataset", "adapter", "1", "account", ["database"]);
+        await using (var journal = await store.BeginRunAsync(
+            new VoiceExportRunContext("run-test", context, DateTimeOffset.UtcNow),
+            CancellationToken.None))
+        {
+            await journal.AppendAsync(new VoiceExportJournalEvent("run-started", "run-test", DateTimeOffset.UtcNow, Context: context), CancellationToken.None);
+            await journal.AppendAsync(new VoiceExportJournalEvent("item-committed", "run-test", DateTimeOffset.UtcNow, entry.MessageId, Entry: entry), CancellationToken.None);
+            await journal.AppendAsync(new VoiceExportJournalEvent("processing-completed", "run-test", DateTimeOffset.UtcNow, Context: context), CancellationToken.None);
+            await journal.FinalizeAsync(new VoiceExportManifest(DateTimeOffset.UtcNow, RunId: "run-test"), CancellationToken.None);
+        }
+
+        return (root, entry);
+    }
+
+    private static VoiceExportEntry CreateEntry(
+        string messageId,
+        string path,
+        string hash,
+        long? duration,
+        long length,
+        VoiceDirection direction)
+        => new(
+            messageId,
+            "conversation",
+            DateTimeOffset.UtcNow,
+            direction,
+            path,
+            length,
+            hash,
+            null,
+            SourceStableKey: "adapter|account|conversation|" + messageId + "|media:" + messageId,
+            DurationMs: duration);
+
+    private static async Task WriteManifestAsync(string path, IReadOnlyList<VoiceExportEntry> entries)
+    {
+        var manifest = new VoiceExportManifest(DateTimeOffset.UtcNow, entries, RunId: "curation-run");
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        };
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(manifest, options));
+    }
+
+    private static WorkflowContext NewContext()
+        => new(new TestAccountConfirmation());
+
+    private sealed class TestAccountConfirmation : WeChatVoice.Core.Ports.IAccountConfirmation
+    {
+        public Task<AccountConfirmation> ConfirmAsync(AccountIdentityReport report, CancellationToken cancellationToken)
+            => Task.FromResult(new AccountConfirmation(true, report.AccountCandidate));
+    }
+}

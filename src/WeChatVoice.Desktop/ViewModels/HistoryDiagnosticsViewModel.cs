@@ -34,6 +34,7 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
         _deleteArmed = false;
         _deletePreview = null;
         SelectedExportDirectory = value?.LastExportDirectory;
+        MaterializedRootPath = value?.MaterializedRootPath;
         ExportRuns = LoadExportRuns(SelectedExportDirectory);
     }
 
@@ -140,7 +141,7 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
     [RelayCommand]
     private Task RepairSelectedWorkspaceAsync()
     {
-        var outputRoot = MaterializedRootPath;
+        var outputRoot = MaterializedRootPath ?? SelectedWorkspace?.MaterializedRootPath;
         var workspacePath = SelectedWorkspace?.WorkspacePath;
         if (string.IsNullOrWhiteSpace(outputRoot) || string.IsNullOrWhiteSpace(workspacePath))
         {

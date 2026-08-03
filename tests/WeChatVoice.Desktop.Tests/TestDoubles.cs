@@ -248,6 +248,36 @@ public sealed class FakeExportWorkflow : IVoiceExportWorkflow
         return Task.FromResult(new VoiceExportWorkflowResult(Manifest, TestDoubles.Verified()));
     }
 
+    public Task<ExportVerificationResult> VerifyAsync(ExportVerificationRequest request, WorkflowContext context, CancellationToken cancellationToken)
+        => Task.FromResult(new ExportVerificationResult(
+            Path.GetFullPath(request.ExportDirectory),
+            request.RunId ?? Manifest.RunId,
+            true,
+            new string('a', 64),
+            Manifest.Entries.Count,
+            0,
+            0,
+            true,
+            true,
+            true,
+            []));
+
+    public Task<ExportRepairResult> RepairAsync(ExportRepairRequest request, WorkflowContext context, CancellationToken cancellationToken)
+        => Task.FromResult(new ExportRepairResult(
+            new ExportVerificationResult(
+                Path.GetFullPath(request.ExportDirectory),
+                request.RunId ?? Manifest.RunId,
+                true,
+                new string('a', 64),
+                Manifest.Entries.Count,
+                0,
+                0,
+                true,
+                true,
+                true,
+                []),
+            Path.Combine(Path.GetFullPath(request.ExportDirectory), "runs", Manifest.RunId + ".jsonl")));
+
     public Task<VoiceExportManifest> RecoverRunAsync(string journalPath, CancellationToken cancellationToken)
         => Task.FromResult(Manifest);
 }

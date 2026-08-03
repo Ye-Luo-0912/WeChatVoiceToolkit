@@ -16,7 +16,8 @@ public sealed record RecentWorkspaceEntry(
     string DataSetId,
     string? AccountId,
     DateTimeOffset LastUsedUtc,
-    string? LastExportDirectory = null);
+    string? LastExportDirectory = null,
+    string? MaterializedRootPath = null);
 
 public sealed record RecentSnapshotEntry(
     string SourceDirectory,
@@ -81,7 +82,8 @@ public sealed class RecentWorkspaceStore
                 workspace.Workspace.WorkspaceId,
                 workspace.DataSet.DataSetId,
                 workspace.DataSet.AccountId,
-                DateTimeOffset.UtcNow));
+                DateTimeOffset.UtcNow,
+                MaterializedRootPath: workspace.Workspace.SourceRoot));
             while (entries.Count > 10)
             {
                 entries.RemoveAt(entries.Count - 1);

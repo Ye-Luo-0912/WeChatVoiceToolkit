@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Serialization;
@@ -14,6 +15,11 @@ namespace WeChatVoice.Infrastructure.Materialization;
 /// </summary>
 public sealed class MaterializationRecoveryService
 {
+    private static readonly JsonSerializerOptions WorkspaceJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+
     public async Task<MaterializationRecoveryAssessment> AssessAsync(
         string outputRoot,
         string? workspaceOutputPath,
@@ -252,7 +258,41 @@ public sealed class MaterializationRecoveryService
 
         if (File.Exists(fullWorkspacePath))
         {
-            throw new InvalidDataException("The workspace document already exists; use workspace verify instead of repair.");
+            var documentIsReadable = false;
+            try
+            {
+                // A valid document should be verified or adopted through the
+                // normal path. Repair is intentionally reserved for a lost
+                // or unreadable document, so a healthy file is never
+                // silently replaced.
+                await using var workspaceStream = new FileStream(
+                    fullWorkspacePath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    32 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                var workspaceDocument = await JsonSerializer.DeserializeAsync<LocalWorkspace>(
+                    workspaceStream,
+                    WorkspaceJsonOptions,
+                    cancellationToken).ConfigureAwait(false);
+                if (workspaceDocument is null)
+                {
+                    throw new InvalidDataException("The workspace document is empty.");
+                }
+                documentIsReadable = true;
+            }
+            catch (Exception exception) when (exception is JsonException or InvalidDataException or ArgumentException)
+            {
+                // Continue: the existing JSON is damaged and will be
+                // atomically replaced only after the materialization
+                // manifest and every output hash have been verified.
+            }
+
+            if (documentIsReadable)
+            {
+                throw new InvalidDataException("The workspace document already exists; use workspace verify instead of repair.");
+            }
         }
 
         var manifest = await ReadAndVerifyManifestAsync(fullRoot, cancellationToken).ConfigureAwait(false);

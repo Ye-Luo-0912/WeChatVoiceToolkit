@@ -26,6 +26,9 @@
     <DataTemplate DataType="{x:Type vm:ExportViewModel}">
       <views:ExportView />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:DatasetCurationViewModel}">
+      <views:DatasetCurationView />
+    </DataTemplate>
     <DataTemplate DataType="{x:Type vm:HistoryDiagnosticsViewModel}">
       <views:HistoryDiagnosticsView />
     </DataTemplate>

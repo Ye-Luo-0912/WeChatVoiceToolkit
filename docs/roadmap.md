@@ -79,10 +79,19 @@
    cannot decode.
 3. Add a batch or resident decoder worker only after the raw SILK path is
    stable; keep strict RIFF/PCM validation and never overwrite SILK.
-4. Add installer upgrade/rollback coverage and certificate rotation policy for
-   the MSIX distribution. The ZIP package remains a diagnostic-only artifact;
-   formal Broker distribution uses the signed MSIX installed to a protected
-   directory.
+4. Expand installer certificate-rotation and multi-release update policy. The
+   ZIP package remains a diagnostic-only artifact; formal Broker distribution
+   uses the signed MSIX installed to a protected directory.
+
+The first installer lifecycle is now scripted: a signed package has an
+update-manifest binding, `install-msix.ps1` verifies that binding and can run
+the installed ordinary-user trust smoke, `rollback-msix.ps1` requires a lower
+package version when metadata is available, and `uninstall-msix.ps1` removes
+only the current-user AppX registration. None of these commands delete
+Snapshot, Workspace, Export, or LocalApplicationData data. Certificate
+rotation remains a release-operator policy: a rotated certificate must be
+present in the Broker bundle manifest and the installed MSIX publisher before
+an update is accepted.
 
 New Weixin versions require a new exact process/module Profile and schema
 evidence. There is no unknown-version heuristic fallback.

@@ -49,13 +49,31 @@ jobs:
           if ($parts.Count -eq 0) { $parts = @('0', '0', $env:GITHUB_RUN_NUMBER) }
           while ($parts.Count -lt 3) { $parts += '0' }
           $version = "$($parts[0]).$($parts[1]).$($parts[2]).0"
+          "WECHATVOICE_PACKAGE_VERSION=$version" >> $env:GITHUB_ENV
           ./scripts/package-msix.ps1 -PublishDirectory "$env:GITHUB_WORKSPACE\\artifacts\\package" -OutputPath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.msix" -PfxPath "$env:WECHATVOICE_SIGNING_PFX_PATH" -PfxPassword "$env:WECHATVOICE_SIGNING_PFX_PASSWORD" -Version $version
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $env:WECHATVOICE_SIGNING_PFX_PATH,
+            $env:WECHATVOICE_SIGNING_PFX_PASSWORD,
+            [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+          try {
+            $packageUri = if ($env:GITHUB_REF_NAME -like 'v*') {
+              "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/WeChatVoiceToolkit-win-x64.msix"
+            } else { '' }
+            ./scripts/generate-update-manifest.ps1 `
+              -PackagePath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.msix" `
+              -OutputPath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.update-manifest.json" `
+              -Version $version `
+              -PublisherThumbprint $certificate.Thumbprint `
+              -PackageUri $packageUri
+          }
+          finally { $certificate.Dispose() }
       - name: Install formal MSIX and run ordinary-user trust smoke
         shell: pwsh
         env:
           WECHATVOICE_SIGNING_PFX_PASSWORD: ${{ secrets.WECHATVOICE_SIGNING_PFX_PASSWORD }}
         run: |
           $packagePath = "$env:GITHUB_WORKSPACE\artifacts\WeChatVoiceToolkit-win-x64.msix"
+          $updateManifestPath = "$env:GITHUB_WORKSPACE\artifacts\WeChatVoiceToolkit-win-x64.update-manifest.json"
           $publicCertificatePath = Join-Path $env:RUNNER_TEMP 'wechatvoice-release-signing.cer'
           $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
             $env:WECHATVOICE_SIGNING_PFX_PATH,
@@ -65,15 +83,23 @@ jobs:
           Import-Certificate -FilePath $publicCertificatePath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
           $certificateThumbprint = $certificate.Thumbprint
           try {
-            Add-AppxPackage -Path $packagePath
-            $package = Get-AppxPackage -Name WeChatVoiceToolkit | Select-Object -First 1
-            if ($null -eq $package) { throw 'The formal MSIX package was not installed.' }
-            $desktop = Join-Path $package.InstallLocation 'WeChatVoice.Desktop.exe'
-            $smoke = Start-Process -FilePath $desktop -ArgumentList '--smoke-check','--release-trust-smoke' -Wait -PassThru -WindowStyle Hidden
-            if ($smoke.ExitCode -ne 0) { throw "Installed MSIX Desktop trust smoke failed with exit code $($smoke.ExitCode)." }
+            ./scripts/install-msix.ps1 -PackagePath $packagePath -UpdateManifestPath $updateManifestPath -RunTrustSmoke -ForceUpdateFromAnyVersion
+
+            # Install a lower-version signed package, roll back to it, then
+            # reinstall the release. This exercises the same AppX identity,
+            # publisher, and protected Broker closure used by upgrades.
+            if ([version]$env:WECHATVOICE_PACKAGE_VERSION -gt [version]'0.0.0.0') {
+              $rollbackDirectory = "$env:GITHUB_WORKSPACE\artifacts\rollback"
+              New-Item -ItemType Directory -Path $rollbackDirectory -Force | Out-Null
+              ./scripts/package-msix.ps1 -PublishDirectory "$env:GITHUB_WORKSPACE\artifacts\package" -OutputPath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -PfxPath "$env:WECHATVOICE_SIGNING_PFX_PATH" -PfxPassword "$env:WECHATVOICE_SIGNING_PFX_PASSWORD" -Version '0.0.0.0'
+              ./scripts/rollback-msix.ps1 -PackagePath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -RunTrustSmoke
+            } else {
+              Write-Host 'No lower AppX version exists for rollback smoke at 0.0.0.0.'
+            }
+            ./scripts/install-msix.ps1 -PackagePath $packagePath -UpdateManifestPath $updateManifestPath -RunTrustSmoke -ForceUpdateFromAnyVersion
           }
           finally {
-            Get-AppxPackage -Name WeChatVoiceToolkit | Remove-AppxPackage -ErrorAction SilentlyContinue
+            ./scripts/uninstall-msix.ps1 -PackageName WeChatVoiceToolkit
             Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$certificateThumbprint" -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $publicCertificatePath -Force -ErrorAction SilentlyContinue
             $certificate.Dispose()
@@ -88,7 +114,8 @@ jobs:
             'artifacts/WeChatVoiceToolkit-win-x64.zip',
             'artifacts/WeChatVoiceToolkit-win-x64.msix',
             'artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json',
-            'artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json'
+            'artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json',
+            'artifacts/WeChatVoiceToolkit-win-x64.update-manifest.json'
           )
           $releaseFiles | ForEach-Object {
             $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -104,6 +131,7 @@ jobs:
             artifacts/WeChatVoiceToolkit-win-x64.SHA256SUMS.txt
             artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json
             artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json
+            artifacts/WeChatVoiceToolkit-win-x64.update-manifest.json
       - name: Publish GitHub Release attachments
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -115,3 +143,4 @@ jobs:
             artifacts/WeChatVoiceToolkit-win-x64.SHA256SUMS.txt
             artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json
             artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json
+            artifacts/WeChatVoiceToolkit-win-x64.update-manifest.json

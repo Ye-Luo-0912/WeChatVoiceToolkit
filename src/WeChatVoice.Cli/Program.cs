@@ -380,6 +380,70 @@ internal static partial class CliApplication
             }
         });
         exportCommand.Subcommands.Add(recoverCommand);
+
+        var verifyExportCommand = new Command("verify", "Verify export manifests, Journal commit, CSV, index, and SILK artifacts without modifying them.");
+        var verifyOutputOption = new Option<string>("--output") { Description = "Export root directory.", Required = true };
+        var verifyRunIdOption = new Option<string?>("--run-id") { Description = "Optional run ID; defaults to latest.manifest.json." };
+        verifyExportCommand.Options.Add(verifyOutputOption);
+        verifyExportCommand.Options.Add(verifyRunIdOption);
+        verifyExportCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var output = parseResult.GetValue(verifyOutputOption);
+            var runId = parseResult.GetValue(verifyRunIdOption);
+            try
+            {
+                var root = CreateRoot();
+                var result = await root.VoiceExport.VerifyAsync(
+                    new ExportVerificationRequest(output!, runId),
+                    new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return result.IsValid ? 0 : 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Export verification was cancelled.");
+                return 130;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+
+        var repairExportCommand = new Command("repair", "Regenerate only export manifests, CSV files, and the artifact index after verifying SILK files.");
+        var repairOutputOption = new Option<string>("--output") { Description = "Export root directory.", Required = true };
+        var repairRunIdOption = new Option<string?>("--run-id") { Description = "Optional run ID; defaults to the latest committed Journal." };
+        repairExportCommand.Options.Add(repairOutputOption);
+        repairExportCommand.Options.Add(repairRunIdOption);
+        repairExportCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var output = parseResult.GetValue(repairOutputOption);
+            var runId = parseResult.GetValue(repairRunIdOption);
+            try
+            {
+                var root = CreateRoot();
+                var result = await root.VoiceExport.RepairAsync(
+                    new ExportRepairRequest(output!, runId),
+                    new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return result.Verification.IsValid ? 0 : 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Export repair was cancelled.");
+                return 130;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+        exportCommand.Subcommands.Add(verifyExportCommand);
+        exportCommand.Subcommands.Add(repairExportCommand);
         return voiceCommand;
     }
 

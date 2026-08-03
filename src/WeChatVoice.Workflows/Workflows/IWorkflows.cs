@@ -102,6 +102,16 @@ public interface IVoiceExportWorkflow
     Task<VoiceExportManifest> RecoverRunAsync(
         string journalPath,
         CancellationToken cancellationToken);
+
+    Task<ExportVerificationResult> VerifyAsync(
+        ExportVerificationRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    Task<ExportRepairResult> RepairAsync(
+        ExportRepairRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
 }
 
 // ---- Requests and results ----
@@ -213,3 +223,11 @@ public sealed record VoiceExportWorkflowRequest(
 public sealed record VoiceExportWorkflowResult(
     VoiceExportManifest Manifest,
     VerifiedLocalWorkspace Workspace);
+
+public sealed record ExportVerificationRequest(
+    string ExportDirectory,
+    string? RunId = null);
+
+public sealed record ExportRepairRequest(
+    string ExportDirectory,
+    string? RunId = null);

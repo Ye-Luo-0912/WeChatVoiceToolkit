@@ -28,6 +28,11 @@
         <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
       </StackPanel>
       <TextBlock Text="{Binding ExportSummary}" FontWeight="SemiBold" />
+      <TextBlock Text="{Binding VerificationSummary}" TextWrapping="Wrap" />
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="验证导出" Command="{Binding VerifyExportCommand}" IsEnabled="{Binding CanStartOperation}" />
+        <Button Content="修复 Manifest/CSV/索引" Command="{Binding RepairExportCommand}" IsEnabled="{Binding CanStartOperation}" />
+      </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="24">
         <TextBlock Text="{Binding ExportedCount, StringFormat='新增：{0} 条'}" />
         <TextBlock Text="{Binding SkippedCount, StringFormat='跳过：{0} 条'}" />
