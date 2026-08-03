@@ -43,7 +43,7 @@ public sealed class VoiceExportService
         VoiceQuery query,
         VoiceExportOptions? options,
         CancellationToken cancellationToken = default)
-        => await ExportCoreAsync(query, options, preparedSelection: null, cancellationToken).ConfigureAwait(false);
+        => await ExportCoreAsync(query, options, preparedSelectionFactory: null, cancellationToken).ConfigureAwait(false);
 
     /// <summary>
     /// Exports the exact records captured by a preceding metadata scan. No
@@ -57,13 +57,37 @@ public sealed class VoiceExportService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(preparedSelection);
-        return await ExportCoreAsync(query, options, preparedSelection, cancellationToken).ConfigureAwait(false);
+        return await ExportCoreAsync(
+            query,
+            options,
+            cancellationTokenValue => EnumeratePreparedAsync(preparedSelection, cancellationTokenValue),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Exports a disk-backed prepared selection. The spool is read twice at
+    /// most (integrity/selection validation and payload export), but the
+    /// verified catalog is never queried again and VoiceRecord metadata is not
+    /// materialized as a second large list.
+    /// </summary>
+    public async Task<VoiceExportManifest> ExportPreparedSpoolAsync(
+        VoiceQuery query,
+        VoiceExportOptions? options,
+        PreparedSelectionSpoolDescriptor spool,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(spool);
+        return await ExportCoreAsync(
+            query,
+            options,
+            cancellationTokenValue => PreparedSelectionSpool.ReadAsync(spool, cancellationTokenValue),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<VoiceExportManifest> ExportCoreAsync(
         VoiceQuery query,
         VoiceExportOptions? options,
-        IReadOnlyList<VoiceRecord>? preparedSelection,
+        Func<CancellationToken, IAsyncEnumerable<VoiceRecord>>? preparedSelectionFactory,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -74,16 +98,17 @@ public sealed class VoiceExportService
         }
 
         // A compatibility export may still build its immutable list here. A
-        // formal guided export passes the list captured by VoiceScanWorkflow,
-        // so this branch performs no second metadata query.
-        if (preparedSelection is null && HasExpectedSelection(options))
+        // formal guided export passes a list or spool captured by
+        // VoiceScanWorkflow, so this branch performs no second metadata query.
+        if (preparedSelectionFactory is null && HasExpectedSelection(options))
         {
-            preparedSelection = await PrepareExpectedSelectionAsync(query, options, cancellationToken).ConfigureAwait(false);
+            var preparedSelection = await PrepareExpectedSelectionAsync(query, options, cancellationToken).ConfigureAwait(false);
+            preparedSelectionFactory = cancellationTokenValue => EnumeratePreparedAsync(preparedSelection, cancellationTokenValue);
         }
 
-        if (preparedSelection is not null && HasExpectedSelection(options))
+        if (preparedSelectionFactory is not null && HasExpectedSelection(options))
         {
-            ValidateExpectedSelection(preparedSelection, query, options);
+            await ValidateExpectedSelectionAsync(preparedSelectionFactory(cancellationToken), query, options, cancellationToken).ConfigureAwait(false);
         }
 
         var context = _voiceCatalog.Context;
@@ -105,14 +130,14 @@ public sealed class VoiceExportService
         var commitFailed = false;
         try
         {
-            var records = preparedSelection is null
+            var records = preparedSelectionFactory is null
                 ? VoiceSelectionEnumerator.EnumerateAsync(
                     _voiceCatalog,
                     query,
                     _durationResolver,
                     bypassCatalogDeepScan: false,
                     cancellationToken: cancellationToken)
-                : EnumeratePreparedAsync(preparedSelection, cancellationToken);
+                : preparedSelectionFactory(cancellationToken);
             await foreach (var record in records.ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -241,17 +266,22 @@ public sealed class VoiceExportService
             prepared.Add(record);
         }
 
-        ValidateExpectedSelection(prepared, query, options);
+        await ValidateExpectedSelectionAsync(
+            EnumeratePreparedAsync(prepared, cancellationToken),
+            query,
+            options,
+            cancellationToken).ConfigureAwait(false);
         return prepared;
     }
 
-    private void ValidateExpectedSelection(
-        IReadOnlyList<VoiceRecord> prepared,
+    private async Task ValidateExpectedSelectionAsync(
+        IAsyncEnumerable<VoiceRecord> prepared,
         VoiceQuery query,
-        VoiceExportOptions options)
+        VoiceExportOptions options,
+        CancellationToken cancellationToken)
     {
         using var fingerprint = new VoiceResultSetFingerprintBuilder();
-        foreach (var record in prepared)
+        await foreach (var record in prepared.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             if (_eligibilityEvaluator.Evaluate(record, _voiceCatalog.Context, query).IsEligible)
             {

@@ -75,10 +75,19 @@ unless the user explicitly opts into the development policy.
   signed layout, signs the MSIX with the same certificate, and installs the
   Broker/Worker under a Windows protected directory. The ZIP produced for
   diagnostics is not a formal Broker distribution.
-- The formal AppX identity is fixed to `WeChatVoiceToolkit`, `x64`, and
+- The formal AppX identity is fixed to `WeChatVoiceToolkit`, the protected
+  `WECHATVOICE_ALLOWED_PACKAGE_PUBLISHER` subject, `x64`, and
   `WeChatVoice.Desktop.exe`. Release automation rejects caller-supplied identity
   overrides. The allowed publisher certificate thumbprint and public-key ID
   remain protected release inputs; they are never guessed from an artifact.
+- Update manifests use a protected publisher policy. The policy may contain
+  multiple certificate/public-key pairs with validity windows for certificate
+  rotation, while retaining one AppX PublisherId. `install-msix.ps1` accepts a
+  strictly newer upgrade, or an explicitly marked rollback that names the
+  exact installed version; a caller cannot turn the force-update switch into a
+  downgrade. CI also places sentinel data under Snapshot, Workspace, Export,
+  and LocalApplicationData paths and verifies it survives install, rollback,
+  and uninstall.
 - `scripts/generate-spdx.ps1` invokes the repository-pinned Microsoft SBOM Tool
   (`microsoft.sbom.dotnettool` 4.1.5); the checked-in `sbom.spdx.json` is an
   official SPDX document generated from the final package drop, not a custom

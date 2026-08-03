@@ -119,7 +119,7 @@ public sealed class VoiceExportServiceTests
         Assert.Single(manifest.Failures, failure => failure.MessageId == "voice-1" && failure.Stage == "decode");
         Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.wav", SearchOption.AllDirectories));
         Assert.True(File.Exists(Path.Combine(exportRoot, "dataset.manifest.json")));
-        var journalLines = await File.ReadAllLinesAsync(Assert.Single(Directory.EnumerateFiles(Path.Combine(exportRoot, "runs"), "*.jsonl")));
+        var journalLines = await File.ReadAllLinesAsync(Path.Combine(exportRoot, "runs", manifest.RunId + ".jsonl"));
         var events = journalLines.Select(line => JsonDocument.Parse(line).RootElement.GetProperty("event").GetString()!).ToArray();
         Assert.Equal(["run-started", "item-failed", "item-committed", "processing-completed", "manifest-committed"], events);
         Assert.Equal(ExportRunStatus.CompletedWithFailures, manifest.RunStatus);

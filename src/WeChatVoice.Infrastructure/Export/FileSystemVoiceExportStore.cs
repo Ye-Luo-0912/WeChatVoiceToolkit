@@ -16,17 +16,27 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 {
     private readonly ConcurrentDictionary<string, byte> _reservedPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _exportRoot;
+    private readonly IExportTransactionFaultInjector? _faultInjector;
     private readonly SemaphoreSlim _artifactIndexGate = new(1, 1);
     private readonly SemaphoreSlim _namespaceKeyGate = new(1, 1);
     private Dictionary<string, ArtifactIndexEntry>? _artifactIndex;
 
-    public FileSystemVoiceExportStore(string exportRoot)
+    public FileSystemVoiceExportStore(
+        string exportRoot,
+        IExportTransactionFaultInjector? faultInjector = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(exportRoot);
         _exportRoot = Path.GetFullPath(exportRoot);
+        _faultInjector = faultInjector;
     }
 
     public string ExportRoot => _exportRoot;
+
+    internal void ThrowIfFaultRequested(
+        ExportTransactionFaultPoint point,
+        string runId,
+        string? messageId = null)
+        => _faultInjector?.ThrowIfRequested(point, runId, messageId);
 
     public async ValueTask<IExportRunLease> BeginRunAsync(
         VoiceExportRunContext context,
@@ -225,10 +235,20 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
         var fallback = new VoiceExportManifest(DateTimeOffset.UtcNow, RunId: runId, RunStatus: ExportRunStatus.Failed);
         var recovered = await ReadManifestFromJournalAsync(fallback, fullJournalPath, cancellationToken).ConfigureAwait(false);
+        var completedTransaction = hasTransactionDocument
+            ? await ReadJsonDocumentAsync<ExportTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false)
+            : null;
         if (await JournalHasManifestCommitAsync(fullJournalPath, cancellationToken).ConfigureAwait(false)
-            && await MetadataCommitIsCompleteAsync(runId, cancellationToken).ConfigureAwait(false))
+            && await MetadataCommitIsCompleteAsync(
+                runId,
+                cancellationToken,
+                requireLatestAliases: completedTransaction?.State is not ExportTransactionState.Completed).ConfigureAwait(false))
         {
-            await MarkTransactionCompletedAsync(transactionPath, runId, cancellationToken).ConfigureAwait(false);
+            if (completedTransaction?.State is not ExportTransactionState.Completed)
+            {
+                await MarkTransactionCompletedAsync(transactionPath, runId, cancellationToken).ConfigureAwait(false);
+            }
+
             return recovered;
         }
 
@@ -347,6 +367,77 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
     }
 
+    /// <summary>
+    /// Re-publishes the latest metadata aliases from an already committed run.
+    /// This is intentionally an explicit repair operation: startup recovery
+    /// must not replay an older completed run merely because a latest alias is
+    /// missing after a crash or manual cleanup.
+    /// </summary>
+    internal async Task RepairLatestAliasesUnderLockAsync(
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        var runsRoot = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs");
+        var descriptorPath = ExportPathSafety.CombineUnderRoot(runsRoot, runId + ".metadata-commit.json");
+        var descriptor = await ReadJsonDocumentAsync<ExportMetadataCommitDescriptor>(descriptorPath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(descriptor.RunId, runId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The metadata commit descriptor RunId does not match the requested repair run.");
+        }
+
+        var files = new[]
+        {
+            (RunPath: ExportPathSafety.CombineUnderRoot(runsRoot, ExportManifestLayout.RunPrivateManifestFileName(runId)),
+                LatestPath: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PrivateManifestFileName),
+                ExpectedHash: descriptor.PrivateManifestSha256),
+            (RunPath: ExportPathSafety.CombineUnderRoot(runsRoot, ExportManifestLayout.RunPortableManifestFileName(runId)),
+                LatestPath: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PortableManifestFileName),
+                ExpectedHash: descriptor.PortableManifestSha256),
+            (RunPath: ExportPathSafety.CombineUnderRoot(runsRoot, ExportManifestLayout.RunPortableCsvFileName(runId)),
+                LatestPath: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PortableCsvFileName),
+                ExpectedHash: descriptor.DatasetCsvSha256),
+            (RunPath: ExportPathSafety.CombineUnderRoot(runsRoot, ExportManifestLayout.RunArtifactIndexFileName(runId)),
+                LatestPath: ExportPathSafety.CombineUnderRoot(_exportRoot, "artifact-index.jsonl"),
+                ExpectedHash: descriptor.ArtifactIndexSha256),
+            (RunPath: descriptorPath,
+                LatestPath: ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.metadata-commit.json"),
+                ExpectedHash: (string?)null),
+        };
+
+        foreach (var file in files)
+        {
+            if (!File.Exists(file.RunPath))
+            {
+                throw new InvalidDataException($"The committed metadata file '{file.RunPath}' is missing.");
+            }
+
+            if (file.ExpectedHash is not null)
+            {
+                var actualHash = await FileHashing.ComputeSha256Async(file.RunPath, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(actualHash, file.ExpectedHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException($"The committed metadata file '{file.RunPath}' failed its descriptor hash check.");
+                }
+            }
+
+            await AtomicFileWriter.WriteStreamAsync(
+                file.LatestPath,
+                async (destination, token) =>
+                {
+                    await using var source = new FileStream(
+                        file.RunPath,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.Read,
+                        128 * 1024,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    await source.CopyToAsync(destination, token).ConfigureAwait(false);
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     internal async Task<string> GetOrCreateDatasetNamespaceKeyAsync(CancellationToken cancellationToken)
     {
         await _namespaceKeyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -433,12 +524,20 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var runPrivate = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(runId));
         var runPortable = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableManifestFileName(runId));
         var runCsv = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableCsvFileName(runId));
+        var runIndex = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunArtifactIndexFileName(runId));
         var runDescriptor = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".metadata-commit.json");
         var indexPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "artifact-index.jsonl");
         MoveFileReplacing(stagedPrivate, runPrivate);
         MoveFileReplacing(stagedPortable, runPortable);
         MoveFileReplacing(stagedCsv, runCsv);
-        MoveFileReplacing(stagedIndex, indexPath);
+        MoveFileReplacing(stagedIndex, runIndex);
+        // Keep the root index as the latest alias, but bind the descriptor to
+        // the immutable per-run snapshot above. This prevents a later export
+        // from making an older completed run appear incomplete during startup
+        // recovery or historical verification.
+        var stagedLatestIndex = Path.Combine(stagingRoot, "artifact-index.latest.jsonl");
+        File.Copy(runIndex, stagedLatestIndex, overwrite: true);
+        MoveFileReplacing(stagedLatestIndex, indexPath);
         MoveFileReplacing(stagedDescriptor, runDescriptor);
 
         // The run descriptor is the durable metadata commit boundary. Latest
@@ -529,23 +628,11 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
             if (document.State == ExportTransactionState.Completed)
             {
-                if (!resumeMetadata)
-                {
-                    continue;
-                }
-
-                if (await MetadataCommitIsCompleteAsync(document.RunId, cancellationToken).ConfigureAwait(false))
-                {
-                    continue;
-                }
-
-                var completedJournalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", document.RunId + ".jsonl");
-                if (!File.Exists(completedJournalPath))
-                {
-                    throw new IOException($"Completed export transaction '{document.RunId}' has no recoverable Journal.");
-                }
-
-                await RecoverRunUnderLockAsync(completedJournalPath, document.RunId, cancellationToken).ConfigureAwait(false);
+                // Completed is terminal. A later export is allowed to replace
+                // the root/latest aliases and must not cause an older run to
+                // be replayed merely because its descriptor is bound to its
+                // own historical artifact-index snapshot. Explicit verify or
+                // repair can inspect/rebuild damaged derived metadata.
                 continue;
             }
 
@@ -626,6 +713,73 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             {
                 throw new IOException($"Export transaction '{document.RunId}' contains an artifact that cannot be recovered safely.");
             }
+        }
+
+        CleanupOrphanedStagingDirectories(runsDirectory, cancellationToken);
+    }
+
+    /// <summary>
+    /// Removes only abandoned staging directories that are not referenced by a
+    /// recoverable transaction. Active and failed-recoverable transactions are
+    /// deliberately retained for explicit reconciliation; an old directory is
+    /// not proof that its contents are disposable.
+    /// </summary>
+    private static void CleanupOrphanedStagingDirectories(
+        string runsDirectory,
+        CancellationToken cancellationToken)
+    {
+        var activeRunIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var transactionPath in Directory.EnumerateFiles(runsDirectory, "*.transaction.json", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                using var stream = new FileStream(transactionPath, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, FileOptions.SequentialScan);
+                var transaction = JsonSerializer.Deserialize<ExportTransactionDocument>(stream, InfrastructureJson.Compact);
+                if (transaction is not null
+                    && transaction.State is not (ExportTransactionState.Completed or ExportTransactionState.RolledBack))
+                {
+                    activeRunIds.Add(transaction.RunId);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+            {
+                // A malformed transaction must remain visible for fail-closed
+                // recovery and must never cause its staging files to be deleted.
+                var fileName = Path.GetFileName(transactionPath);
+                if (fileName.EndsWith(".transaction.json", StringComparison.Ordinal))
+                {
+                    activeRunIds.Add(fileName[..^".transaction.json".Length]);
+                }
+            }
+        }
+
+        var cutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
+        foreach (var directory in Directory.EnumerateDirectories(runsDirectory, ".*", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var name = Path.GetFileName(directory);
+            string? runId = null;
+            if (name.StartsWith(".", StringComparison.Ordinal)
+                && name.EndsWith(".metadata.staging", StringComparison.Ordinal))
+            {
+                runId = name[1..^".metadata.staging".Length];
+            }
+            else if (name.StartsWith(".", StringComparison.Ordinal)
+                && name.EndsWith(".staging", StringComparison.Ordinal))
+            {
+                runId = name[1..^".staging".Length];
+            }
+
+            if (string.IsNullOrWhiteSpace(runId)
+                || activeRunIds.Contains(runId)
+                || Directory.Exists(directory) && (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0
+                || Directory.GetLastWriteTimeUtc(directory) > cutoff)
+            {
+                continue;
+            }
+
+            TryDeleteDirectory(directory);
         }
     }
 
@@ -909,7 +1063,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
     private async Task<bool> MetadataCommitIsCompleteAsync(
         string runId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireLatestAliases = true)
     {
         var descriptorPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".metadata-commit.json");
         if (!File.Exists(descriptorPath))
@@ -937,12 +1092,35 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(runId)), Hash: descriptor.PrivateManifestSha256),
             (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableManifestFileName(runId)), Hash: descriptor.PortableManifestSha256),
             (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableCsvFileName(runId)), Hash: descriptor.DatasetCsvSha256),
+            (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunArtifactIndexFileName(runId)), Hash: descriptor.ArtifactIndexSha256),
+        };
+        foreach (var file in files)
+        {
+            if (!File.Exists(file.Path))
+            {
+                return false;
+            }
+
+            var hash = await FileHashing.ComputeSha256Async(file.Path, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(hash, file.Hash, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        if (!requireLatestAliases)
+        {
+            return true;
+        }
+
+        var latestFiles = new[]
+        {
             (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PrivateManifestFileName), Hash: descriptor.PrivateManifestSha256),
             (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PortableManifestFileName), Hash: descriptor.PortableManifestSha256),
             (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PortableCsvFileName), Hash: descriptor.DatasetCsvSha256),
             (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "artifact-index.jsonl"), Hash: descriptor.ArtifactIndexSha256),
         };
-        foreach (var file in files)
+        foreach (var file in latestFiles)
         {
             if (!File.Exists(file.Path))
             {
@@ -2169,10 +2347,26 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
                 foreach (var item in items.OrderBy(static item => item.OriginalManifestPath, StringComparer.Ordinal))
                 {
+                    _store.ThrowIfFaultRequested(
+                        ExportTransactionFaultPoint.BeforeArtifactPublish,
+                        _runId,
+                        item.Record.MessageId);
                     await item.PublishStagedAsync(OnItemChangedAsync, cancellationToken).ConfigureAwait(false);
+                    _store.ThrowIfFaultRequested(
+                        ExportTransactionFaultPoint.AfterArtifactPublish,
+                        _runId,
+                        item.Record.MessageId);
                     if (item.Entry is { } entry)
                     {
+                        _store.ThrowIfFaultRequested(
+                            ExportTransactionFaultPoint.BeforeItemJournalCommit,
+                            _runId,
+                            item.Record.MessageId);
                         await AppendItemCommitEventAsync(entry, cancellationToken).ConfigureAwait(false);
+                        _store.ThrowIfFaultRequested(
+                            ExportTransactionFaultPoint.AfterItemJournalCommit,
+                            _runId,
+                            item.Record.MessageId);
                     }
                 }
 
@@ -2278,7 +2472,13 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
                 var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".jsonl");
                 var journalManifest = await ReadManifestFromJournalAsync(manifest, journalPath, cancellationToken).ConfigureAwait(false);
+                _store.ThrowIfFaultRequested(
+                    ExportTransactionFaultPoint.BeforeMetadataCommit,
+                    _runId);
                 var metadata = await _store.CommitMetadataAsync(journalManifest, _runId, cancellationToken).ConfigureAwait(false);
+                _store.ThrowIfFaultRequested(
+                    ExportTransactionFaultPoint.AfterMetadataCommit,
+                    _runId);
                 journalManifest = metadata.Manifest;
                 _metadataCommit = metadata.Descriptor;
                 _transactionState = ExportTransactionState.MetadataCommitted;
@@ -2292,6 +2492,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     Context: null,
                     ManifestSha256: metadata.Descriptor.PrivateManifestSha256,
                     ManifestGeneratedAtUtc: journalManifest.GeneratedAtUtc), cancellationToken).ConfigureAwait(false);
+                _store.ThrowIfFaultRequested(
+                    ExportTransactionFaultPoint.AfterManifestCommit,
+                    _runId);
                 manifestCommitFlushed = true;
                 _transactionState = ExportTransactionState.Completed;
                 lock (_transactionStateGate)

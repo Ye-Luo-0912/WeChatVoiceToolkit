@@ -11,6 +11,8 @@ namespace WeChatVoice.Application;
 /// </summary>
 public static class VoiceSelectionEnumerator
 {
+    public const int InitialRecordCapacity = 256;
+
     public static async IAsyncEnumerable<VoiceRecord> EnumerateAsync(
         IVoiceCatalog catalog,
         VoiceQuery query,

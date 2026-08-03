@@ -5,6 +5,8 @@ param(
     [string]$PackageName = 'WeChatVoiceToolkit',
     [string]$AllowedPublisherThumbprint = $env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT,
     [string]$AllowedPublisherKeyId = $env:WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID,
+    [string]$AllowedPublishersJson = $env:WECHATVOICE_ALLOWED_PUBLISHERS_JSON,
+    [string]$AllowedPublisherPolicyId = $env:WECHATVOICE_ALLOWED_PUBLISHER_POLICY_ID,
     [switch]$RunTrustSmoke,
     [switch]$ForceUpdateFromAnyVersion
 )
@@ -13,15 +15,13 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release-identity.ps1')
 $releaseIdentity = Get-WeChatVoiceReleaseIdentity
 . (Join-Path $PSScriptRoot 'publisher-fingerprint.ps1')
+. (Join-Path $PSScriptRoot 'release-publisher-policy.ps1')
 $package = [IO.Path]::GetFullPath($PackagePath.Trim().Trim('"'))
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "The MSIX package does not exist: $package" }
 if ([IO.Path]::GetExtension($package) -ne '.msix') { throw 'PackagePath must point to an .msix package.' }
 
-if ([string]::IsNullOrWhiteSpace($AllowedPublisherThumbprint) -or [string]::IsNullOrWhiteSpace($AllowedPublisherKeyId)) {
-    throw 'An independent allowed publisher thumbprint and public-key ID are required.'
-}
 Assert-WeChatVoicePackageName $PackageName
-. (Join-Path $PSScriptRoot 'publisher-fingerprint.ps1')
+$publisherPolicy = Get-WeChatVoicePublisherPolicy -PolicyJson $AllowedPublishersJson -LegacyThumbprint $AllowedPublisherThumbprint -LegacyKeyId $AllowedPublisherKeyId -PolicyId $AllowedPublisherPolicyId
 
 function Read-AppxIdentity([string]$path) {
     Add-Type -AssemblyName System.IO.Compression
@@ -74,8 +74,11 @@ if (-not [version]::TryParse($packageIdentity.Version, [ref]$parsedPackageVersio
         throw 'The update manifest is not valid JSON.'
     }
 
-    if ($metadata.format -ne 'wechatvoice-update-v1' -or $metadata.packageId -ne $PackageName) {
+    if ($metadata.format -ne 'wechatvoice-update-v2' -or $metadata.packageId -ne $PackageName) {
         throw 'The update manifest package identity is invalid.'
+    }
+    if ([string]$metadata.publisherPolicyId -ne [string]$publisherPolicy.PolicyId) {
+        throw 'The update manifest publisher policy does not match the installed release policy.'
     }
     if ([IO.Path]::GetFileName($package) -ne [string]$metadata.packageFile) {
         throw 'The package does not match the update manifest packageFile.'
@@ -92,17 +95,7 @@ if (-not [version]::TryParse($packageIdentity.Version, [ref]$parsedPackageVersio
     foreach ($field in @('publisherThumbprint', 'publisherKeyId', 'identityName', 'identityPublisher', 'publisherId', 'packageFamilyName', 'identityVersion', 'identityArchitecture', 'applicationExecutable')) {
         if ([string]::IsNullOrWhiteSpace([string]$metadata.$field)) { throw "The update manifest field '$field' is missing." }
     }
-    $allowedThumbprint = $AllowedPublisherThumbprint.Replace(' ', '').ToLowerInvariant()
-    $allowedKeyId = $AllowedPublisherKeyId.Replace(' ', '').ToLowerInvariant()
-    if ($allowedThumbprint -notmatch '^[0-9a-f]{64}$' -or $allowedKeyId -notmatch '^[0-9a-f]{64}$') {
-        throw 'The independent publisher anchors must be 64-character SHA-256 values.'
-    }
-    if ($metadata.publisherThumbprint.ToLowerInvariant() -ne $allowedThumbprint) {
-        throw 'The update manifest publisher is not in the built-in allowed publisher set.'
-    }
-    if ($metadata.publisherKeyId.ToLowerInvariant() -ne $allowedKeyId) {
-        throw 'The update manifest publisher key is not in the built-in allowed publisher set.'
-    }
+    [void](Find-WeChatVoicePublisherAnchor $publisherPolicy $metadata.publisherThumbprint $metadata.publisherKeyId $packageIdentity.PublisherId ([DateTimeOffset]::UtcNow))
     if ($metadata.identityName -ne $packageIdentity.Name -or
         $metadata.identityPublisher -ne $packageIdentity.Publisher -or
         $metadata.publisherId -ne $packageIdentity.PublisherId -or
@@ -114,6 +107,39 @@ if (-not [version]::TryParse($packageIdentity.Version, [ref]$parsedPackageVersio
     }
     if ([string]$metadata.version -ne $packageIdentity.Version) {
         throw 'The update manifest version does not match the MSIX Identity Version.'
+    }
+    $updateKind = [string]$metadata.updateKind
+    if ($updateKind -notin @('install', 'upgrade', 'rollback')) {
+        throw 'The update manifest updateKind is invalid.'
+    }
+    $rollbackFromVersion = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$metadata.rollbackFromVersion) -and
+        -not [version]::TryParse([string]$metadata.rollbackFromVersion, [ref]$rollbackFromVersion)) {
+        throw 'The update manifest rollbackFromVersion is invalid.'
+    }
+    $minimumPreviousVersion = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$metadata.minimumPreviousVersion) -and
+        -not [version]::TryParse([string]$metadata.minimumPreviousVersion, [ref]$minimumPreviousVersion)) {
+        throw 'The update manifest minimumPreviousVersion is invalid.'
+    }
+    $installedBefore = @(Get-AppxPackage -Name $PackageName | Sort-Object Version -Descending)
+    if ($installedBefore.Count -gt 1) { throw "Multiple installed versions of '$PackageName' were found." }
+    if ($installedBefore.Count -eq 1) {
+        $currentVersion = [version]$installedBefore[0].Version
+        if ($updateKind -eq 'rollback') {
+            if ($parsedPackageVersion -ge $currentVersion -or $null -eq $rollbackFromVersion -or $rollbackFromVersion -ne $currentVersion) {
+                throw "The rollback package must target a lower version and name the exact installed version ($currentVersion)."
+            }
+        }
+        elseif ($parsedPackageVersion -le $currentVersion) {
+            throw "The package version $parsedPackageVersion is not a strictly newer update than $currentVersion."
+        }
+        elseif ($null -ne $minimumPreviousVersion -and $currentVersion -lt $minimumPreviousVersion) {
+            throw "The installed version $currentVersion is below the update manifest minimumPreviousVersion $minimumPreviousVersion."
+        }
+    }
+    elseif ($updateKind -eq 'rollback') {
+        throw 'A rollback requires an installed current package.'
     }
     $signature = Get-AuthenticodeSignature -LiteralPath $package
     if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
@@ -127,7 +153,10 @@ if (-not [version]::TryParse($packageIdentity.Version, [ref]$parsedPackageVersio
     if ($actualPublisherKeyId -ne ([string]$metadata.publisherKeyId).Replace(' ', '').ToLowerInvariant()) {
         throw 'The MSIX signer public key does not match the update manifest.'
     }
-if ($ForceUpdateFromAnyVersion) {
+if ($ForceUpdateFromAnyVersion -and $updateKind -ne 'rollback') {
+    throw 'ForceUpdateFromAnyVersion is reserved for a rollback update manifest.'
+}
+if ($updateKind -eq 'rollback') {
     Add-AppxPackage -Path $package -ForceUpdateFromAnyVersion
 }
 else {

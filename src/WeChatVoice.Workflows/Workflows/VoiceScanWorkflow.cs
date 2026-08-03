@@ -46,7 +46,7 @@ public sealed class VoiceScanWorkflow(
             var effectiveDurationResolver = durationResolver is not null && durationCache is not null
                 ? new CachedVoiceDurationResolver(durationResolver, durationCache, cleanupQueue)
                 : durationResolver;
-            var scan = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache)
+            var scan = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache, cleanupQueue)
                 .ScanWithRecordsAsync(query, cancellationToken)
                 .ConfigureAwait(false);
             var selection = PreparedVoiceSelection.Create(
@@ -57,7 +57,8 @@ public sealed class VoiceScanWorkflow(
                 query,
                 scan.Report,
                 SelectionIdentity.DurationResolverVersion(effectiveDurationResolver),
-                scan.Records);
+                scan.Records,
+                scan.Spool);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceScan, OperationStageIds.Completing);
             return new VoiceScanWorkflowResult(scan.Report, session.Workspace, selection);

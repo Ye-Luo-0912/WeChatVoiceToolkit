@@ -41,7 +41,8 @@ public sealed record PreparedVoiceSelection
         string SelectionEngineVersion,
         string DurationResolverVersion,
         VoiceScanReport ScanReport,
-        IReadOnlyList<VoiceRecord>? Records = null)
+        IReadOnlyList<VoiceRecord>? Records = null,
+        PreparedSelectionSpoolDescriptor? Spool = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(WorkspaceDocumentPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(WorkspaceId);
@@ -56,6 +57,16 @@ public sealed record PreparedVoiceSelection
         ArgumentException.ThrowIfNullOrWhiteSpace(SelectionEngineVersion);
         ArgumentException.ThrowIfNullOrWhiteSpace(DurationResolverVersion);
         ArgumentNullException.ThrowIfNull(ScanReport);
+        if (Records is not null && Records.Count > 0 && Spool is not null)
+        {
+            throw new ArgumentException("A prepared selection cannot use both in-memory records and a disk spool.", nameof(Spool));
+        }
+
+        if (Spool is not null && Spool.RecordCount < ResultCount)
+        {
+            throw new ArgumentException("The prepared-selection spool contains fewer records than the exportable scan result.", nameof(Spool));
+        }
+
         if (!Path.IsPathFullyQualified(WorkspaceDocumentPath))
         {
             throw new ArgumentException("The prepared selection must retain an absolute Workspace document path.", nameof(WorkspaceDocumentPath));
@@ -106,6 +117,7 @@ public sealed record PreparedVoiceSelection
         this.ScanReport = ScanReport;
         this.Records = new System.Collections.ObjectModel.ReadOnlyCollection<VoiceRecord>(
             (Records ?? Array.Empty<VoiceRecord>()).ToArray());
+        this.Spool = Spool;
     }
 
     public string WorkspaceDocumentPath { get; }
@@ -143,7 +155,11 @@ public sealed record PreparedVoiceSelection
     /// </summary>
     public IReadOnlyList<VoiceRecord> Records { get; }
 
-    public bool HasPreparedRecords => ResultCount == 0 || Records.Count > 0;
+    public PreparedSelectionSpoolDescriptor? Spool { get; }
+
+    public bool HasPreparedRecords => ResultCount == 0 || Records.Count > 0 || Spool is not null;
+
+    public int PreparedRecordCount => Spool?.RecordCount ?? Records.Count;
 
     /// <summary>Compatibility name used by older Desktop presentation code.</summary>
     public string PlanFingerprint => QueryFingerprint;
@@ -156,7 +172,8 @@ public sealed record PreparedVoiceSelection
         VoiceQuery query,
         VoiceScanReport report,
         string durationResolverVersion,
-        IReadOnlyList<VoiceRecord>? records = null)
+        IReadOnlyList<VoiceRecord>? records = null,
+        PreparedSelectionSpoolDescriptor? spool = null)
     {
         ArgumentNullException.ThrowIfNull(workspace);
         ArgumentNullException.ThrowIfNull(catalogContext);
@@ -204,7 +221,8 @@ public sealed record PreparedVoiceSelection
             CurrentSelectionEngineVersion,
             durationResolverVersion,
             report,
-            records);
+            records,
+            spool);
     }
 
     public static string ComputeQueryFingerprint(

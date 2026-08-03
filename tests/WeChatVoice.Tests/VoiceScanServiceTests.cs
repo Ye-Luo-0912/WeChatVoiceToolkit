@@ -160,6 +160,48 @@ public sealed class VoiceScanServiceTests
         Assert.True(File.Exists(temporary.GetPath(".wechatvoice", "deep-scan-cache.jsonl")));
     }
 
+    [Fact]
+    public async Task Large_scan_uses_a_verified_disk_spool_and_releases_it_after_read()
+    {
+        var records = Enumerable.Range(0, PreparedSelectionSpool.InMemoryRecordLimit + 1)
+            .Select(index => new VoiceRecord(
+                $"spooled-{index}",
+                "conversation",
+                DateTimeOffset.UtcNow.AddSeconds(index),
+                VoiceDirection.Incoming,
+                new VoicePayloadLocator("media", 0, index.ToString()),
+                PayloadByteLength: 10,
+                AdapterId: "adapter",
+                AccountId: "account"))
+            .ToArray();
+        var catalog = new FakeCatalog(records);
+
+        var result = await new VoiceScanService(catalog).ScanWithRecordsAsync(
+            new VoiceQuery(Direction: VoiceDirection.Incoming),
+            CancellationToken.None);
+
+        Assert.NotNull(result.Spool);
+        var spool = result.Spool!;
+        Assert.Empty(result.Records);
+        Assert.Equal(records.Length, spool.RecordCount);
+        Assert.Equal(records.Length, await CountAsync(PreparedSelectionSpool.ReadAsync(spool, CancellationToken.None)));
+        Assert.True(File.Exists(spool.Path));
+
+        await PreparedSelectionSpool.DeleteAsync(spool, cancellationToken: CancellationToken.None);
+        Assert.False(File.Exists(spool.Path));
+    }
+
+    private static async Task<int> CountAsync(IAsyncEnumerable<VoiceRecord> source)
+    {
+        var count = 0;
+        await foreach (var _ in source.ConfigureAwait(false))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
     private sealed class FakeDurationResolver(long duration) : IVoiceDurationResolver
     {
         public Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)

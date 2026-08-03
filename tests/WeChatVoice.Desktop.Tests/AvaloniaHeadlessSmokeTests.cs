@@ -12,22 +12,22 @@ namespace WeChatVoice.Desktop.Tests;
 public sealed class AvaloniaHeadlessSmokeTests
 {
     [Fact]
-    public void Main_window_and_all_page_views_load_under_headless_platform()
+    public async Task Main_window_and_all_page_views_load_under_headless_platform()
     {
-        var app = AppBuilder.Configure<App>()
-            .UseHeadless(new AvaloniaHeadlessPlatformOptions())
-            .SetupWithoutStarting();
-        var services = DesktopServices.Create(appDataDirectory: Path.Combine(Path.GetTempPath(), "WeChatVoiceToolkit.Headless", Guid.NewGuid().ToString("N")));
-        var window = new MainWindow { DataContext = new MainWindowViewModel(services) };
+        await HeadlessTestHost.DispatchAsync(async () =>
+        {
+            await using var services = DesktopServices.Create(appDataDirectory: Path.Combine(Path.GetTempPath(), "WeChatVoiceToolkit.Headless", Guid.NewGuid().ToString("N")));
+            var window = new MainWindow { DataContext = new MainWindowViewModel(services) };
 
-        Assert.NotNull(window);
-        Assert.NotNull(new EnvironmentView());
-        Assert.NotNull(new SourceSnapshotView());
-        Assert.NotNull(new MaterializationView());
-        Assert.NotNull(new ContactView());
-        Assert.NotNull(new ScanView());
-        Assert.NotNull(new ExportView());
-        Assert.NotNull(new HistoryDiagnosticsView());
+            Assert.NotNull(window);
+            Assert.NotNull(new EnvironmentView());
+            Assert.NotNull(new SourceSnapshotView());
+            Assert.NotNull(new MaterializationView());
+            Assert.NotNull(new ContactView());
+            Assert.NotNull(new ScanView());
+            Assert.NotNull(new ExportView());
+            Assert.NotNull(new HistoryDiagnosticsView());
+        });
     }
 
     [Fact]
@@ -45,77 +45,87 @@ public sealed class AvaloniaHeadlessSmokeTests
         var snapshot = temporary.GetPath("snapshot");
         var export = temporary.GetPath("export");
         var fakeSnapshot = new FakeSnapshotWorkflow();
-        var fakeMaterialization = new FakeMaterializationWorkflow();
-        var fakeContacts = new FakeContactWorkflow();
         var fakeScan = new FakeScanWorkflow();
         var fakeExport = new FakeExportWorkflow();
-        var root = new WorkflowCompositionRoot(
-            new TestDoubles.SilentConfirmation(),
-            environmentAssessment: new FakeEnvironmentWorkflow(),
-            snapshot: fakeSnapshot,
-            materialization: fakeMaterialization,
-            contactDiscovery: fakeContacts,
-            voiceScan: fakeScan,
-            voiceExport: fakeExport);
-        var services = new DesktopServices(
-            root,
-            new DesktopLog(temporary.Root),
-            new RecentWorkspaceStore(temporary.Root),
-            invokeOnUi: DirectInvokeAsync);
-        var main = new MainWindowViewModel(services);
+        var setup = HeadlessTestHost.Dispatch(() =>
+        {
+            var root = new WorkflowCompositionRoot(
+                new TestDoubles.SilentConfirmation(),
+                environmentAssessment: new FakeEnvironmentWorkflow(),
+                snapshot: fakeSnapshot,
+                materialization: new FakeMaterializationWorkflow(),
+                contactDiscovery: new FakeContactWorkflow(),
+                voiceScan: fakeScan,
+                voiceExport: fakeExport);
+            var services = new DesktopServices(
+                root,
+                new DesktopLog(temporary.Root),
+                new RecentWorkspaceStore(temporary.Root),
+                invokeOnUi: DirectInvokeAsync);
+            return (Services: services, Main: new MainWindowViewModel(services));
+        });
 
-        var sourcePage = Assert.IsType<SourceSnapshotViewModel>(main.Pages[1]);
-        var materialization = Assert.IsType<MaterializationViewModel>(main.Pages[2]);
-        Assert.False(sourcePage.CanNavigate);
-        Assert.False(materialization.CanNavigate);
+        try
+        {
+            var services = setup.Services;
+            var main = setup.Main;
+            var sourcePage = Assert.IsType<SourceSnapshotViewModel>(main.Pages[1]);
+            var materialization = Assert.IsType<MaterializationViewModel>(main.Pages[2]);
+            Assert.False(sourcePage.CanNavigate);
+            Assert.False(materialization.CanNavigate);
 
-        var environment = Assert.IsType<EnvironmentViewModel>(main.Pages[0]);
-        await environment.AssessCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(WorkflowState.Completed, environment.RunHost.State);
+            var environment = Assert.IsType<EnvironmentViewModel>(main.Pages[0]);
+            await environment.AssessCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(WorkflowState.Completed, environment.RunHost.State);
 
-        Assert.True(sourcePage.CanNavigate);
-        sourcePage.SourceDirectory = source;
-        sourcePage.OutputDirectory = snapshot;
-        await sourcePage.CreateSnapshotCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(WorkflowState.Completed, sourcePage.RunHost.State);
-        Assert.Equal(false, fakeSnapshot.LastRequest?.AllowLiveSource);
+            Assert.True(sourcePage.CanNavigate);
+            sourcePage.SourceDirectory = source;
+            sourcePage.OutputDirectory = snapshot;
+            await sourcePage.CreateSnapshotCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(WorkflowState.Completed, sourcePage.RunHost.State);
+            Assert.Equal(false, fakeSnapshot.LastRequest?.AllowLiveSource);
 
-        Assert.True(materialization.CanNavigate);
-        materialization.OutputDirectory = temporary.GetPath("materialized");
-        materialization.WorkspaceOutputPath = temporary.GetPath("materialized.workspace.json");
-        var materializationRun = materialization.MaterializeCommand.ExecuteAsync(null);
-        await WaitUntilAsync(() => materialization.IsConfirmDialogOpen);
-        materialization.ConfirmAccountCommand.Execute(null);
-        await materializationRun.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(WorkflowState.Completed, materialization.RunHost.State);
+            Assert.True(materialization.CanNavigate);
+            materialization.OutputDirectory = temporary.GetPath("materialized");
+            materialization.WorkspaceOutputPath = temporary.GetPath("materialized.workspace.json");
+            var materializationRun = materialization.MaterializeCommand.ExecuteAsync(null);
+            await WaitUntilAsync(() => materialization.IsConfirmDialogOpen);
+            materialization.ConfirmAccountCommand.Execute(null);
+            await materializationRun.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(WorkflowState.Completed, materialization.RunHost.State);
 
-        var contact = Assert.IsType<ContactViewModel>(main.Pages[3]);
-        await contact.LoadContactsCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
-        contact.SelectedContact = contact.Contacts[1];
-        Assert.Equal("contact-b", services.Project.SelectedContact?.ContactId);
+            var contact = Assert.IsType<ContactViewModel>(main.Pages[3]);
+            await contact.LoadContactsCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
+            contact.SelectedContact = contact.Contacts[1];
+            Assert.Equal("contact-b", services.Project.SelectedContact?.ContactId);
 
-        var scan = Assert.IsType<ScanViewModel>(main.Pages[4]);
-        scan.FromText = "2026-01-01T00:00:00Z";
-        scan.ToText = "2026-01-31T23:59:59Z";
-        scan.MaximumResultsText = "100";
-        await scan.ScanCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(VoiceDirection.Incoming, fakeScan.LastRequest?.Direction);
-        Assert.Equal(100, fakeScan.LastRequest?.MaximumResults);
-        Assert.Equal("contact-b", services.Project.SelectionPlan?.ContactId);
+            var scan = Assert.IsType<ScanViewModel>(main.Pages[4]);
+            scan.FromText = "2026-01-01T00:00:00Z";
+            scan.ToText = "2026-01-31T23:59:59Z";
+            scan.MaximumResultsText = "100";
+            await scan.ScanCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(VoiceDirection.Incoming, fakeScan.LastRequest?.Direction);
+            Assert.Equal(100, fakeScan.LastRequest?.MaximumResults);
+            Assert.Equal("contact-b", services.Project.SelectionPlan?.ContactId);
 
-        var exportPage = Assert.IsType<ExportViewModel>(main.Pages[5]);
-        exportPage.OutputDirectory = export;
-        await exportPage.ExportCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
+            var exportPage = Assert.IsType<ExportViewModel>(main.Pages[5]);
+            exportPage.OutputDirectory = export;
+            await exportPage.ExportCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal(WorkflowState.Completed, exportPage.RunHost.State);
-        Assert.Equal("wxid_b", fakeExport.LastRequest?.ContactUsername);
-        Assert.Equal(VoiceDirection.Incoming, fakeExport.LastRequest?.Direction);
-        Assert.Equal(100, fakeExport.LastRequest?.MaximumResults);
-        Assert.Equal(fakeScan.LastRequest?.From, fakeExport.LastRequest?.From);
-        Assert.Equal(fakeScan.LastRequest?.To, fakeExport.LastRequest?.To);
-        Assert.Equal(services.Project.SelectionPlan?.ResultSetFingerprint, fakeExport.LastRequest?.ExpectedResultSetFingerprint);
-        main.SelectedPage = exportPage;
-        Assert.Same(exportPage, main.SelectedPage);
+            Assert.Equal(WorkflowState.Completed, exportPage.RunHost.State);
+            Assert.Equal("wxid_b", fakeExport.LastRequest?.ContactUsername);
+            Assert.Equal(VoiceDirection.Incoming, fakeExport.LastRequest?.Direction);
+            Assert.Equal(100, fakeExport.LastRequest?.MaximumResults);
+            Assert.Equal(fakeScan.LastRequest?.From, fakeExport.LastRequest?.From);
+            Assert.Equal(fakeScan.LastRequest?.To, fakeExport.LastRequest?.To);
+            Assert.Equal(services.Project.SelectionPlan?.ResultSetFingerprint, fakeExport.LastRequest?.ExpectedResultSetFingerprint);
+            main.SelectedPage = exportPage;
+            Assert.Same(exportPage, main.SelectedPage);
+        }
+        finally
+        {
+            await setup.Services.DisposeAsync();
+        }
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

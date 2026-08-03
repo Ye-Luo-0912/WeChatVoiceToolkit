@@ -363,6 +363,10 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder, IVoiceDecoderIdentity
         {
             return new CleanupDiagnostic(resourceKind, "delete-failed", exception.GetType().Name);
         }
+        catch (Exception exception)
+        {
+            return new CleanupDiagnostic(resourceKind, "delete-failed", exception.GetType().Name);
+        }
     }
 
     private sealed record DecoderProcessResult(int ExitCode, string StandardOutput, string StandardError);

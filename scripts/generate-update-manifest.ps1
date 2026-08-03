@@ -4,12 +4,21 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputPath,
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$PublisherThumbprint,
-    [string]$PackageUri = ''
+    [string]$PackageUri = '',
+    [ValidateSet('install', 'upgrade', 'rollback')][string]$UpdateKind = 'upgrade',
+    [string]$RollbackFromVersion = '',
+    [string]$MinimumPreviousVersion = '',
+    [string]$ReleaseChannel = 'stable',
+    [string]$PublisherPolicyId = $env:WECHATVOICE_ALLOWED_PUBLISHER_POLICY_ID
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release-identity.ps1')
 $releaseIdentity = Get-WeChatVoiceReleaseIdentity
+$requiresFixedPublisher = $env:CI -eq 'true' -or $env:CI -eq '1' -or $env:WECHATVOICE_SIGNED_RELEASE -eq 'true' -or $env:WECHATVOICE_SIGNED_RELEASE -eq '1'
+if ($requiresFixedPublisher -and [string]::IsNullOrWhiteSpace($releaseIdentity.Publisher)) {
+    throw 'Formal update-manifest generation requires WECHATVOICE_ALLOWED_PACKAGE_PUBLISHER.'
+}
 
 $package = [IO.Path]::GetFullPath($PackagePath.Trim().Trim('"'))
 $output = [IO.Path]::GetFullPath($OutputPath.Trim().Trim('"'))
@@ -62,9 +71,37 @@ finally { $archive.Dispose() }
 
 Assert-WeChatVoiceReleaseIdentity ([pscustomobject]@{
     Name = $packageName
+    Publisher = $packagePublisher
     Architecture = $packageArchitecture
     Executable = $applicationExecutable
 })
+
+$publisherPolicy = $null
+$hasProtectedPolicy = -not [string]::IsNullOrWhiteSpace($env:WECHATVOICE_ALLOWED_PUBLISHERS_JSON) -or
+    (-not [string]::IsNullOrWhiteSpace($env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT) -and
+        -not [string]::IsNullOrWhiteSpace($env:WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID))
+if ($hasProtectedPolicy) {
+    . (Join-Path $PSScriptRoot 'release-publisher-policy.ps1')
+    $publisherPolicy = Get-WeChatVoicePublisherPolicy -PolicyId $PublisherPolicyId
+    [void](Find-WeChatVoicePublisherAnchor $publisherPolicy $publisherFingerprint $publisherKeyId $publisherId)
+}
+elseif ($env:CI -eq 'true' -or $env:CI -eq '1') {
+    throw 'CI update-manifest generation requires an independent publisher policy.'
+}
+
+$parsedRollbackFromVersion = $null
+if (-not [string]::IsNullOrWhiteSpace($RollbackFromVersion) -and
+    -not [version]::TryParse($RollbackFromVersion, [ref]$parsedRollbackFromVersion)) {
+    throw "RollbackFromVersion is not a valid package version: $RollbackFromVersion"
+}
+if ($UpdateKind -eq 'rollback' -and $null -eq $parsedRollbackFromVersion) {
+    throw 'Rollback updates require RollbackFromVersion.'
+}
+$parsedMinimumPreviousVersion = $null
+if (-not [string]::IsNullOrWhiteSpace($MinimumPreviousVersion) -and
+    -not [version]::TryParse($MinimumPreviousVersion, [ref]$parsedMinimumPreviousVersion)) {
+    throw "MinimumPreviousVersion is not a valid package version: $MinimumPreviousVersion"
+}
 
 if ($packageVersion -ne $Version) {
     throw "The requested update version $Version does not match the MSIX Identity Version $packageVersion."
@@ -80,14 +117,20 @@ if (-not [version]::TryParse($Version, [ref]$parsedVersion)) {
 
 $packageHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
 $manifest = [ordered]@{
-    format = 'wechatvoice-update-v1'
+    format = 'wechatvoice-update-v2'
     packageId = 'WeChatVoiceToolkit'
+    publisherPolicyId = if ($null -eq $publisherPolicy) { 'unanchored-local-development' } else { $publisherPolicy.PolicyId }
+    releaseChannel = $ReleaseChannel
+    updateKind = $UpdateKind
+    rollbackFromVersion = if ($null -eq $parsedRollbackFromVersion) { $null } else { $parsedRollbackFromVersion.ToString() }
+    minimumPreviousVersion = if ($null -eq $parsedMinimumPreviousVersion) { $null } else { $parsedMinimumPreviousVersion.ToString() }
     version = $Version
     packageFile = [IO.Path]::GetFileName($package)
     packageSha256 = $packageHash
     packageByteLength = (Get-Item -LiteralPath $package).Length
     publisherThumbprint = $publisherFingerprint
     publisherKeyId = $publisherKeyId
+    publisherPolicyKeys = if ($null -eq $publisherPolicy) { @($publisherKeyId) } else { @($publisherPolicy.Entries | ForEach-Object KeyId | Sort-Object -Unique) }
     identityName = $packageName
     identityPublisher = $packagePublisher
     publisherId = $publisherId

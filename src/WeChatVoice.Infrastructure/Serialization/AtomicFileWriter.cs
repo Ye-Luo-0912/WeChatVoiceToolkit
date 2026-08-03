@@ -124,9 +124,19 @@ internal static class AtomicFileWriter
         }
 
         // File.Replace is the explicit same-volume atomic replacement path.
-        // A null backup avoids leaving another sensitive copy beside the
-        // committed metadata file.
-        File.Replace(temporaryPath, destinationPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+        // Supplying a unique sibling backup is more reliable on Windows than
+        // the null-backup overload, which can fail while removing an existing
+        // destination on some file systems. The backup is removed only after
+        // the replacement succeeds.
+        var backupPath = destinationPath + ".backup-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.Replace(temporaryPath, destinationPath, backupPath, ignoreMetadataErrors: true);
+        }
+        finally
+        {
+            TryDelete(backupPath);
+        }
     }
 
     private static void TryDelete(string path)

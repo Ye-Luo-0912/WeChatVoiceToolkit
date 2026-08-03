@@ -87,9 +87,11 @@
    `WECHATVOICE_SILK_DECODER_WORKER_PATH`; keep strict RIFF/PCM validation and
    never overwrite SILK. A decoder that does not implement this protocol uses
    the existing one-shot compatibility path.
-3. Expand installer certificate-rotation and multi-release update policy. The
-   ZIP package remains a diagnostic-only artifact; formal Broker distribution
-   uses the signed MSIX installed to a protected directory.
+3. Maintain installer certificate-rotation and multi-release update policy.
+   The ZIP package remains a diagnostic-only artifact; formal Broker
+   distribution uses the signed MSIX installed to a protected directory. The
+   AppX Publisher subject is fixed by the protected release environment while
+   certificate/public-key pairs may rotate through the independent policy.
 
 The first installer lifecycle is now scripted: a signed package has an
 update-manifest binding, `install-msix.ps1` verifies that binding and can run

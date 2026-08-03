@@ -270,6 +270,10 @@ public sealed class CachedVoiceDurationResolver : IVersionedVoiceDurationResolve
         {
             return new CleanupDiagnostic("duration-input", "delete-failed", exception.GetType().Name);
         }
+        catch (Exception exception)
+        {
+            return new CleanupDiagnostic("duration-input", "delete-failed", exception.GetType().Name);
+        }
     }
 
     private static string? NormalizeSha256(string? value)

@@ -11,15 +11,18 @@ public sealed class VoiceScanService
     private readonly IVoiceCatalog _catalog;
     private readonly IVoiceDurationResolver? _durationResolver;
     private readonly CachedVoicePayloadHashResolver? _payloadHashResolver;
+    private readonly ITemporaryFileCleanupQueue? _cleanupQueue;
 
     public VoiceScanService(
         IVoiceCatalog catalog,
         IVoiceDurationResolver? durationResolver = null,
-        IVoicePayloadHashCache? payloadHashCache = null)
+        IVoicePayloadHashCache? payloadHashCache = null,
+        ITemporaryFileCleanupQueue? cleanupQueue = null)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _durationResolver = durationResolver;
         _payloadHashResolver = payloadHashCache is null ? null : new CachedVoicePayloadHashResolver(payloadHashCache);
+        _cleanupQueue = cleanupQueue;
     }
 
     public async Task<VoiceScanReport> ScanAsync(VoiceQuery query, CancellationToken cancellationToken = default)
@@ -49,95 +52,143 @@ public sealed class VoiceScanService
         var exportable = 0;
         long totalPayloadBytes = 0;
         var durationKnown = 0;
-        var records = new List<VoiceRecord>();
+        var records = new List<VoiceRecord>(Math.Min(VoiceSelectionEnumerator.InitialRecordCapacity, PreparedSelectionSpool.InMemoryRecordLimit));
+        PreparedSelectionSpool.PreparedSelectionSpoolWriter? spoolWriter = null;
+        PreparedSelectionSpoolDescriptor? spool = null;
+        var spoolHandedOff = false;
         using var resultSetFingerprint = new VoiceResultSetFingerprintBuilder();
         var eligibilityEvaluator = new VoiceExportEligibilityEvaluator();
-
-        await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
-            _catalog,
-            query,
-            _durationResolver,
-            bypassCatalogDeepScan: _payloadHashResolver is not null,
-            cancellationToken: cancellationToken).ConfigureAwait(false))
+        try
         {
-            records.Add(record);
-            count++;
-            if (record.DurationMs is > 0)
+            await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
+                _catalog,
+                query,
+                _durationResolver,
+                bypassCatalogDeepScan: _payloadHashResolver is not null,
+                cancellationToken: cancellationToken).ConfigureAwait(false))
             {
-                duration = checked(duration + record.DurationMs.Value);
-                durationKnown++;
-            }
-            earliest = earliest is null || record.OccurredAtUtc < earliest ? record.OccurredAtUtc : earliest;
-            latest = latest is null || record.OccurredAtUtc > latest ? record.OccurredAtUtc : latest;
-            var shard = record.ShardId ?? record.SourceDatabase ?? "unknown";
-            shardCounts[shard] = shardCounts.TryGetValue(shard, out var shardCount) ? shardCount + 1 : 1;
-            var stateName = record.PayloadState.ToString();
-            payloadStates[stateName] = payloadStates.TryGetValue(stateName, out var stateCount) ? stateCount + 1 : 1;
-            var eligibility = eligibilityEvaluator.Evaluate(record, _catalog.Context, query);
-            if (eligibility.IsEligible)
-            {
-                resultSetFingerprint.Append(record);
-                exportable++;
-                totalPayloadBytes = checked(totalPayloadBytes + (record.PayloadByteLength ?? 0));
-            }
-            if (record.PayloadState == VoicePayloadState.Missing)
-            {
-                unassociated++;
+                if (spoolWriter is null && records.Count < PreparedSelectionSpool.InMemoryRecordLimit)
+                {
+                    records.Add(record);
+                }
+                else
+                {
+                    if (spoolWriter is null)
+                    {
+                        spoolWriter = await PreparedSelectionSpool.CreateWriterAsync(cancellationToken).ConfigureAwait(false);
+                        foreach (var preparedRecord in records)
+                        {
+                            await spoolWriter.AppendAsync(preparedRecord, cancellationToken).ConfigureAwait(false);
+                        }
+
+                        records.Clear();
+                    }
+
+                    await spoolWriter.AppendAsync(record, cancellationToken).ConfigureAwait(false);
+                }
+
+                count++;
+                if (record.DurationMs is > 0)
+                {
+                    duration = checked(duration + record.DurationMs.Value);
+                    durationKnown++;
+                }
+                earliest = earliest is null || record.OccurredAtUtc < earliest ? record.OccurredAtUtc : earliest;
+                latest = latest is null || record.OccurredAtUtc > latest ? record.OccurredAtUtc : latest;
+                var shard = record.ShardId ?? record.SourceDatabase ?? "unknown";
+                shardCounts[shard] = shardCounts.TryGetValue(shard, out var shardCount) ? shardCount + 1 : 1;
+                var stateName = record.PayloadState.ToString();
+                payloadStates[stateName] = payloadStates.TryGetValue(stateName, out var stateCount) ? stateCount + 1 : 1;
+                var eligibility = eligibilityEvaluator.Evaluate(record, _catalog.Context, query);
+                if (eligibility.IsEligible)
+                {
+                    resultSetFingerprint.Append(record);
+                    exportable++;
+                    totalPayloadBytes = checked(totalPayloadBytes + (record.PayloadByteLength ?? 0));
+                }
+                if (record.PayloadState == VoicePayloadState.Missing)
+                {
+                    unassociated++;
+                }
+
+                if (record.PayloadState == VoicePayloadState.Empty)
+                {
+                    empty++;
+                }
+
+                if (record.PayloadState == VoicePayloadState.InvalidHeader)
+                {
+                    invalidHeader++;
+                }
+
+                if (record.PayloadState == VoicePayloadState.Ambiguous)
+                {
+                    ambiguous++;
+                }
+
+                var payloadHash = record.PayloadSha256;
+                if (query.DeepScan
+                    && string.IsNullOrWhiteSpace(payloadHash)
+                    && _payloadHashResolver is not null)
+                {
+                    payloadHash = await _payloadHashResolver.ResolveAsync(_catalog, record, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (query.DeepScan && !string.IsNullOrWhiteSpace(payloadHash))
+                {
+                    payloadHashes[payloadHash] = payloadHashes.TryGetValue(payloadHash, out var hashCount) ? hashCount + 1 : 1;
+                }
             }
 
-            if (record.PayloadState == VoicePayloadState.Empty)
+            if (spoolWriter is not null)
             {
-                empty++;
+                spool = await spoolWriter.CompleteAsync(cancellationToken).ConfigureAwait(false);
+                spoolWriter = null;
             }
 
-            if (record.PayloadState == VoicePayloadState.InvalidHeader)
-            {
-                invalidHeader++;
-            }
-
-            if (record.PayloadState == VoicePayloadState.Ambiguous)
-            {
-                ambiguous++;
-            }
-
-            var payloadHash = record.PayloadSha256;
-            if (query.DeepScan
-                && string.IsNullOrWhiteSpace(payloadHash)
-                && _payloadHashResolver is not null)
-            {
-                payloadHash = await _payloadHashResolver.ResolveAsync(_catalog, record, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (query.DeepScan && !string.IsNullOrWhiteSpace(payloadHash))
-            {
-                payloadHashes[payloadHash] = payloadHashes.TryGetValue(payloadHash, out var hashCount) ? hashCount + 1 : 1;
-            }
+            var duplicates = payloadHashes.Values.Where(static value => value > 1).Sum(static value => value - 1);
+            var report = new VoiceScanReport(
+                count,
+                duration,
+                earliest,
+                latest,
+                shardCounts,
+                unassociated,
+                empty,
+                duplicates,
+                invalidHeader,
+                ambiguous,
+                payloadStates,
+                query.DeepScan,
+                exportable,
+                totalPayloadBytes,
+                durationKnown,
+                resultSetFingerprint.Complete());
+            var execution = new VoiceScanExecutionResult(
+                report,
+                new System.Collections.ObjectModel.ReadOnlyCollection<VoiceRecord>(records),
+                spool);
+            spoolHandedOff = true;
+            return execution;
         }
+        catch
+        {
+            if (spoolWriter is not null)
+            {
+                await spoolWriter.AbortAsync(_cleanupQueue, CancellationToken.None).ConfigureAwait(false);
+            }
 
-        var duplicates = payloadHashes.Values.Where(static value => value > 1).Sum(static value => value - 1);
-        var report = new VoiceScanReport(
-            count,
-            duration,
-            earliest,
-            latest,
-            shardCounts,
-            unassociated,
-            empty,
-            duplicates,
-            invalidHeader,
-            ambiguous,
-            payloadStates,
-            query.DeepScan,
-            exportable,
-            totalPayloadBytes,
-            durationKnown,
-            resultSetFingerprint.Complete());
-        return new VoiceScanExecutionResult(
-            report,
-            new System.Collections.ObjectModel.ReadOnlyCollection<VoiceRecord>(records));
+            if (!spoolHandedOff && spool is not null)
+            {
+                await PreparedSelectionSpool.DeleteAsync(spool, _cleanupQueue, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            throw;
+        }
     }
 }
 
 public sealed record VoiceScanExecutionResult(
     VoiceScanReport Report,
-    IReadOnlyList<VoiceRecord> Records);
+    IReadOnlyList<VoiceRecord> Records,
+    PreparedSelectionSpoolDescriptor? Spool = null);

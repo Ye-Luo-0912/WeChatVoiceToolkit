@@ -6,6 +6,9 @@
 function Get-WeChatVoiceReleaseIdentity {
     [pscustomobject]@{
         Name = 'WeChatVoiceToolkit'
+        # The subject is supplied by the protected release environment. It is
+        # intentionally not guessed here because it is the AppX update anchor.
+        Publisher = if ([string]::IsNullOrWhiteSpace($env:WECHATVOICE_ALLOWED_PACKAGE_PUBLISHER)) { $null } else { $env:WECHATVOICE_ALLOWED_PACKAGE_PUBLISHER.Trim() }
         Architecture = 'x64'
         ApplicationExecutable = 'WeChatVoice.Desktop.exe'
     }
@@ -15,6 +18,11 @@ function Assert-WeChatVoiceReleaseIdentity([object]$identity) {
     $expected = Get-WeChatVoiceReleaseIdentity
     if ($null -eq $identity -or [string]$identity.Name -cne $expected.Name -or [string]$identity.Architecture -cne $expected.Architecture -or [string]$identity.Executable -cne $expected.ApplicationExecutable) {
         throw 'The package identity is not the fixed WeChatVoiceToolkit release identity.'
+    }
+
+    if ((-not [string]::IsNullOrWhiteSpace($expected.Publisher)) -and
+        ([string]$identity.Publisher -cne $expected.Publisher)) {
+        throw 'The package Publisher does not match the fixed release Publisher anchor.'
     }
 }
 

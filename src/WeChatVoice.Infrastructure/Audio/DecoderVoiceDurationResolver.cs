@@ -143,5 +143,9 @@ public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolv
         {
             return new CleanupDiagnostic("duration-wav", "delete-failed", exception.GetType().Name);
         }
+        catch (Exception exception)
+        {
+            return new CleanupDiagnostic("duration-wav", "delete-failed", exception.GetType().Name);
+        }
     }
 }

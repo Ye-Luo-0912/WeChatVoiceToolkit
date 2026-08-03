@@ -41,6 +41,7 @@ internal sealed class JsonlCacheFileStore
                     FileShare.None,
                     1,
                     FileOptions.Asynchronous);
+                CleanupOrphanedTemporaryFiles(directory);
                 return new JsonlCacheWriteLock(stream);
             }
             catch (IOException exception)
@@ -135,6 +136,35 @@ internal sealed class JsonlCacheFileStore
                 && lineCount > checked(uniqueCount * 2 + 32)
             || uniqueCount > MaximumEntries
             || requiresMigration;
+
+    private void CleanupOrphanedTemporaryFiles(string directory)
+    {
+        var cutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
+        var prefix = Path.GetFileName(_path) + ".compact-";
+        foreach (var path in Directory.EnumerateFiles(directory, prefix + "*.tmp", SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                if (File.GetLastWriteTimeUtc(path) > cutoff
+                    || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                {
+                    continue;
+                }
+
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+                // Cache cleanup is best effort; the cache remains an
+                // optimization and a later writer can retry the deletion.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Do not turn a valid scan into a failure because a stale
+                // optimization-cache temp file is not removable.
+            }
+        }
+    }
 
     internal static string HashSourceStableKey(string sourceStableKey)
     {

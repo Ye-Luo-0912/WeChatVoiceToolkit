@@ -38,6 +38,13 @@ public sealed class DatasetSelectionProfileStore
         string exportDirectory,
         CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(exportDirectory);
+        await using var exportLock = await ExportRootLock.AcquireAsync(
+            Path.GetFullPath(exportDirectory),
+            ExportRootLockMode.Shared,
+            Guid.NewGuid().ToString("N"),
+            runId: null,
+            cancellationToken).ConfigureAwait(false);
         var path = GetPath(exportDirectory);
         await using var stream = new FileStream(
             path,

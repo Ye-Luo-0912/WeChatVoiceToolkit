@@ -137,7 +137,13 @@ public sealed class ExportVerificationService
             var csvResult = await VerifyCsvAsync(exportRoot, manifest, selectedRunId, runId is null, issues, cancellationToken).ConfigureAwait(false);
             csvConsistent = csvResult.IsConsistent;
             trainingSelectionConsistent = csvResult.TrainingSelectionConsistent;
-            await VerifyArtifactIndexAsync(exportRoot, artifactResult.ExpectedArtifacts, issues, cancellationToken).ConfigureAwait(false);
+            await VerifyArtifactIndexAsync(
+                exportRoot,
+                artifactResult.ExpectedArtifacts,
+                selectedRunId,
+                runId is null,
+                issues,
+                cancellationToken).ConfigureAwait(false);
         }
 
         return Result(
@@ -193,9 +199,20 @@ public sealed class ExportVerificationService
             }
 
             await store.RecoverRunUnderLockAsync(journalPath, manifest.RunId, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(runId))
+            {
+                // A completed run is terminal and is intentionally not replayed
+                // by automatic recovery. Explicit repair may, however, rebuild
+                // missing latest aliases from that run's descriptor-bound
+                // metadata without touching original SILK artifacts.
+                await store.RepairLatestAliasesUnderLockAsync(manifest.RunId, cancellationToken).ConfigureAwait(false);
+            }
         }
 
-        var verification = await VerifyAsync(exportRoot, manifest.RunId, cancellationToken).ConfigureAwait(false);
+        var verification = await VerifyAsync(
+            exportRoot,
+            string.IsNullOrWhiteSpace(runId) ? null : manifest.RunId,
+            cancellationToken).ConfigureAwait(false);
         return new ExportRepairResult(verification, journalPath, OriginalArtifactsChanged: false);
     }
 
@@ -477,13 +494,18 @@ public sealed class ExportVerificationService
     private static async Task VerifyArtifactIndexAsync(
         string exportRoot,
         IReadOnlyDictionary<string, ArtifactExpectation> expected,
+        string? runId,
+        bool latestSelected,
         ICollection<ExportVerificationIssue> issues,
         CancellationToken cancellationToken)
     {
-        var path = Path.Combine(exportRoot, "artifact-index.jsonl");
+        var path = latestSelected || string.IsNullOrWhiteSpace(runId)
+            ? Path.Combine(exportRoot, "artifact-index.jsonl")
+            : Path.Combine(exportRoot, "runs", ExportManifestLayout.RunArtifactIndexFileName(runId));
+        var relativePath = RelativePath(exportRoot, path);
         if (!File.Exists(path))
         {
-            issues.Add(Issue("artifact-index-missing", "artifact-index.jsonl", "The artifact index is missing; run export repair."));
+            issues.Add(Issue("artifact-index-missing", relativePath, "The artifact index is missing; run export repair."));
             return;
         }
 
@@ -497,36 +519,36 @@ public sealed class ExportVerificationService
             {
                 var indexEntry = JsonSerializer.Deserialize<ArtifactIndexRecord>(line, JsonOptions)
                     ?? throw new InvalidDataException("The artifact index contains a null entry.");
-                var relativePath = NormalizeRelativePath(indexEntry.RelativePath);
-                if (!TryResolveArtifactPath(exportRoot, relativePath, out _))
+                var normalizedPath = NormalizeRelativePath(indexEntry.RelativePath);
+                if (!TryResolveArtifactPath(exportRoot, normalizedPath, out _))
                 {
-                    issues.Add(Issue("artifact-index-path-outside-root", relativePath, "The artifact index contains a path outside the export root."));
+                    issues.Add(Issue("artifact-index-path-outside-root", normalizedPath, "The artifact index contains a path outside the export root."));
                     continue;
                 }
 
-                if (!found.Add(relativePath))
+                if (!found.Add(normalizedPath))
                 {
-                    issues.Add(Issue("artifact-index-duplicate", relativePath, "The artifact index contains a duplicate path."));
+                    issues.Add(Issue("artifact-index-duplicate", normalizedPath, "The artifact index contains a duplicate path."));
                     continue;
                 }
 
-                if (!expected.TryGetValue(relativePath, out var expectedEntry)
+                if (!expected.TryGetValue(normalizedPath, out var expectedEntry)
                     || indexEntry.Length != expectedEntry.Length
                     || !string.Equals(indexEntry.Sha256, expectedEntry.Sha256, StringComparison.OrdinalIgnoreCase)
                     || string.IsNullOrWhiteSpace(indexEntry.FileId))
                 {
-                    issues.Add(Issue("artifact-index-mismatch", relativePath, "The artifact index length or SHA-256 does not match the manifest."));
+                    issues.Add(Issue("artifact-index-mismatch", normalizedPath, "The artifact index length or SHA-256 does not match the manifest."));
                 }
             }
             catch (Exception exception) when (exception is JsonException or InvalidDataException)
             {
-                issues.Add(Issue("artifact-index-invalid", "artifact-index.jsonl", "The artifact index contains malformed JSON."));
+                    issues.Add(Issue("artifact-index-invalid", relativePath, "The artifact index contains malformed JSON."));
             }
         }
 
         if (!found.SetEquals(expected.Keys))
         {
-            issues.Add(Issue("artifact-index-mismatch", "artifact-index.jsonl", "The artifact index does not cover exactly the manifest artifacts."));
+            issues.Add(Issue("artifact-index-mismatch", relativePath, "The artifact index does not cover exactly the manifest artifacts."));
         }
     }
 
@@ -567,7 +589,7 @@ public sealed class ExportVerificationService
             (Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(selectedRunId)), descriptor.PrivateManifestSha256, "private-manifest"),
             (Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPortableManifestFileName(selectedRunId)), descriptor.PortableManifestSha256, "portable-manifest"),
             (Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPortableCsvFileName(selectedRunId)), descriptor.DatasetCsvSha256, "dataset-csv"),
-            (Path.Combine(exportRoot, "artifact-index.jsonl"), descriptor.ArtifactIndexSha256, "artifact-index"),
+            (Path.Combine(exportRoot, "runs", ExportManifestLayout.RunArtifactIndexFileName(selectedRunId)), descriptor.ArtifactIndexSha256, "artifact-index"),
         };
         foreach (var (path, expectedHash, label) in runFiles)
         {
@@ -591,6 +613,7 @@ public sealed class ExportVerificationService
                 (Path.Combine(exportRoot, ExportManifestLayout.PrivateManifestFileName), descriptor.PrivateManifestSha256, "latest-private-manifest"),
                 (Path.Combine(exportRoot, ExportManifestLayout.PortableManifestFileName), descriptor.PortableManifestSha256, "latest-portable-manifest"),
                 (Path.Combine(exportRoot, ExportManifestLayout.PortableCsvFileName), descriptor.DatasetCsvSha256, "latest-dataset-csv"),
+                (Path.Combine(exportRoot, "artifact-index.jsonl"), descriptor.ArtifactIndexSha256, "latest-artifact-index"),
             };
             foreach (var (path, expectedHash, label) in latestFiles)
             {
@@ -800,7 +823,9 @@ public sealed class ExportVerificationService
 
         var runs = Path.Combine(exportRoot, "runs");
         if (!Directory.Exists(runs)) return null;
-        foreach (var path in Directory.EnumerateFiles(runs, "*.jsonl").OrderByDescending(File.GetLastWriteTimeUtc))
+        foreach (var path in Directory.EnumerateFiles(runs, "*.jsonl")
+                     .Where(static path => !path.EndsWith(".artifact-index.jsonl", StringComparison.OrdinalIgnoreCase))
+                     .OrderByDescending(File.GetLastWriteTimeUtc))
         {
             var events = await ReadJournalAsync(path, cancellationToken, new List<ExportVerificationIssue>()).ConfigureAwait(false);
             if (events.Events.Any(static item => item.Event == "manifest-committed")) return path;

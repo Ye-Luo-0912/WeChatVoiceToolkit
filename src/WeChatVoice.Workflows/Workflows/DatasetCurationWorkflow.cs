@@ -112,7 +112,12 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         try
         {
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing, "保存数据集选择配置");
-            await _profileStore.WriteAsync(exportDirectory, profile, cancellationToken).ConfigureAwait(false);
+            var exportRoot = Path.GetFullPath(exportDirectory);
+            if (!Directory.Exists(exportRoot))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "The export directory does not exist.");
+            }
+            await _profileStore.WriteAsync(exportRoot, profile, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -141,7 +146,12 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         try
         {
             context.Report(OperationPhase.VoiceExport, OperationStageIds.LoadingWorkspace, "加载数据集选择配置");
-            var profile = await _profileStore.ReadAsync(exportDirectory, cancellationToken).ConfigureAwait(false);
+            var exportRoot = Path.GetFullPath(exportDirectory);
+            if (!Directory.Exists(exportRoot))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "The export directory does not exist.");
+            }
+            var profile = await _profileStore.ReadAsync(exportRoot, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             return profile;
         }

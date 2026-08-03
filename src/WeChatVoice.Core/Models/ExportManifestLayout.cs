@@ -25,4 +25,13 @@ public static class ExportManifestLayout
 
     public static string RunPortableCsvFileName(string runId)
         => runId + ".dataset.csv";
+
+    /// <summary>
+    /// Each committed run keeps its own artifact-index snapshot. The root
+    /// artifact-index.jsonl is only the latest alias; binding a descriptor to
+    /// that alias would make an older completed run appear incomplete after a
+    /// later export updates the root index.
+    /// </summary>
+    public static string RunArtifactIndexFileName(string runId)
+        => runId + ".artifact-index.jsonl";
 }

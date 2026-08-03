@@ -58,7 +58,13 @@ public sealed class DatasetBuildService
         {
             throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset output cannot be a reparse point.");
         }
-        var existing = await TryVerifyExistingAsync(outputRoot, profile, manifestPath, manifestSha256, cancellationToken).ConfigureAwait(false);
+        var existing = await TryVerifyExistingAsync(
+            outputRoot,
+            profile,
+            manifestPath,
+            manifestSha256,
+            profileSha256,
+            cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
             return existing;
@@ -194,6 +200,7 @@ public sealed class DatasetBuildService
                 inputs.Profile,
                 inputs.ManifestPath,
                 inputs.ManifestSha256,
+                inputs.ProfileSha256,
                 cancellationToken).ConfigureAwait(false);
             return existing is null
                 ? InvalidVerification(outputRoot, "dataset-invalid", null, "The curated dataset is missing or failed verification.")
@@ -474,6 +481,7 @@ public sealed class DatasetBuildService
         DatasetSelectionProfile profile,
         string manifestPath,
         string manifestSha256,
+        string profileSha256,
         CancellationToken cancellationToken)
     {
         if (Directory.Exists(outputRoot)
@@ -490,7 +498,8 @@ public sealed class DatasetBuildService
 
         var build = await ReadAsync<DatasetBuildManifest>(buildManifestPath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(build.SelectionFingerprint, profile.SelectionFingerprint, StringComparison.Ordinal)
-            || !string.Equals(build.SourceManifestSha256, manifestSha256, StringComparison.OrdinalIgnoreCase))
+            || !string.Equals(build.SourceManifestSha256, manifestSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(build.ProfileSha256, profileSha256, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }

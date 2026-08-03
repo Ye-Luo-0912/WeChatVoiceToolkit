@@ -36,6 +36,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(accountConfirmation);
         _cleanupQueue = new TemporaryFileCleanupQueue();
+        PreparedSelectionSpool.CleanupOrphans(cleanupQueue: _cleanupQueue);
         var loader = new Workspaces.WorkspaceLoader();
         var adapters = BuiltInAdapters.Create();
         var resolver = new DataSetAdapterResolver(adapters);

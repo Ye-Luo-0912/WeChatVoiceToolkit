@@ -83,6 +83,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $publishRoot 'WeChatVoice.KeyBroker.
 
 $certificate = Get-PublisherCertificate
 $publisher = $certificate.Subject
+$requiresFixedPublisher = $env:CI -eq 'true' -or $env:CI -eq '1' -or $env:WECHATVOICE_SIGNED_RELEASE -eq 'true' -or $env:WECHATVOICE_SIGNED_RELEASE -eq '1'
+if ($requiresFixedPublisher -and [string]::IsNullOrWhiteSpace($releaseIdentity.Publisher)) {
+    throw 'Formal MSIX packaging requires WECHATVOICE_ALLOWED_PACKAGE_PUBLISHER.'
+}
+if ((-not [string]::IsNullOrWhiteSpace($releaseIdentity.Publisher)) -and
+    ($publisher -cne $releaseIdentity.Publisher)) {
+    throw 'The signing certificate subject does not match the fixed AppX Publisher anchor.'
+}
 $makeAppx = Find-WindowsSdkTool 'MakeAppx.exe'
 $signtool = Find-WindowsSdkTool 'signtool.exe'
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('wechatvoice-msix-' + [guid]::NewGuid().ToString('N'))

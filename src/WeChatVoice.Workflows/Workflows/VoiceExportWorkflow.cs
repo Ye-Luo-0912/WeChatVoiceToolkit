@@ -74,9 +74,22 @@ public sealed class VoiceExportWorkflow(
                 ExpectedResultCount = plan.ResultCount,
                 ExpectedTotalPayloadBytes = plan.TotalPayloadBytes,
             };
-            var manifest = plan.HasPreparedRecords
-                ? await service.ExportPreparedAsync(query, options, plan.Records, cancellationToken).ConfigureAwait(false)
-                : await service.ExportAsync(query, options, cancellationToken).ConfigureAwait(false);
+            VoiceExportManifest manifest;
+            try
+            {
+                manifest = plan.Spool is not null
+                    ? await service.ExportPreparedSpoolAsync(query, options, plan.Spool, cancellationToken).ConfigureAwait(false)
+                    : plan.HasPreparedRecords
+                        ? await service.ExportPreparedAsync(query, options, plan.Records, cancellationToken).ConfigureAwait(false)
+                        : await service.ExportAsync(query, options, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (plan.Spool is not null)
+                {
+                    await PreparedSelectionSpool.DeleteAsync(plan.Spool, cleanupQueue, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing);
             return new VoiceExportWorkflowResult(manifest, session.Workspace);

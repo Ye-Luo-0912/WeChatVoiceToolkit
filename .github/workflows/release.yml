@@ -16,8 +16,10 @@ jobs:
       WECHATVOICE_SIGNED_RELEASE: true
       # Keep the allowed publisher anchors independent from the generated
       # update manifest and the package itself.
+      WECHATVOICE_ALLOWED_PUBLISHERS_JSON: ${{ secrets.WECHATVOICE_ALLOWED_PUBLISHERS_JSON }}
       WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT: ${{ secrets.WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT }}
       WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID: ${{ secrets.WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID }}
+      WECHATVOICE_ALLOWED_PACKAGE_PUBLISHER: ${{ secrets.WECHATVOICE_ALLOWED_PACKAGE_PUBLISHER }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -72,16 +74,9 @@ jobs:
               -PublisherThumbprint $publisherFingerprint `
               -PackageUri $packageUri
             $updateMetadata = Get-Content -LiteralPath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.update-manifest.json" -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ([string]::IsNullOrWhiteSpace($env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT) -or
-                [string]::IsNullOrWhiteSpace($env:WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID)) {
-              throw 'Independent publisher anchors are not configured in repository secrets.'
-            }
-            $allowedThumbprint = $env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT.Replace(' ', '').ToLowerInvariant()
-            $allowedKeyId = $env:WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID.Replace(' ', '').ToLowerInvariant()
-            if ($updateMetadata.publisherThumbprint -ne $allowedThumbprint -or
-                $updateMetadata.publisherKeyId -ne $allowedKeyId) {
-              throw 'The signing certificate does not match the independent release publisher anchors.'
-            }
+            . "$env:GITHUB_WORKSPACE\scripts\release-publisher-policy.ps1"
+            $publisherPolicy = Get-WeChatVoicePublisherPolicy
+            [void](Find-WeChatVoicePublisherAnchor $publisherPolicy $updateMetadata.publisherThumbprint $updateMetadata.publisherKeyId $updateMetadata.publisherId)
           }
           finally { $certificate.Dispose() }
       - name: Install formal MSIX and run ordinary-user trust smoke
@@ -105,7 +100,15 @@ jobs:
           Import-Certificate -FilePath $publicCertificatePath -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
           $certificateThumbprint = $certificate.Thumbprint
           try {
-            ./scripts/install-msix.ps1 -PackagePath $packagePath -UpdateManifestPath $updateManifestPath -RunTrustSmoke -ForceUpdateFromAnyVersion
+            $userDataRoot = Join-Path $env:RUNNER_TEMP 'wechatvoice-user-data-retention'
+            $userDataState = Join-Path $env:RUNNER_TEMP 'wechatvoice-user-data-retention.json'
+            foreach ($directory in @('snapshots', 'workspaces', 'exports', 'LocalApplicationData')) {
+              New-Item -ItemType Directory -Path (Join-Path $userDataRoot $directory) -Force | Out-Null
+              Set-Content -LiteralPath (Join-Path $userDataRoot $directory 'sentinel.txt') -Value "preserve-$directory" -Encoding UTF8
+            }
+            ./scripts/assert-user-data-preserved.ps1 -DataRoot $userDataRoot -StatePath $userDataState -Capture
+            ./scripts/install-msix.ps1 -PackagePath $packagePath -UpdateManifestPath $updateManifestPath -RunTrustSmoke
+            ./scripts/assert-user-data-preserved.ps1 -DataRoot $userDataRoot -StatePath $userDataState
 
             # Install a lower-version signed package, roll back to it, then
             # reinstall the release. This exercises the same AppX identity,
@@ -114,15 +117,24 @@ jobs:
               $rollbackDirectory = "$env:GITHUB_WORKSPACE\artifacts\rollback"
               New-Item -ItemType Directory -Path $rollbackDirectory -Force | Out-Null
               ./scripts/package-msix.ps1 -PublishDirectory "$env:GITHUB_WORKSPACE\artifacts\package" -OutputPath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -PfxPath "$env:WECHATVOICE_SIGNING_PFX_PATH" -PfxPassword "$env:WECHATVOICE_SIGNING_PFX_PASSWORD" -Version '0.0.0.0'
-              ./scripts/generate-update-manifest.ps1 -PackagePath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -OutputPath "$rollbackDirectory\update-manifest.json" -Version '0.0.0.0' -PublisherThumbprint $env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT
+              $rollbackCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($env:WECHATVOICE_SIGNING_PFX_PATH, $env:WECHATVOICE_SIGNING_PFX_PASSWORD, [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+              try {
+                . "$env:GITHUB_WORKSPACE\scripts\publisher-fingerprint.ps1"
+                $rollbackPublisherThumbprint = Get-CertificateSha256Fingerprint -Certificate $rollbackCertificate
+                ./scripts/generate-update-manifest.ps1 -PackagePath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -OutputPath "$rollbackDirectory\update-manifest.json" -Version '0.0.0.0' -PublisherThumbprint $rollbackPublisherThumbprint -UpdateKind rollback -RollbackFromVersion $env:WECHATVOICE_PACKAGE_VERSION
+              }
+              finally { $rollbackCertificate.Dispose() }
               ./scripts/rollback-msix.ps1 -PackagePath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -RunTrustSmoke
+              ./scripts/assert-user-data-preserved.ps1 -DataRoot $userDataRoot -StatePath $userDataState
             } else {
               Write-Host 'No lower AppX version exists for rollback smoke at 0.0.0.0.'
             }
-            ./scripts/install-msix.ps1 -PackagePath $packagePath -UpdateManifestPath $updateManifestPath -RunTrustSmoke -ForceUpdateFromAnyVersion
+            ./scripts/install-msix.ps1 -PackagePath $packagePath -UpdateManifestPath $updateManifestPath -RunTrustSmoke
+            ./scripts/assert-user-data-preserved.ps1 -DataRoot $userDataRoot -StatePath $userDataState
           }
           finally {
             ./scripts/uninstall-msix.ps1 -PackageName WeChatVoiceToolkit
+            ./scripts/assert-user-data-preserved.ps1 -DataRoot $userDataRoot -StatePath $userDataState
             Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$certificateThumbprint" -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath "Cert:\LocalMachine\TrustedPeople\$certificateThumbprint" -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $publicCertificatePath -Force -ErrorAction SilentlyContinue

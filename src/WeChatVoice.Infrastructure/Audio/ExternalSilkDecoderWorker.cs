@@ -434,6 +434,10 @@ public sealed class ExternalSilkDecoderWorker : IVoiceDecoder, IVoiceDecoderIden
         {
             return new CleanupDiagnostic(resourceKind, "delete-failed", exception.GetType().Name);
         }
+        catch (Exception exception)
+        {
+            return new CleanupDiagnostic(resourceKind, "delete-failed", exception.GetType().Name);
+        }
     }
 
     private sealed record WorkerRequest(
