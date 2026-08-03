@@ -17,6 +17,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
     private readonly ConcurrentDictionary<string, byte> _reservedPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _exportRoot;
     private readonly SemaphoreSlim _artifactIndexGate = new(1, 1);
+    private readonly SemaphoreSlim _namespaceKeyGate = new(1, 1);
     private Dictionary<string, ArtifactIndexEntry>? _artifactIndex;
 
     public FileSystemVoiceExportStore(string exportRoot)
@@ -27,7 +28,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
     public string ExportRoot => _exportRoot;
 
-    public ValueTask<IExportRunLease> BeginRunAsync(
+    public async ValueTask<IExportRunLease> BeginRunAsync(
         VoiceExportRunContext context,
         CancellationToken cancellationToken)
     {
@@ -35,15 +36,33 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         cancellationToken.ThrowIfCancellationRequested();
         var runsDirectory = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs");
         Directory.CreateDirectory(runsDirectory);
-        var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", context.RunId + ".jsonl");
-        var stream = new FileStream(
-            journalPath,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.Read,
-            128 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return ValueTask.FromResult<IExportRunLease>(new FileSystemExportRunJournal(this, _exportRoot, context.RunId, stream));
+        var operationId = Guid.NewGuid().ToString("N");
+        var rootLock = await ExportRootLock.AcquireAsync(
+            _exportRoot,
+            ExportRootLockMode.Exclusive,
+            operationId,
+            context.RunId,
+            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await RecoverPendingTransactionsUnderLockAsync(cancellationToken, rootLock).ConfigureAwait(false);
+            var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", context.RunId + ".jsonl");
+            var stream = new FileStream(
+                journalPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.Read,
+                128 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var journal = new FileSystemExportRunJournal(this, _exportRoot, context, operationId, stream, rootLock);
+            await journal.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            return journal;
+        }
+        catch
+        {
+            await rootLock.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     public ValueTask<IExportItemLease> BeginItemAsync(
@@ -57,7 +76,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         ExistingArtifactPolicy policy,
         string artifactRoot,
         bool deferPublish,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<FileSystemExportItemLease, CancellationToken, Task>? changed = null)
     {
         ArgumentNullException.ThrowIfNull(record);
         cancellationToken.ThrowIfCancellationRequested();
@@ -114,6 +134,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             Directory.CreateDirectory(Path.GetDirectoryName(originalPath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(decodedPath)!);
             return new FileSystemExportItemLease(
+                this,
                 record,
                 originalManifestPath,
                 decodedManifestPath,
@@ -127,7 +148,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 decoded,
                 replace,
                 deferPublish,
-                () => Release(reserved));
+                () => Release(reserved),
+                changed);
         }
         catch
         {
@@ -150,44 +172,135 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
 
         var runId = Path.GetFileNameWithoutExtension(fullJournalPath);
+        await using var rootLock = await ExportRootLock.AcquireAsync(
+            _exportRoot,
+            ExportRootLockMode.Exclusive,
+            Guid.NewGuid().ToString("N"),
+            runId,
+            cancellationToken).ConfigureAwait(false);
+        // The explicit recovery command must use the same strict
+        // transaction reconciliation as a new export/verify operation. It
+        // must never rebuild metadata merely because a Journal mentions an
+        // artifact whose final bytes are missing or altered.
+        await RecoverPendingTransactionsUnderLockAsync(
+            cancellationToken,
+            rootLock,
+            onlyRunId: runId,
+            resumeMetadata: false).ConfigureAwait(false);
+        return await RecoverRunUnderLockAsync(fullJournalPath, runId, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<VoiceExportManifest> RecoverRunUnderLockAsync(
+        string fullJournalPath,
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        var transactionPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".transaction.json");
+        var hasTransactionDocument = File.Exists(transactionPath);
+        var hasRecordedTransactionItems = false;
+        if (hasTransactionDocument)
+        {
+            try
+            {
+                var transaction = await ReadJsonDocumentAsync<ExportTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(transaction.RunId, runId, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The export transaction RunId does not match the recovery Journal.");
+                }
+
+                if (transaction.State == ExportTransactionState.RolledBack
+                    || string.Equals(transaction.FailureCode, "export-rolled-back", StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The export transaction was explicitly rolled back and cannot be recovered.");
+                }
+
+                hasRecordedTransactionItems = transaction.Items.Count > 0;
+                await AppendRecoveredItemEventsAsync(transaction, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+            {
+                throw new IOException("The export transaction document could not be read during recovery.", exception);
+            }
+        }
+
         var fallback = new VoiceExportManifest(DateTimeOffset.UtcNow, RunId: runId, RunStatus: ExportRunStatus.Failed);
         var recovered = await ReadManifestFromJournalAsync(fallback, fullJournalPath, cancellationToken).ConfigureAwait(false);
-        var manifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".manifest.json");
-        var privateManifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".manifest.private.json");
-        var datasetPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".dataset.csv");
-        var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
-        var latestPrivatePath = ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.private.json");
-        var latestDatasetPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "dataset.csv");
-        await AtomicFileWriter.WriteJsonAsync(manifestPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-        await AtomicFileWriter.WriteJsonAsync(privateManifestPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-        await VoiceManifestCsvWriter.WriteAsync(
-            datasetPath,
+        if (await JournalHasManifestCommitAsync(fullJournalPath, cancellationToken).ConfigureAwait(false)
+            && await MetadataCommitIsCompleteAsync(runId, cancellationToken).ConfigureAwait(false))
+        {
+            await MarkTransactionCompletedAsync(transactionPath, runId, cancellationToken).ConfigureAwait(false);
+            return recovered;
+        }
+
+        var existingPrivatePath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".manifest.private.json");
+        if (File.Exists(existingPrivatePath))
+        {
+            try
+            {
+                var existingManifest = await ReadJsonDocumentAsync<VoiceExportManifest>(existingPrivatePath, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(existingManifest.DatasetNamespaceKey))
+                {
+                    recovered = recovered with { DatasetNamespaceKey = existingManifest.DatasetNamespaceKey };
+                }
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+            {
+                // The journal remains authoritative; CommitMetadataAsync will
+                // regenerate the private manifest with a run-scoped namespace.
+            }
+        }
+
+        // A transaction document is the strict current-format boundary: its
+        // item hashes must all be present before metadata can be committed.
+        // Only old Journals, or a transaction document with no recorded item
+        // hashes, use the compatibility path. Every recorded transaction item
+        // remains strict and must be reconciled before metadata is committed.
+        var metadata = await CommitMetadataAsync(
             recovered,
-            cancellationToken).ConfigureAwait(false);
-        await AtomicFileWriter.WriteJsonAsync(latestPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-        await AtomicFileWriter.WriteJsonAsync(latestPrivatePath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-        await VoiceManifestCsvWriter.WriteAsync(
-            latestDatasetPath,
-            recovered,
-            cancellationToken).ConfigureAwait(false);
-        // Keep the historical filenames as dataset-only aliases for older
-        // hosts. The private JSON is available explicitly above.
-        await VoiceManifestCsvWriter.WriteAsync(
-            ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".manifest.csv"),
-            recovered,
-            cancellationToken).ConfigureAwait(false);
-        await VoiceManifestCsvWriter.WriteAsync(
-            ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.csv"),
-            recovered,
-            cancellationToken).ConfigureAwait(false);
-        await RebuildArtifactIndexAsync(recovered, cancellationToken, allowMissingArtifacts: true).ConfigureAwait(false);
+            runId,
+            cancellationToken,
+            allowMissingArtifacts: !hasRecordedTransactionItems).ConfigureAwait(false);
+        recovered = metadata.Manifest;
+        var descriptor = metadata.Descriptor;
+        var commitEvent = new VoiceExportJournalEvent(
+            "manifest-committed",
+            runId,
+            DateTimeOffset.UtcNow,
+            ManifestSha256: descriptor.PrivateManifestSha256,
+            ManifestGeneratedAtUtc: recovered.GeneratedAtUtc);
+        await AppendJournalEventDurablyAsync(fullJournalPath, commitEvent, cancellationToken).ConfigureAwait(false);
+        if (File.Exists(transactionPath))
+        {
+            try
+            {
+                var transaction = await ReadJsonDocumentAsync<ExportTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false);
+                await AtomicFileWriter.WriteJsonAsync(
+                    transactionPath,
+                    new ExportTransactionDocument(
+                        transaction.RunId,
+                        transaction.OperationId,
+                        transaction.SelectionFingerprint,
+                        ExportTransactionState.Completed,
+                        DateTimeOffset.UtcNow,
+                        transaction.Items,
+                        descriptor),
+                    InfrastructureJson.Indented,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+            {
+                // The manifests and flushed Journal are still recoverable even
+                // when the final transaction marker cannot be refreshed.
+            }
+        }
         return recovered;
     }
 
-    internal async Task RebuildArtifactIndexAsync(
+    internal async Task<string> RebuildArtifactIndexAsync(
         VoiceExportManifest manifest,
         CancellationToken cancellationToken,
-        bool allowMissingArtifacts = false)
+        bool allowMissingArtifacts = false,
+        string? destinationPath = null)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         var entries = new List<ArtifactIndexEntry>();
@@ -200,12 +313,15 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
         }
 
-        var indexPath = Path.Combine(_exportRoot, "artifact-index.jsonl");
+        var indexPath = destinationPath is null
+            ? Path.Combine(_exportRoot, "artifact-index.jsonl")
+            : ExportPathSafety.CombineUnderRoot(_exportRoot, destinationPath);
         var text = string.Join(
             Environment.NewLine,
             entries.Select(static entry => JsonSerializer.Serialize(entry, InfrastructureJson.Compact)))
             + (entries.Count == 0 ? string.Empty : Environment.NewLine);
         await AtomicFileWriter.WriteTextAsync(indexPath, text, cancellationToken).ConfigureAwait(false);
+        return await FileHashing.ComputeSha256Async(indexPath, cancellationToken).ConfigureAwait(false);
 
         void AddIndexEntry(string relativePath, string sha256)
         {
@@ -230,6 +346,753 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 DateTimeOffset.UtcNow));
         }
     }
+
+    internal async Task<string> GetOrCreateDatasetNamespaceKeyAsync(CancellationToken cancellationToken)
+    {
+        await _namespaceKeyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var metadataDirectory = ExportPathSafety.CombineUnderRoot(_exportRoot, ".wechatvoice");
+            Directory.CreateDirectory(metadataDirectory);
+            var path = ExportPathSafety.CombineUnderRoot(_exportRoot, ".wechatvoice", "dataset-namespace.key");
+            if (File.Exists(path))
+            {
+                var existing = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+                if (existing.Trim().Length == 64 && existing.Trim().All(Uri.IsHexDigit))
+                {
+                    return existing.Trim().ToLowerInvariant();
+                }
+
+                throw new InvalidDataException("The export dataset namespace key is invalid.");
+            }
+
+            var key = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            await AtomicFileWriter.WriteTextAsync(path, key + Environment.NewLine, cancellationToken).ConfigureAwait(false);
+            return key;
+        }
+        finally
+        {
+            _namespaceKeyGate.Release();
+        }
+    }
+
+    internal async Task<string> GetDatasetNamespaceKeyAsync(
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        var rootKey = await GetOrCreateDatasetNamespaceKeyAsync(cancellationToken).ConfigureAwait(false);
+        var derived = HMACSHA256.HashData(
+            Convert.FromHexString(rootKey),
+            Encoding.UTF8.GetBytes(runId));
+        return Convert.ToHexString(derived).ToLowerInvariant();
+    }
+
+    private async Task<(VoiceExportManifest Manifest, ExportMetadataCommitDescriptor Descriptor)> CommitMetadataAsync(
+        VoiceExportManifest manifest,
+        string runId,
+        CancellationToken cancellationToken,
+        bool allowMissingArtifacts = false)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        if (string.IsNullOrWhiteSpace(manifest.DatasetNamespaceKey))
+        {
+            manifest = manifest with
+            {
+                DatasetNamespaceKey = await GetDatasetNamespaceKeyAsync(runId, cancellationToken).ConfigureAwait(false),
+            };
+        }
+
+        var runsRoot = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs");
+        var stagingRoot = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + runId + ".metadata.staging");
+        Directory.CreateDirectory(runsRoot);
+        Directory.CreateDirectory(stagingRoot);
+        var stagedPrivate = Path.Combine(stagingRoot, "manifest.private.json");
+        var stagedPortable = Path.Combine(stagingRoot, "dataset.manifest.json");
+        var stagedCsv = Path.Combine(stagingRoot, "dataset.csv");
+        var stagedIndex = Path.Combine(stagingRoot, "artifact-index.jsonl");
+        var stagedDescriptor = Path.Combine(stagingRoot, "metadata-commit.json");
+
+        var portable = ExportItemIdentity.ToPortableManifest(manifest);
+        await AtomicFileWriter.WriteJsonAsync(stagedPrivate, manifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        await AtomicFileWriter.WriteJsonAsync(stagedPortable, portable, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        await VoiceManifestCsvWriter.WriteAsync(stagedCsv, manifest, cancellationToken).ConfigureAwait(false);
+        var indexHash = await RebuildArtifactIndexAsync(
+            manifest,
+            cancellationToken,
+            allowMissingArtifacts,
+            Path.GetRelativePath(_exportRoot, stagedIndex)).ConfigureAwait(false);
+        var descriptor = new ExportMetadataCommitDescriptor(
+            runId,
+            await FileHashing.ComputeSha256Async(stagedPrivate, cancellationToken).ConfigureAwait(false),
+            await FileHashing.ComputeSha256Async(stagedPortable, cancellationToken).ConfigureAwait(false),
+            await FileHashing.ComputeSha256Async(stagedCsv, cancellationToken).ConfigureAwait(false),
+            indexHash);
+        await AtomicFileWriter.WriteJsonAsync(stagedDescriptor, descriptor, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+
+        var runPrivate = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(runId));
+        var runPortable = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableManifestFileName(runId));
+        var runCsv = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableCsvFileName(runId));
+        var runDescriptor = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".metadata-commit.json");
+        var indexPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "artifact-index.jsonl");
+        MoveFileReplacing(stagedPrivate, runPrivate);
+        MoveFileReplacing(stagedPortable, runPortable);
+        MoveFileReplacing(stagedCsv, runCsv);
+        MoveFileReplacing(stagedIndex, indexPath);
+        MoveFileReplacing(stagedDescriptor, runDescriptor);
+
+        // The run descriptor is the durable metadata commit boundary. Latest
+        // aliases are published only after it exists; recovery can safely
+        // repeat this idempotent sequence after a crash at any point here.
+        await AtomicFileWriter.WriteJsonAsync(
+            ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PrivateManifestFileName),
+            manifest,
+            InfrastructureJson.Indented,
+            cancellationToken).ConfigureAwait(false);
+        await AtomicFileWriter.WriteJsonAsync(
+            ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PortableManifestFileName),
+            portable,
+            InfrastructureJson.Indented,
+            cancellationToken).ConfigureAwait(false);
+        await VoiceManifestCsvWriter.WriteAsync(
+            ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PortableCsvFileName),
+            manifest,
+            cancellationToken).ConfigureAwait(false);
+        await AtomicFileWriter.WriteJsonAsync(
+            ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.metadata-commit.json"),
+            descriptor,
+            InfrastructureJson.Indented,
+            cancellationToken).ConfigureAwait(false);
+        DeleteFileIfExists(Path.Combine(_exportRoot, ExportManifestLayout.LegacyPortableManifestFileName));
+        DeleteFileIfExists(Path.Combine(_exportRoot, "manifest.csv"));
+        DeleteFileIfExists(Path.Combine(_exportRoot, "runs", runId + ".manifest.json"));
+        DeleteFileIfExists(Path.Combine(_exportRoot, "runs", runId + ".manifest.csv"));
+        TryDeleteDirectory(stagingRoot);
+        return (manifest, descriptor);
+    }
+
+    /// <summary>
+    /// Reconciles durable export transaction documents before another export,
+    /// verify, or repair operation starts. A final file is accepted only after
+    /// its recorded length and SHA-256 match; an ambiguous file is left in
+    /// place and the transaction remains FailedRecoverable.
+    /// </summary>
+    public async Task RecoverPendingTransactionsAsync(CancellationToken cancellationToken)
+    {
+        var operationId = Guid.NewGuid().ToString("N");
+        await using var rootLock = await ExportRootLock.AcquireAsync(
+            _exportRoot,
+            ExportRootLockMode.Exclusive,
+            operationId,
+            runId: null,
+            cancellationToken).ConfigureAwait(false);
+        await RecoverPendingTransactionsUnderLockAsync(cancellationToken, rootLock).ConfigureAwait(false);
+    }
+
+    internal async Task RecoverPendingTransactionsUnderLockAsync(
+        CancellationToken cancellationToken,
+        ExportRootLock heldLock,
+        string? onlyRunId = null,
+        bool resumeMetadata = true)
+    {
+        _ = heldLock;
+        var runsDirectory = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs");
+        if (!Directory.Exists(runsDirectory))
+        {
+            return;
+        }
+
+        foreach (var transactionPath in Directory.EnumerateFiles(runsDirectory, "*.transaction.json", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!string.IsNullOrWhiteSpace(onlyRunId)
+                && !string.Equals(Path.GetFileNameWithoutExtension(transactionPath).Replace(".transaction", string.Empty, StringComparison.Ordinal), onlyRunId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            ExportTransactionDocument? document;
+            try
+            {
+                await using var stream = new FileStream(transactionPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                document = await JsonSerializer.DeserializeAsync<ExportTransactionDocument>(stream, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+            {
+                throw new InvalidDataException("An export transaction document could not be read safely.", exception);
+            }
+
+            if (document is null)
+            {
+                continue;
+            }
+
+            if (document.State == ExportTransactionState.Completed)
+            {
+                if (!resumeMetadata)
+                {
+                    continue;
+                }
+
+                if (await MetadataCommitIsCompleteAsync(document.RunId, cancellationToken).ConfigureAwait(false))
+                {
+                    continue;
+                }
+
+                var completedJournalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", document.RunId + ".jsonl");
+                if (!File.Exists(completedJournalPath))
+                {
+                    throw new IOException($"Completed export transaction '{document.RunId}' has no recoverable Journal.");
+                }
+
+                await RecoverRunUnderLockAsync(completedJournalPath, document.RunId, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            if (document.State == ExportTransactionState.RolledBack
+                || string.Equals(document.FailureCode, "export-rolled-back", StringComparison.Ordinal))
+            {
+                // A deliberate rollback is a terminal, clean outcome. Keep
+                // the document as an audit marker, but never resurrect its
+                // Journal into a new metadata commit on the next startup.
+                TryDeleteDirectory(ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + document.RunId + ".staging"));
+                continue;
+            }
+
+            var updatedItems = new List<ExportTransactionItem>(document.Items.Count);
+            var allResolved = true;
+            var changed = false;
+            foreach (var item in document.Items)
+            {
+                var resolved = await ReconcileTransactionItemAsync(item, cancellationToken).ConfigureAwait(false);
+                updatedItems.Add(resolved.Item);
+                allResolved &= resolved.Resolved;
+                changed |= !Equals(resolved.Item, item);
+            }
+
+            var pendingJournalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", document.RunId + ".jsonl");
+            if (!File.Exists(pendingJournalPath))
+            {
+                throw new IOException($"Export transaction '{document.RunId}' has no Journal and cannot be recovered safely.");
+            }
+
+            if (allResolved)
+            {
+                var stagingRoot = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + document.RunId + ".staging");
+                TryDeleteDirectory(stagingRoot);
+                var recovered = new ExportTransactionDocument(
+                    document.RunId,
+                    document.OperationId,
+                    document.SelectionFingerprint,
+                    document.State is ExportTransactionState.ArtifactsCommitted or ExportTransactionState.MetadataCommitted
+                        ? document.State
+                        : ExportTransactionState.ArtifactsCommitted,
+                    DateTimeOffset.UtcNow,
+                    updatedItems,
+                    document.MetadataCommit,
+                    null);
+                if (changed || recovered.State != document.State)
+                {
+                    await AtomicFileWriter.WriteJsonAsync(transactionPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                }
+
+                await AppendRecoveredItemEventsAsync(recovered, cancellationToken).ConfigureAwait(false);
+                var journalPath = pendingJournalPath;
+                if (resumeMetadata
+                    && File.Exists(journalPath)
+                    && recovered.State is ExportTransactionState.ArtifactsCommitted or ExportTransactionState.MetadataCommitted)
+                {
+                    // Resume the metadata phase while the caller still owns
+                    // the exclusive root lock. This closes the crash window
+                    // between artifact publication and manifest-committed.
+                    await RecoverRunUnderLockAsync(journalPath, document.RunId, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else if (changed)
+            {
+                var recovered = new ExportTransactionDocument(
+                    document.RunId,
+                    document.OperationId,
+                    document.SelectionFingerprint,
+                    ExportTransactionState.FailedRecoverable,
+                    DateTimeOffset.UtcNow,
+                    updatedItems,
+                    document.MetadataCommit,
+                    "export-recovery-required");
+                await AtomicFileWriter.WriteJsonAsync(transactionPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                throw new IOException($"Export transaction '{document.RunId}' contains an artifact that cannot be recovered safely.");
+            }
+            else if (!allResolved)
+            {
+                throw new IOException($"Export transaction '{document.RunId}' contains an artifact that cannot be recovered safely.");
+            }
+        }
+    }
+
+    private async Task AppendRecoveredItemEventsAsync(
+        ExportTransactionDocument document,
+        CancellationToken cancellationToken)
+    {
+        var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", document.RunId + ".jsonl");
+        if (!File.Exists(journalPath))
+        {
+            return;
+        }
+
+        var committed = new HashSet<string>(StringComparer.Ordinal);
+        await using (var stream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 32 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        using (var reader = new StreamReader(stream, Encoding.UTF8))
+        {
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            {
+                try
+                {
+                    var existing = JsonSerializer.Deserialize<VoiceExportJournalEvent>(line, InfrastructureJson.Compact);
+                    if (existing is { Event: "item-committed" or "item-skipped", MessageId: not null })
+                    {
+                        committed.Add(existing.MessageId);
+                    }
+                }
+                catch (JsonException)
+                {
+                    // The recovery reader already treats a torn final line as
+                    // recoverable. New events are appended on a fresh line.
+                }
+            }
+        }
+
+        var pending = document.Items
+            .Where(item => item.Entry is not null && !committed.Contains(item.MessageId))
+            .Select(item => new VoiceExportJournalEvent(
+                item.Entry!.WasSkipped ? "item-skipped" : "item-committed",
+                document.RunId,
+                DateTimeOffset.UtcNow,
+                item.MessageId,
+                Entry: item.Entry))
+            .ToArray();
+        if (pending.Length == 0)
+        {
+            return;
+        }
+
+        var text = string.Join(
+            string.Empty,
+            pending.Select(item => JsonSerializer.Serialize(item, InfrastructureJson.Compact) + Environment.NewLine));
+        await using (var stream = new FileStream(
+            journalPath,
+            FileMode.Append,
+            FileAccess.Write,
+            FileShare.Read,
+            32 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            var bytes = Encoding.UTF8.GetBytes(Environment.NewLine + text);
+            await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            stream.Flush(flushToDisk: true);
+        }
+    }
+
+    private async Task<(ExportTransactionItem Item, bool Resolved)> ReconcileTransactionItemAsync(
+        ExportTransactionItem item,
+        CancellationToken cancellationToken)
+    {
+        var original = await ReconcileArtifactAsync(
+            item.StagedOriginalPath,
+            item.FinalOriginalPath,
+            item.OriginalByteLength,
+            item.OriginalSha256,
+            item.OriginalPublishState,
+            item.PreviousOriginalState,
+            cancellationToken).ConfigureAwait(false);
+        var decoded = string.IsNullOrWhiteSpace(item.FinalDecodedPath)
+            ? (Result: new ArtifactRecoveryResult(ExportPublishState.NotStarted), Resolved: true)
+            : await ReconcileArtifactAsync(
+                item.StagedDecodedPath,
+                item.FinalDecodedPath,
+                item.DecodedByteLength,
+                item.DecodedSha256,
+                item.DecodedPublishState,
+                item.PreviousDecodedState,
+                cancellationToken).ConfigureAwait(false);
+        var updated = item with
+        {
+            OriginalByteLength = original.Result.ByteLength ?? item.OriginalByteLength,
+            OriginalSha256 = original.Result.Sha256 ?? item.OriginalSha256,
+            DecodedByteLength = decoded.Result.ByteLength ?? item.DecodedByteLength,
+            DecodedSha256 = decoded.Result.Sha256 ?? item.DecodedSha256,
+            OriginalPublishState = original.Result.State,
+            DecodedPublishState = decoded.Result.State,
+        };
+        return (updated, original.Resolved && decoded.Resolved);
+    }
+
+    private async Task<(ArtifactRecoveryResult Result, bool Resolved)> ReconcileArtifactAsync(
+        string? stagedRelativePath,
+        string? finalRelativePath,
+        long? expectedLength,
+        string? expectedSha256,
+        ExportPublishState state,
+        ExportArtifactState previousState,
+        CancellationToken cancellationToken)
+    {
+        if (state == ExportPublishState.Existing
+            || previousState == ExportArtifactState.VerifiedExisting && string.IsNullOrWhiteSpace(stagedRelativePath))
+        {
+            if (string.IsNullOrWhiteSpace(finalRelativePath)
+                || string.IsNullOrWhiteSpace(expectedSha256))
+            {
+                return (new ArtifactRecoveryResult(ExportPublishState.Failed), false);
+            }
+
+            var existingPath = ResolveTransactionPath(finalRelativePath);
+            if (!File.Exists(existingPath)
+                || (File.GetAttributes(existingPath) & FileAttributes.ReparsePoint) != 0)
+            {
+                return (new ArtifactRecoveryResult(ExportPublishState.Failed), false);
+            }
+
+            var existingMetadata = await FileHashing.ComputeMetadataAsync(existingPath, cancellationToken).ConfigureAwait(false);
+            return Matches(existingMetadata, expectedLength, expectedSha256)
+                ? (new ArtifactRecoveryResult(ExportPublishState.Existing, existingMetadata.ByteLength, existingMetadata.Sha256), true)
+                : (new ArtifactRecoveryResult(ExportPublishState.Failed, existingMetadata.ByteLength, existingMetadata.Sha256), false);
+        }
+
+        if (string.IsNullOrWhiteSpace(finalRelativePath))
+        {
+            return (new ArtifactRecoveryResult(ExportPublishState.NotStarted), true);
+        }
+
+        var finalPath = ResolveTransactionPath(finalRelativePath);
+        var stagedPath = string.IsNullOrWhiteSpace(stagedRelativePath) ? null : ResolveTransactionPath(stagedRelativePath);
+        var finalMetadata = File.Exists(finalPath)
+            ? (File.GetAttributes(finalPath) & FileAttributes.ReparsePoint) != 0
+                ? null
+                : await FileHashing.ComputeMetadataAsync(finalPath, cancellationToken).ConfigureAwait(false)
+            : null;
+        if (File.Exists(finalPath) && finalMetadata is null)
+        {
+            return (new ArtifactRecoveryResult(ExportPublishState.Failed), false);
+        }
+        if (finalMetadata is not null && Matches(finalMetadata, expectedLength, expectedSha256))
+        {
+            if (stagedPath is not null && File.Exists(stagedPath))
+            {
+                File.Delete(stagedPath);
+            }
+
+            return (new ArtifactRecoveryResult(ExportPublishState.Committed, finalMetadata.ByteLength, finalMetadata.Sha256), true);
+        }
+
+        if (stagedPath is null || !File.Exists(stagedPath))
+        {
+            return (new ArtifactRecoveryResult(ExportPublishState.Failed), false);
+        }
+
+        if ((File.GetAttributes(stagedPath) & FileAttributes.ReparsePoint) != 0)
+        {
+            return (new ArtifactRecoveryResult(ExportPublishState.Failed), false);
+        }
+
+        var stagedMetadata = await FileHashing.ComputeMetadataAsync(stagedPath, cancellationToken).ConfigureAwait(false);
+        if (!Matches(stagedMetadata, expectedLength, expectedSha256))
+        {
+            return (new ArtifactRecoveryResult(ExportPublishState.Failed, stagedMetadata.ByteLength, stagedMetadata.Sha256), false);
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(finalPath)!);
+        if (!File.Exists(finalPath))
+        {
+            File.Move(stagedPath, finalPath);
+        }
+
+        var committedMetadata = await FileHashing.ComputeMetadataAsync(finalPath, cancellationToken).ConfigureAwait(false);
+        return Matches(committedMetadata, expectedLength, expectedSha256)
+            ? (new ArtifactRecoveryResult(ExportPublishState.Committed, committedMetadata.ByteLength, committedMetadata.Sha256), true)
+            : (new ArtifactRecoveryResult(ExportPublishState.Failed, committedMetadata.ByteLength, committedMetadata.Sha256), false);
+    }
+
+    private string ResolveTransactionPath(string relativePath)
+    {
+        if (Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidDataException("An export transaction contains an absolute path.");
+        }
+
+        return ExportPathSafety.CombineUnderRoot(_exportRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private static bool Matches(FileHashMetadata metadata, long? expectedLength, string? expectedSha256)
+        => (expectedLength is null || metadata.ByteLength == expectedLength.Value)
+            && (string.IsNullOrWhiteSpace(expectedSha256) || string.Equals(metadata.Sha256, expectedSha256, StringComparison.OrdinalIgnoreCase));
+
+    private static async Task<T> ReadJsonDocumentAsync<T>(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        return await JsonSerializer.DeserializeAsync<T>(
+                   stream,
+                   InfrastructureJson.Compact,
+                   cancellationToken)
+               .ConfigureAwait(false)
+               ?? throw new InvalidDataException($"The JSON document '{path}' is empty.");
+    }
+
+    private static async Task<bool> JournalHasManifestCommitAsync(
+        string journalPath,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(journalPath))
+        {
+            return false;
+        }
+
+        await using var stream = new FileStream(
+            journalPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            try
+            {
+                var journalEvent = JsonSerializer.Deserialize<VoiceExportJournalEvent>(line, InfrastructureJson.Compact);
+                if (journalEvent?.Event == "manifest-committed")
+                {
+                    return true;
+                }
+            }
+            catch (JsonException)
+            {
+                // ReadManifestFromJournalAsync performs the strict malformed
+                // line validation immediately before this helper is called.
+            }
+        }
+
+        return false;
+    }
+
+    private static async Task AppendJournalEventDurablyAsync(
+        string journalPath,
+        VoiceExportJournalEvent journalEvent,
+        CancellationToken cancellationToken)
+    {
+        var line = JsonSerializer.Serialize(journalEvent, InfrastructureJson.Compact) + Environment.NewLine;
+        var bytes = Encoding.UTF8.GetBytes(line);
+        await using var stream = new FileStream(
+            journalPath,
+            FileMode.Append,
+            FileAccess.Write,
+            FileShare.Read,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        stream.Flush(flushToDisk: true);
+    }
+
+    private async Task<bool> MetadataCommitIsCompleteAsync(
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        var descriptorPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", runId + ".metadata-commit.json");
+        if (!File.Exists(descriptorPath))
+        {
+            return false;
+        }
+
+        ExportMetadataCommitDescriptor descriptor;
+        try
+        {
+            descriptor = await ReadJsonDocumentAsync<ExportMetadataCommitDescriptor>(descriptorPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+        {
+            return false;
+        }
+
+        if (!string.Equals(descriptor.RunId, runId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var files = new[]
+        {
+            (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(runId)), Hash: descriptor.PrivateManifestSha256),
+            (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableManifestFileName(runId)), Hash: descriptor.PortableManifestSha256),
+            (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableCsvFileName(runId)), Hash: descriptor.DatasetCsvSha256),
+            (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PrivateManifestFileName), Hash: descriptor.PrivateManifestSha256),
+            (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PortableManifestFileName), Hash: descriptor.PortableManifestSha256),
+            (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, ExportManifestLayout.PortableCsvFileName), Hash: descriptor.DatasetCsvSha256),
+            (Path: ExportPathSafety.CombineUnderRoot(_exportRoot, "artifact-index.jsonl"), Hash: descriptor.ArtifactIndexSha256),
+        };
+        foreach (var file in files)
+        {
+            if (!File.Exists(file.Path))
+            {
+                return false;
+            }
+
+            var hash = await FileHashing.ComputeSha256Async(file.Path, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(hash, file.Hash, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        var latestDescriptorPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.metadata-commit.json");
+        if (!File.Exists(latestDescriptorPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var latest = await ReadJsonDocumentAsync<ExportMetadataCommitDescriptor>(latestDescriptorPath, cancellationToken).ConfigureAwait(false);
+            return latest == descriptor;
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task MarkTransactionCompletedAsync(
+        string transactionPath,
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(transactionPath))
+        {
+            return;
+        }
+
+        var transaction = await ReadJsonDocumentAsync<ExportTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false);
+        if (transaction.State == ExportTransactionState.Completed)
+        {
+            return;
+        }
+
+        ExportMetadataCommitDescriptor? descriptor = transaction.MetadataCommit;
+        var descriptorPath = Path.Combine(Path.GetDirectoryName(transactionPath)!, runId + ".metadata-commit.json");
+        if (File.Exists(descriptorPath))
+        {
+            try
+            {
+                descriptor = await ReadJsonDocumentAsync<ExportMetadataCommitDescriptor>(descriptorPath, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+            {
+                // Preserve the transaction's previous descriptor. Verification
+                // will report a missing/invalid metadata commit if needed.
+            }
+        }
+
+        await AtomicFileWriter.WriteJsonAsync(
+            transactionPath,
+            new ExportTransactionDocument(
+                transaction.RunId,
+                transaction.OperationId,
+                transaction.SelectionFingerprint,
+                ExportTransactionState.Completed,
+                DateTimeOffset.UtcNow,
+                transaction.Items,
+                descriptor),
+            InfrastructureJson.Indented,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void DeleteFileIfExists(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void MoveFileReplacing(string sourcePath, string destinationPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        if (!File.Exists(destinationPath))
+        {
+            File.Move(sourcePath, destinationPath);
+            return;
+        }
+
+        var backupPath = destinationPath + ".backup-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.Replace(sourcePath, destinationPath, backupPath, ignoreMetadataErrors: true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(backupPath))
+                {
+                    File.Delete(backupPath);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    private sealed record ArtifactRecoveryResult(
+        ExportPublishState State,
+        long? ByteLength = null,
+        string? Sha256 = null);
 
     internal static async Task<VoiceExportManifest> ReadManifestFromJournalAsync(
         VoiceExportManifest fallback,
@@ -341,6 +1204,11 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             return null;
         }
 
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new ExistingArtifactConflictException("An export artifact cannot be a reparse point.");
+        }
+
         var info = new FileInfo(path);
         await _artifactIndexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -356,9 +1224,6 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             var sha256 = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
             var entry = new ArtifactIndexEntry(relativePath, fileId, info.Length, lastWriteTicks, sha256, DateTimeOffset.UtcNow);
             _artifactIndex![relativePath] = entry;
-            var indexPath = Path.Combine(_exportRoot, "artifact-index.jsonl");
-            Directory.CreateDirectory(_exportRoot);
-            await File.AppendAllTextAsync(indexPath, JsonSerializer.Serialize(entry, InfrastructureJson.Compact) + Environment.NewLine, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
             return new ExportArtifact(relativePath, info.Length, sha256);
         }
         finally
@@ -471,8 +1336,92 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
     }
 
+    private async Task<DirectArtifactCommitResult> CommitDirectArtifactAsync(
+        string temporaryPath,
+        string finalPath,
+        ExportArtifact expectedArtifact,
+        bool replace,
+        bool pendingExisting,
+        CancellationToken cancellationToken)
+    {
+        await using var rootLock = await ExportRootLock.AcquireAsync(
+            _exportRoot,
+            ExportRootLockMode.Exclusive,
+            Guid.NewGuid().ToString("N"),
+            runId: null,
+            cancellationToken,
+            waitForAvailability: true).ConfigureAwait(false);
+
+        if (File.Exists(finalPath))
+        {
+            if ((File.GetAttributes(finalPath) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new ExistingArtifactConflictException("The existing export artifact is a reparse point.");
+            }
+
+            var existing = await FileHashing.ComputeMetadataAsync(finalPath, cancellationToken).ConfigureAwait(false);
+            if (!replace)
+            {
+                if (existing.ByteLength == expectedArtifact.ByteLength
+                    && string.Equals(existing.Sha256, expectedArtifact.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(temporaryPath);
+                    return new DirectArtifactCommitResult(
+                        new ExportArtifact(expectedArtifact.RelativePath, existing.ByteLength, existing.Sha256),
+                        Existing: true);
+                }
+
+                if (pendingExisting)
+                {
+                    TryDeleteFile(temporaryPath);
+                    throw new SourceContentMismatchException(
+                        "original",
+                        existing.ByteLength,
+                        expectedArtifact.ByteLength,
+                        existing.Sha256,
+                        expectedArtifact.Sha256);
+                }
+
+                TryDeleteFile(temporaryPath);
+                throw new ExistingArtifactConflictException("Another export published a different artifact for the same stable source key.");
+            }
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(finalPath)!);
+        if (replace)
+        {
+            FileSystemExportItemLease.AtomicCommit(temporaryPath, finalPath);
+        }
+        else
+        {
+            // The lock and the absence check above make this a create-only
+            // publication. If an unrelated process changes the path outside
+            // this protocol, File.Move fails closed instead of replacing it.
+            File.Move(temporaryPath, finalPath);
+        }
+
+        var committed = await FileHashing.ComputeMetadataAsync(finalPath, cancellationToken).ConfigureAwait(false);
+        if (committed.ByteLength != expectedArtifact.ByteLength
+            || !string.Equals(committed.Sha256, expectedArtifact.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SourceContentMismatchException(
+                "export",
+                expectedArtifact.ByteLength,
+                committed.ByteLength,
+                expectedArtifact.Sha256,
+                committed.Sha256);
+        }
+
+        return new DirectArtifactCommitResult(
+            new ExportArtifact(expectedArtifact.RelativePath, committed.ByteLength, committed.Sha256),
+            Existing: false);
+    }
+
+    private sealed record DirectArtifactCommitResult(ExportArtifact Artifact, bool Existing);
+
     private sealed class FileSystemExportItemLease : IExportItemLease
     {
+        private readonly FileSystemVoiceExportStore _store;
         private readonly string _originalPath;
         private readonly string _decodedPath;
         private readonly string _finalOriginalPath;
@@ -491,10 +1440,17 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         private bool _decodedCommitted;
         private bool _publishedOriginal;
         private bool _publishedDecoded;
+        private bool _originalPublishing;
+        private bool _decodedPublishing;
         private bool _invalidateDecodedOnPublish;
+        private ExportArtifact? _committedOriginalArtifact;
+        private ExportArtifact? _committedDecodedArtifact;
+        private VoiceExportEntry? _entry;
         private bool _disposed;
+        private readonly Func<FileSystemExportItemLease, CancellationToken, Task>? _changed;
 
         public FileSystemExportItemLease(
+            FileSystemVoiceExportStore store,
             VoiceRecord record,
             string originalManifestPath,
             string decodedManifestPath,
@@ -508,8 +1464,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             ExportArtifact? existingDecodedArtifact,
             bool replace,
             bool deferPublish,
-            Action release)
+            Action release,
+            Func<FileSystemExportItemLease, CancellationToken, Task>? changed)
         {
+            _store = store ?? throw new ArgumentNullException(nameof(store));
             Record = record;
             OriginalManifestPath = originalManifestPath;
             DecodedManifestPath = decodedManifestPath;
@@ -526,6 +1484,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             _originalExistedAtStart = existingOriginalArtifact is not null;
             _decodedExistedAtStart = existingDecodedArtifact is not null;
             _release = release;
+            _changed = changed;
         }
 
         public VoiceRecord Record { get; }
@@ -535,6 +1494,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         public ExportArtifact? ExistingDecodedArtifact => _existingDecodedArtifact;
         public string OriginalManifestPath { get; }
         public string DecodedManifestPath { get; }
+        internal VoiceExportEntry? Entry => _entry;
 
         public ValueTask<Stream> OpenOriginalWriteAsync(CancellationToken cancellationToken)
             => OpenWriteAsync(isDecoded: false, cancellationToken);
@@ -571,7 +1531,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             return Task.CompletedTask;
         }
 
-        internal async Task PublishStagedAsync(CancellationToken cancellationToken)
+        internal async Task PublishStagedAsync(
+            Func<FileSystemExportItemLease, CancellationToken, Task>? changed,
+            CancellationToken cancellationToken)
         {
             if (!_deferPublish)
             {
@@ -583,8 +1545,12 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             Directory.CreateDirectory(Path.GetDirectoryName(_finalDecodedPath)!);
             if (_originalCommitted && File.Exists(_originalPath))
             {
+                _originalPublishing = true;
+                if (changed is not null) await changed(this, cancellationToken).ConfigureAwait(false);
                 AtomicCommit(_originalPath, _finalOriginalPath);
                 _publishedOriginal = true;
+                _originalPublishing = false;
+                if (changed is not null) await changed(this, cancellationToken).ConfigureAwait(false);
             }
 
             if (_invalidateDecodedOnPublish && File.Exists(_finalDecodedPath))
@@ -594,8 +1560,12 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
             if (_decodedCommitted && File.Exists(_decodedPath))
             {
+                _decodedPublishing = true;
+                if (changed is not null) await changed(this, cancellationToken).ConfigureAwait(false);
                 AtomicCommit(_decodedPath, _finalDecodedPath);
                 _publishedDecoded = true;
+                _decodedPublishing = false;
+                if (changed is not null) await changed(this, cancellationToken).ConfigureAwait(false);
             }
 
             await Task.CompletedTask.ConfigureAwait(false);
@@ -624,6 +1594,42 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 DeleteTemporaryPath(_finalOriginalPath);
             }
         }
+
+        internal ExportTransactionItem CreateTransactionItem(string exportRoot)
+        {
+            var originalState = _originalPublishing
+                ? ExportPublishState.Publishing
+                : _publishedOriginal
+                    ? ExportPublishState.Committed
+                    : _originalState == ExportArtifactState.VerifiedExisting
+                        ? ExportPublishState.Existing
+                        : ExportPublishState.NotStarted;
+            var decodedState = _decodedPublishing
+                ? ExportPublishState.Publishing
+                : _publishedDecoded
+                    ? ExportPublishState.Committed
+                    : _decodedState == ExportArtifactState.VerifiedExisting
+                        ? ExportPublishState.Existing
+                        : ExportPublishState.NotStarted;
+            return new ExportTransactionItem(
+                Record.MessageId,
+                Record.SourceStableKey,
+                Relative(exportRoot, _originalPath),
+                Relative(exportRoot, _finalOriginalPath),
+                _decodedCommitted || _decodedTemporaryPath is not null ? Relative(exportRoot, _decodedPath) : null,
+                _decodedCommitted || ExistingDecodedArtifact is not null ? Relative(exportRoot, _finalDecodedPath) : null,
+                _committedOriginalArtifact?.ByteLength ?? ExistingOriginalArtifact?.ByteLength,
+                _committedOriginalArtifact?.Sha256 ?? ExistingOriginalArtifact?.Sha256,
+                _committedDecodedArtifact?.ByteLength ?? ExistingDecodedArtifact?.ByteLength,
+                _committedDecodedArtifact?.Sha256 ?? ExistingDecodedArtifact?.Sha256,
+                originalState,
+                decodedState,
+                OriginalState,
+                DecodedState,
+                _entry);
+        }
+
+        internal void SetEntry(VoiceExportEntry entry) => _entry = entry;
 
         public async ValueTask DisposeAsync()
         {
@@ -705,20 +1711,45 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 // and hashed; identity is now decided against the existing
                 // artifact without re-reading either file. Replace semantics
                 // intentionally bypass this decision.
-                DeleteTemporary(ref temporaryPath);
-                _originalTemporaryPath = null;
-                if (string.Equals(existing.Sha256, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+                if (_deferPublish)
                 {
-                    _originalState = ExportArtifactState.VerifiedExisting;
-                    return existing;
+                    DeleteTemporary(ref temporaryPath);
+                    _originalTemporaryPath = null;
+                    if (string.Equals(existing.Sha256, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _originalState = ExportArtifactState.VerifiedExisting;
+                        await NotifyChangedAsync(cancellationToken).ConfigureAwait(false);
+                        return existing;
+                    }
+
+                    throw new SourceContentMismatchException(
+                        "original",
+                        existing.ByteLength,
+                        artifact.ByteLength,
+                        existing.Sha256,
+                        artifact.Sha256);
                 }
 
-                throw new SourceContentMismatchException(
-                    "original",
-                    existing.ByteLength,
-                    artifact.ByteLength,
-                    existing.Sha256,
-                    artifact.Sha256);
+                var directPending = await _store.CommitDirectArtifactAsync(
+                    temporaryPath,
+                    _finalOriginalPath,
+                    artifact,
+                    replace: false,
+                    pendingExisting: true,
+                    cancellationToken).ConfigureAwait(false);
+                _originalTemporaryPath = null;
+                if (directPending.Existing)
+                {
+                    _originalState = ExportArtifactState.VerifiedExisting;
+                }
+                else
+                {
+                    _originalCommitted = true;
+                }
+
+                _committedOriginalArtifact = directPending.Artifact;
+                await NotifyChangedAsync(cancellationToken).ConfigureAwait(false);
+                return directPending.Artifact;
             }
 
             var expectedHash = isDecoded ? Record.DecodedSha256 : Record.PayloadSha256;
@@ -740,16 +1771,41 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
 
             var finalPath = isDecoded ? _decodedPath : _originalPath;
-            AtomicCommit(temporaryPath, finalPath);
+            var directCommit = _deferPublish
+                ? new DirectArtifactCommitResult(artifact, Existing: false)
+                : await _store.CommitDirectArtifactAsync(
+                    temporaryPath,
+                    _deferPublish ? finalPath : (isDecoded ? _finalDecodedPath : _finalOriginalPath),
+                    artifact,
+                    _replace,
+                    pendingExisting: false,
+                    cancellationToken).ConfigureAwait(false);
+            if (_deferPublish)
+            {
+                // The run transaction owns publication and keeps the root
+                // lock for its entire artifact phase.
+                AtomicCommit(temporaryPath, finalPath);
+            }
             if (isDecoded)
             {
                 _decodedTemporaryPath = null;
-                _decodedCommitted = true;
+                _decodedCommitted = !directCommit.Existing;
+                _committedDecodedArtifact = directCommit.Artifact;
+                if (directCommit.Existing)
+                {
+                    _decodedState = ExportArtifactState.VerifiedExisting;
+                    _existingDecodedArtifact = directCommit.Artifact;
+                }
             }
             else
             {
                 _originalTemporaryPath = null;
-                _originalCommitted = true;
+                _originalCommitted = !directCommit.Existing;
+                _committedOriginalArtifact = directCommit.Artifact;
+                if (directCommit.Existing)
+                {
+                    _originalState = ExportArtifactState.VerifiedExisting;
+                }
                 if (_replace
                     && ExistingOriginalArtifact is not null
                     && !string.Equals(ExistingOriginalArtifact.Sha256, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
@@ -758,8 +1814,15 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 }
             }
 
+            await NotifyChangedAsync(cancellationToken).ConfigureAwait(false);
             return artifact;
         }
+
+        private Task NotifyChangedAsync(CancellationToken cancellationToken)
+            => _changed is null ? Task.CompletedTask : _changed(this, cancellationToken);
+
+        private static string Relative(string root, string path)
+            => Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
 
         private static ExportArtifact ValidateComputedArtifact(string path, ExportArtifact computedArtifact, string relativePath)
         {
@@ -797,7 +1860,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             _decodedState = ExportArtifactState.Missing;
         }
 
-        private static void AtomicCommit(string temporaryPath, string finalPath)
+        internal static void AtomicCommit(string temporaryPath, string finalPath)
         {
             if (!File.Exists(finalPath))
             {
@@ -899,9 +1962,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         private readonly FileSystemVoiceExportStore _store;
         private readonly string _exportRoot;
         private readonly string _runId;
+        private readonly string _operationId;
+        private readonly string? _selectionFingerprint;
         private readonly string _stagingRoot;
+        private readonly string _transactionPath;
         private readonly FileStream _stream;
+        private readonly ExportRootLock _rootLock;
         private readonly SemaphoreSlim _gate = new(1, 1);
+        private readonly SemaphoreSlim _transactionDocumentGate = new(1, 1);
         private readonly object _transactionStateGate = new();
         private readonly List<FileSystemExportItemLease> _stagedItems = [];
         private TaskCompletionSource<bool> _stagesIdle = CompletedSource(completed: true);
@@ -909,20 +1977,36 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         private bool _transactionClosing;
         private bool _committed;
         private bool _rolledBack;
+        private bool _commitAttempted;
         private bool _disposed;
         private int _disposeStarted;
+        private ExportTransactionState _transactionState = ExportTransactionState.Staging;
+        private ExportMetadataCommitDescriptor? _metadataCommit;
 
-        public FileSystemExportRunJournal(FileSystemVoiceExportStore store, string exportRoot, string runId, FileStream stream)
+        public FileSystemExportRunJournal(
+            FileSystemVoiceExportStore store,
+            string exportRoot,
+            VoiceExportRunContext context,
+            string operationId,
+            FileStream stream,
+            ExportRootLock rootLock)
         {
             _store = store;
             _exportRoot = exportRoot;
-            _runId = runId;
-            _stagingRoot = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + runId + ".staging");
+            _runId = context.RunId;
+            _operationId = operationId;
+            _selectionFingerprint = context.SelectionFingerprint;
+            _stagingRoot = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + context.RunId + ".staging");
+            _transactionPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", context.RunId + ".transaction.json");
             _stream = stream;
+            _rootLock = rootLock;
             Directory.CreateDirectory(_stagingRoot);
         }
 
         public string RunId => _runId;
+
+        internal async Task InitializeAsync(CancellationToken cancellationToken)
+            => await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
 
         public async ValueTask<IExportItemLease> StageItemAsync(
             VoiceRecord record,
@@ -948,7 +2032,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     policy,
                     _stagingRoot,
                     deferPublish: true,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    OnItemChangedAsync).ConfigureAwait(false);
                 lock (_transactionStateGate)
                 {
                     if (_transactionClosing || _disposed)
@@ -959,6 +2044,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     _stagedItems.Add((FileSystemExportItemLease)lease);
                     added = true;
                 }
+
+                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
 
                 return lease;
             }
@@ -976,6 +2063,83 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                         _stagesIdle.TrySetResult(true);
                     }
                 }
+            }
+        }
+
+        public async Task RecordEntryAsync(VoiceExportEntry entry, CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            lock (_transactionStateGate)
+            {
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(FileSystemExportRunJournal));
+                }
+            }
+
+            await _transactionDocumentGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                lock (_transactionStateGate)
+                {
+                    var item = _stagedItems.FirstOrDefault(candidate => string.Equals(candidate.Record.MessageId, entry.MessageId, StringComparison.Ordinal));
+                    if (item is null)
+                    {
+                        throw new InvalidDataException("The transaction entry does not have a staged item.");
+                    }
+
+                    item.SetEntry(entry);
+                }
+
+                await PersistTransactionUnlockedAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _transactionDocumentGate.Release();
+            }
+        }
+
+        public async Task DiscardItemAsync(string messageId, CancellationToken cancellationToken)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(messageId);
+            lock (_transactionStateGate)
+            {
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(FileSystemExportRunJournal));
+                }
+
+                if (_commitAttempted || _transactionClosing)
+                {
+                    throw new InvalidOperationException("The export transaction is already committing.");
+                }
+            }
+
+            await _transactionDocumentGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                FileSystemExportItemLease? removed = null;
+                lock (_transactionStateGate)
+                {
+                    var index = _stagedItems.FindIndex(
+                        candidate => string.Equals(candidate.Record.MessageId, messageId, StringComparison.Ordinal));
+                    if (index >= 0)
+                    {
+                        removed = _stagedItems[index];
+                        _stagedItems.RemoveAt(index);
+                    }
+                }
+
+                if (removed is not null)
+                {
+                    await removed.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                    await removed.DisposeAsync().ConfigureAwait(false);
+                    await PersistTransactionUnlockedAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                _transactionDocumentGate.Release();
             }
         }
 
@@ -998,27 +2162,38 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
             try
             {
-                await Task.WhenAll(items.Select(item => item.PublishStagedAsync(cancellationToken))).ConfigureAwait(false);
+                _commitAttempted = true;
+                _transactionState = ExportTransactionState.Prepared;
+                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+                _transactionState = ExportTransactionState.Publishing;
+                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+                foreach (var item in items.OrderBy(static item => item.OriginalManifestPath, StringComparer.Ordinal))
+                {
+                    await item.PublishStagedAsync(OnItemChangedAsync, cancellationToken).ConfigureAwait(false);
+                    if (item.Entry is { } entry)
+                    {
+                        await AppendItemCommitEventAsync(entry, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+
+                _transactionState = ExportTransactionState.ArtifactsCommitted;
+                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
                 DeleteStagingDirectory();
                 lock (_transactionStateGate)
                 {
                     _committed = true;
                 }
             }
-            catch
+            catch (Exception exception)
             {
-                foreach (var item in items)
-                {
-                    item.RollbackPublished();
-                }
-
-                DeleteStagingDirectory();
+                _transactionState = ExportTransactionState.FailedRecoverable;
+                await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
                 lock (_transactionStateGate)
                 {
-                    _rolledBack = true;
+                    _commitAttempted = true;
                 }
 
-                throw;
+                throw new IOException("The export artifact transaction requires recovery.", exception);
             }
         }
 
@@ -1027,7 +2202,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             Task idle;
             lock (_transactionStateGate)
             {
-                if (_committed || _rolledBack)
+                if (_committed || _rolledBack || _commitAttempted)
                 {
                     return;
                 }
@@ -1049,10 +2224,16 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
 
             foreach (var item in items)
             {
-                item.RollbackPublished();
+                await item.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             }
 
             DeleteStagingDirectory();
+            lock (_transactionStateGate)
+            {
+                _stagedItems.Clear();
+            }
+            _transactionState = ExportTransactionState.RolledBack;
+            await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
             lock (_transactionStateGate)
             {
                 _rolledBack = true;
@@ -1087,6 +2268,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
 
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var manifestCommitFlushed = false;
             try
             {
                 if (_disposed)
@@ -1095,26 +2277,12 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 }
 
                 var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".jsonl");
-                var manifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".manifest.json");
-                var privateManifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".manifest.private.json");
-                var csvManifestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".manifest.csv");
-                var datasetPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", _runId + ".dataset.csv");
-                var latestPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "latest.manifest.json");
-                var latestPrivatePath = ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.private.json");
-                var latestCsvPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "manifest.csv");
-                var latestDatasetPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "dataset.csv");
                 var journalManifest = await ReadManifestFromJournalAsync(manifest, journalPath, cancellationToken).ConfigureAwait(false);
-                await AtomicFileWriter.WriteJsonAsync(manifestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-                await AtomicFileWriter.WriteJsonAsync(privateManifestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-                await VoiceManifestCsvWriter.WriteAsync(csvManifestPath, journalManifest, cancellationToken).ConfigureAwait(false);
-                await VoiceManifestCsvWriter.WriteAsync(datasetPath, journalManifest, cancellationToken).ConfigureAwait(false);
-                var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(journalManifest, InfrastructureJson.Indented);
-                var manifestSha256 = Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant();
-                await AtomicFileWriter.WriteJsonAsync(latestPath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-                await AtomicFileWriter.WriteJsonAsync(latestPrivatePath, journalManifest, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
-                await VoiceManifestCsvWriter.WriteAsync(latestCsvPath, journalManifest, cancellationToken).ConfigureAwait(false);
-                await VoiceManifestCsvWriter.WriteAsync(latestDatasetPath, journalManifest, cancellationToken).ConfigureAwait(false);
-                await _store.RebuildArtifactIndexAsync(journalManifest, cancellationToken).ConfigureAwait(false);
+                var metadata = await _store.CommitMetadataAsync(journalManifest, _runId, cancellationToken).ConfigureAwait(false);
+                journalManifest = metadata.Manifest;
+                _metadataCommit = metadata.Descriptor;
+                _transactionState = ExportTransactionState.MetadataCommitted;
+                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
                 // This is the durable commit marker. Every manifest file is
                 // complete before the event is flushed to the Journal.
                 await AppendCoreAsync(new VoiceExportJournalEvent(
@@ -1122,8 +2290,41 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     _runId,
                     DateTimeOffset.UtcNow,
                     Context: null,
-                    ManifestSha256: manifestSha256,
+                    ManifestSha256: metadata.Descriptor.PrivateManifestSha256,
                     ManifestGeneratedAtUtc: journalManifest.GeneratedAtUtc), cancellationToken).ConfigureAwait(false);
+                manifestCommitFlushed = true;
+                _transactionState = ExportTransactionState.Completed;
+                lock (_transactionStateGate)
+                {
+                    _committed = true;
+                }
+                try
+                {
+                    await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch when (manifestCommitFlushed)
+                {
+                    // The flushed Journal marker and descriptor are the
+                    // durable commit boundary. A later start can refresh the
+                    // transaction document without ever downgrading a
+                    // completed run.
+                }
+            }
+            catch (Exception exception)
+            {
+                if (manifestCommitFlushed)
+                {
+                    _transactionState = ExportTransactionState.Completed;
+                    lock (_transactionStateGate)
+                    {
+                        _committed = true;
+                    }
+                    return;
+                }
+
+                _transactionState = ExportTransactionState.FailedRecoverable;
+                await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+                throw new IOException("The export metadata transaction requires recovery.", exception);
             }
             finally
             {
@@ -1138,7 +2339,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 throw new ObjectDisposedException(nameof(FileSystemExportRunJournal));
             }
 
-            if (_committed || _rolledBack || _transactionClosing)
+            if (_rolledBack || _transactionClosing && !_committed)
             {
                 throw new InvalidOperationException("The export run transaction has already completed.");
             }
@@ -1163,6 +2364,68 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
         }
 
+        private async Task OnItemChangedAsync(FileSystemExportItemLease item, CancellationToken cancellationToken)
+            => await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        private async Task AppendItemCommitEventAsync(
+            VoiceExportEntry entry,
+            CancellationToken cancellationToken)
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await AppendCoreAsync(
+                    new VoiceExportJournalEvent(
+                        entry.WasSkipped ? "item-skipped" : "item-committed",
+                        _runId,
+                        DateTimeOffset.UtcNow,
+                        entry.MessageId,
+                        Entry: entry),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        private async Task PersistTransactionAsync(CancellationToken cancellationToken)
+        {
+            await _transactionDocumentGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await PersistTransactionUnlockedAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _transactionDocumentGate.Release();
+            }
+        }
+
+        private async Task PersistTransactionUnlockedAsync(CancellationToken cancellationToken)
+        {
+            FileSystemExportItemLease[] items;
+            lock (_transactionStateGate)
+            {
+                items = _stagedItems.ToArray();
+            }
+
+            var document = new ExportTransactionDocument(
+                _runId,
+                _operationId,
+                _selectionFingerprint,
+                _transactionState,
+                DateTimeOffset.UtcNow,
+                items.Select(item => item.CreateTransactionItem(_exportRoot)).ToArray(),
+                _metadataCommit,
+                _transactionState == ExportTransactionState.FailedRecoverable
+                    ? "export-recovery-required"
+                    : _transactionState == ExportTransactionState.RolledBack
+                        ? "export-rolled-back"
+                        : null);
+            await AtomicFileWriter.WriteJsonAsync(_transactionPath, document, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        }
+
         private async Task AppendCoreAsync(VoiceExportJournalEvent journalEvent, CancellationToken cancellationToken)
         {
             if (!string.Equals(journalEvent.RunId, _runId, StringComparison.Ordinal))
@@ -1174,6 +2437,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             var bytes = Encoding.UTF8.GetBytes(line);
             await _stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
             await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            _stream.Flush(flushToDisk: true);
         }
 
         public async ValueTask DisposeAsync()
@@ -1184,7 +2448,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
 
             Task idle;
-            FileSystemExportItemLease[] items;
+            var autoRolledBack = false;
             lock (_transactionStateGate)
             {
                 if (!_committed && !_rolledBack)
@@ -1200,13 +2464,32 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             {
                 if (!_committed && !_rolledBack)
                 {
-                    items = _stagedItems.ToArray();
-                    foreach (var item in items) item.RollbackPublished();
-                    DeleteStagingDirectory();
-                    _rolledBack = true;
+                    if (!_commitAttempted)
+                    {
+                        foreach (var item in _stagedItems) item.RollbackPublished();
+                        DeleteStagingDirectory();
+                        _stagedItems.Clear();
+                        _transactionState = ExportTransactionState.FailedRecoverable;
+                        _rolledBack = true;
+                        autoRolledBack = true;
+                    }
                 }
 
                 _disposed = true;
+            }
+
+            if (autoRolledBack)
+            {
+                try
+                {
+                    await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    // Dispose must still release the cross-process lock. The
+                    // pre-existing transaction document remains a recoverable
+                    // fail-closed record if persistence itself is unavailable.
+                }
             }
 
             await _gate.WaitAsync().ConfigureAwait(false);
@@ -1218,6 +2501,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             {
                 _gate.Release();
                 _gate.Dispose();
+                _transactionDocumentGate.Dispose();
+                await _rootLock.DisposeAsync().ConfigureAwait(false);
             }
         }
     }

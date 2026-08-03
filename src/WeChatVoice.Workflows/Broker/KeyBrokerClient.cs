@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using WeChatVoice.Core.Errors;
@@ -149,6 +150,104 @@ public sealed class KeyBrokerClient : IBrokerClient
         }
     }
 
+    public async Task<BrokerSelfTestResponse> SelfTestAsync(CancellationToken cancellationToken)
+    {
+        var brokerPath = Path.Combine(_brokerDirectory ?? AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe");
+        if (!File.Exists(brokerPath))
+        {
+            throw new AppFailureException(ErrorCode.WorkerBundleUntrusted, "The fixed Key Broker bundle is not installed next to the host.");
+        }
+
+        VerifyBrokerBinary(brokerPath, _trustPolicy);
+        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        var requestId = Guid.NewGuid().ToString("N");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = brokerPath,
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden,
+        };
+        startInfo.ArgumentList.Add("--self-test");
+        startInfo.ArgumentList.Add(token);
+        startInfo.ArgumentList.Add("--worker-directory");
+        startInfo.ArgumentList.Add(Path.GetFullPath(_brokerDirectory ?? AppContext.BaseDirectory));
+
+        Process process;
+        try
+        {
+            process = Process.Start(startInfo) ?? throw new InvalidOperationException("The elevated Key Broker self-test did not start.");
+        }
+        catch (Win32Exception exception)
+        {
+            throw new UnauthorizedAccessException("The elevated Key Broker self-test could not be started or elevation was declined.", exception);
+        }
+
+        using (process)
+        {
+            await using var pipe = new NamedPipeClientStream(".", PipePrefix + token, PipeDirection.InOut, PipeOptions.Asynchronous);
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(ConnectionTimeout);
+                await pipe.ConnectAsync(timeout.Token).ConfigureAwait(false);
+                NamedPipeIdentityVerifier.VerifyServerProcess(pipe.SafePipeHandle, process.Id);
+                await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+                using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, leaveOpen: true);
+                using var framedReader = new BoundedLineReader(reader, 16 * 1024);
+                var requestJson = JsonSerializer.Serialize(new
+                {
+                    protocolVersion = 1,
+                    requestId,
+                    operation = "self-test",
+                }) + Environment.NewLine;
+                using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                operationTimeout.CancelAfter(ConnectionTimeout);
+                await writer.WriteAsync(requestJson.AsMemory(), operationTimeout.Token).ConfigureAwait(false);
+                var responseLine = await framedReader.ReadAsync(operationTimeout.Token).ConfigureAwait(false)
+                    ?? throw new InvalidDataException("The Key Broker self-test closed without a response.");
+                var response = JsonSerializer.Deserialize<BrokerSelfTestResponse>(responseLine)
+                    ?? throw new InvalidDataException("The Key Broker self-test response was empty.");
+                if (!string.Equals(response.RequestId, requestId, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The Key Broker self-test response RequestId did not match.");
+                }
+
+                if (response.BrokerProcessId != process.Id)
+                {
+                    throw new UnauthorizedAccessException("The Key Broker self-test response was not produced by the elevated process that was started.");
+                }
+
+                await process.WaitForExitAsync(operationTimeout.Token).ConfigureAwait(false);
+                if (response.ClientProcessId != Environment.ProcessId)
+                {
+                    throw new UnauthorizedAccessException("The Key Broker self-test did not bind the client process identity.");
+                }
+
+                var currentSid = GetCurrentWindowsSid();
+                if (string.IsNullOrWhiteSpace(response.ClientSid)
+                    || string.IsNullOrWhiteSpace(currentSid)
+                    || !string.Equals(response.ClientSid, currentSid, StringComparison.Ordinal))
+                {
+                    throw new UnauthorizedAccessException("The Key Broker self-test did not bind the client user identity.");
+                }
+
+                if (process.ExitCode != 0 || !string.Equals(response.Status, "completed", StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The Key Broker self-test did not complete successfully.");
+                }
+
+                return response;
+            }
+            catch
+            {
+                TryDisconnect(pipe);
+                TryKill(process);
+                throw;
+            }
+        }
+    }
+
     /// <summary>
     /// Maps the broker's typed wire failure to the typed exception contract:
     /// domain codes become <see cref="AppFailureException"/> with an
@@ -245,7 +344,12 @@ public sealed class KeyBrokerClient : IBrokerClient
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is InvalidOperationException
+            or System.ComponentModel.Win32Exception
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or ObjectDisposedException
+            or ArgumentException)
         {
         }
     }
@@ -263,4 +367,9 @@ public sealed class KeyBrokerClient : IBrokerClient
         {
         }
     }
+
+    private static string? GetCurrentWindowsSid()
+        => OperatingSystem.IsWindows()
+            ? WindowsIdentity.GetCurrent().User?.Value
+            : null;
 }

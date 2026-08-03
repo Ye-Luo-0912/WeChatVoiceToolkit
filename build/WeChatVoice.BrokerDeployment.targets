@@ -11,7 +11,10 @@
   </PropertyGroup>
 
   <Target Name="BuildKeyBroker" BeforeTargets="CopyKeyBroker;CopyKeyBrokerToPublish">
-    <MSBuild Projects="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" Targets="Restore;Build" Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
+    <!-- The release entry point restores the solution once with the target
+         RID. A nested Restore here defeats the no-restore publish contract
+         and can silently produce a different lock graph. -->
+    <MSBuild Projects="..\WeChatVoice.KeyBroker\WeChatVoice.KeyBroker.csproj" Targets="Build" Properties="Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
   </Target>
 
   <Target Name="CopyKeyBroker" AfterTargets="Build">

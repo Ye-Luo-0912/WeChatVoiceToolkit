@@ -16,6 +16,16 @@ public interface IExportRunTransaction
         ExistingArtifactPolicy policy,
         CancellationToken cancellationToken);
 
+    /// <summary>Persists the finalized private entry before artifact publish.</summary>
+    Task RecordEntryAsync(VoiceExportEntry entry, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Removes a staged item that failed before it became a committed export
+    /// entry. Failed work must not remain in the durable transaction document
+    /// as an unresolved artifact that blocks crash recovery.
+    /// </summary>
+    Task DiscardItemAsync(string messageId, CancellationToken cancellationToken);
+
     Task CommitAsync(CancellationToken cancellationToken);
 
     Task RollbackAsync(CancellationToken cancellationToken);

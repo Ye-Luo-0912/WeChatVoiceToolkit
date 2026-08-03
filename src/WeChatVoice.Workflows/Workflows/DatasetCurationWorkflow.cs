@@ -24,6 +24,21 @@ public interface IDatasetCurationWorkflow
         string exportDirectory,
         WorkflowContext context,
         CancellationToken cancellationToken);
+
+    Task<DatasetBuildResult> BuildDatasetAsync(
+        DatasetBuildRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    Task<DatasetBuildVerificationResult> VerifyDatasetAsync(
+        DatasetBuildRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    Task<DatasetBuildVerificationResult> RepairDatasetAsync(
+        DatasetBuildRepairRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -39,9 +54,15 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
     };
 
     private readonly DatasetSelectionProfileStore _profileStore;
+    private readonly DatasetBuildService _datasetBuildService;
 
-    public DatasetCurationWorkflow(DatasetSelectionProfileStore? profileStore = null)
-        => _profileStore = profileStore ?? new DatasetSelectionProfileStore();
+    public DatasetCurationWorkflow(
+        DatasetSelectionProfileStore? profileStore = null,
+        DatasetBuildService? datasetBuildService = null)
+    {
+        _profileStore = profileStore ?? new DatasetSelectionProfileStore();
+        _datasetBuildService = datasetBuildService ?? new DatasetBuildService();
+    }
 
     public async Task<DatasetCurationResult> RunAsync(
         DatasetCurationRequest request,
@@ -136,6 +157,99 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         }
     }
 
+    public async Task<DatasetBuildResult> BuildDatasetAsync(
+        DatasetBuildRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing, "构建训练数据集");
+            var result = await _datasetBuildService.BuildAsync(request, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
+    public async Task<DatasetBuildVerificationResult> VerifyDatasetAsync(
+        DatasetBuildRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.LoadingWorkspace, "验证训练数据集");
+            var result = await _datasetBuildService.VerifyAsync(request, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
+    public async Task<DatasetBuildVerificationResult> RepairDatasetAsync(
+        DatasetBuildRepairRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing, "修复训练数据集元数据");
+            var result = await _datasetBuildService.RepairAsync(request, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
     private static async Task<DatasetCurationResult> BuildAsync(
         DatasetCurationRequest request,
         CancellationToken cancellationToken)
@@ -146,7 +260,14 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
             throw new AppFailureException(ErrorCode.InvalidRequest, "The export directory does not exist.");
         }
 
-        var manifestPath = Path.GetFullPath(request.ManifestPath ?? Path.Combine(exportRoot, "latest.manifest.json"));
+        await using var exportLock = await ExportRootLock.AcquireAsync(
+            exportRoot,
+            ExportRootLockMode.Shared,
+            Guid.NewGuid().ToString("N"),
+            runId: null,
+            cancellationToken).ConfigureAwait(false);
+
+        var manifestPath = Path.GetFullPath(request.ManifestPath ?? ResolveDefaultManifestPath(exportRoot));
         EnsureUnderRoot(exportRoot, manifestPath);
         if (!File.Exists(manifestPath))
         {
@@ -175,7 +296,7 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         var requestedSelected = ToIdSet(request.SelectedItemIds);
         var requestedRepresentatives = ToIdSet(request.DuplicateRepresentativeItemIds);
         var entries = manifest.Entries.ToArray();
-        var itemIds = entries.Select(ExportItemIdentity.ComputeItemId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var itemIds = entries.Select(entry => ExportItemIdentity.ComputeItemId(entry, manifest.DatasetNamespaceKey)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (requestedSelected.Except(itemIds, StringComparer.OrdinalIgnoreCase).Any()
             || requestedRepresentatives.Except(itemIds, StringComparer.OrdinalIgnoreCase).Any())
         {
@@ -188,7 +309,7 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
             .Where(static group => group.Count() > 1)
             .Select(group =>
             {
-                var ids = group.Select(ExportItemIdentity.ComputeItemId).ToArray();
+                var ids = group.Select(entry => ExportItemIdentity.ComputeItemId(entry, manifest.DatasetNamespaceKey)).ToArray();
                 var selected = ids.Where(id => requestedSelected.Contains(id) || requestedRepresentatives.Contains(id)).ToArray();
                 return new DatasetDuplicateGroup(
                     "duplicate-" + group.Key[..Math.Min(16, group.Key.Length)].ToLowerInvariant(),
@@ -213,7 +334,7 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         foreach (var entry in entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var itemId = ExportItemIdentity.ComputeItemId(entry);
+            var itemId = ExportItemIdentity.ComputeItemId(entry, manifest.DatasetNamespaceKey);
             var group = duplicateGroups.FirstOrDefault(candidate => candidate.ItemIds.Contains(itemId, StringComparer.OrdinalIgnoreCase));
             var passes = PassesFilters(entry, filters);
             var isRepresentative = group?.RepresentativeItemId is not null
@@ -314,4 +435,9 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
             throw new AppFailureException(ErrorCode.InvalidRequest, "The manifest path must remain inside the export directory.");
         }
     }
+
+    private static string ResolveDefaultManifestPath(string exportRoot)
+        => File.Exists(Path.Combine(exportRoot, ExportManifestLayout.PrivateManifestFileName))
+            ? Path.Combine(exportRoot, ExportManifestLayout.PrivateManifestFileName)
+            : Path.Combine(exportRoot, ExportManifestLayout.LegacyPortableManifestFileName);
 }

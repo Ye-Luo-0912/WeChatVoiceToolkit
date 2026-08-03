@@ -92,7 +92,7 @@ public sealed class VoiceExportService
         // forced here so the source is never read twice.
         var runId = Guid.NewGuid().ToString("N");
         await using var journal = await _exportStore.BeginRunAsync(
-            new VoiceExportRunContext(runId, context, DateTimeOffset.UtcNow),
+            new VoiceExportRunContext(runId, context, DateTimeOffset.UtcNow, options.ExpectedResultSetFingerprint),
             cancellationToken).ConfigureAwait(false);
         var transaction = (IExportRunTransaction)journal;
         await AppendAsync(journal, new VoiceExportJournalEvent("run-started", runId, DateTimeOffset.UtcNow, Context: context), cancellationToken).ConfigureAwait(false);
@@ -102,6 +102,7 @@ public sealed class VoiceExportService
         var activeExports = new List<Task>(options.MaxDegreeOfParallelism);
         var cancellationObserved = false;
         var runFailed = false;
+        var commitFailed = false;
         try
         {
             var records = preparedSelection is null
@@ -155,21 +156,10 @@ public sealed class VoiceExportService
             try
             {
                 await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
-                foreach (var entry in entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal))
-                {
-                    await AppendAsync(
-                        journal,
-                        new VoiceExportJournalEvent(
-                            entry.WasSkipped ? "item-skipped" : "item-committed",
-                            runId,
-                            DateTimeOffset.UtcNow,
-                            entry.MessageId,
-                            entry),
-                        CancellationToken.None).ConfigureAwait(false);
-                }
             }
             catch (Exception exception)
             {
+                commitFailed = true;
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
                 runFailed = true;
                 failures.Enqueue(CreateFailure(null, "commit", exception));
@@ -223,7 +213,10 @@ public sealed class VoiceExportService
                 Context: context,
                 Cancelled: runStatus == ExportRunStatus.Cancelled),
             CancellationToken.None).ConfigureAwait(false);
-        await journal.FinalizeAsync(manifest, CancellationToken.None).ConfigureAwait(false);
+        if (!commitFailed)
+        {
+            await journal.FinalizeAsync(manifest, CancellationToken.None).ConfigureAwait(false);
+        }
         if (cancellationObserved || cancellationToken.IsCancellationRequested)
         {
             throw new OperationCanceledException(cancellationToken);
@@ -317,6 +310,7 @@ public sealed class VoiceExportService
         CancellationToken cancellationToken)
     {
         IExportItemLease? lease = null;
+        var entryRecorded = false;
         try
         {
             var contextError = ValidateContext(record, context);
@@ -413,6 +407,8 @@ public sealed class VoiceExportService
 
             var entry = CreateEntry(record, originalArtifact, decodedArtifact, durationMs, hasDecodeError, qualityFlags, lease.OriginalState == ExportArtifactState.VerifiedExisting && (!options.DecodeToWav || lease.DecodedState == ExportArtifactState.VerifiedExisting));
             entries.Enqueue(entry);
+            await transaction.RecordEntryAsync(entry, cancellationToken).ConfigureAwait(false);
+            entryRecorded = true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -440,6 +436,18 @@ public sealed class VoiceExportService
                 }
 
                 await lease.DisposeAsync().ConfigureAwait(false);
+            }
+
+            if (!entryRecorded)
+            {
+                try
+                {
+                    await transaction.DiscardItemAsync(record.MessageId, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    await RecordFailureAsync(record, "transaction", exception.Message, runId, journal, failures, CancellationToken.None).ConfigureAwait(false);
+                }
             }
         }
     }

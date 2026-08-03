@@ -96,7 +96,7 @@ artifact identity at commit time. Existing SILK bytes are always hashed again
 before they are treated as a verified skip; `artifact-index.jsonl` is an
 incremental bookkeeping index, not cryptographic evidence. Otherwise the
 source is read once and compared against the existing artifact.
-`latest.manifest.json` and each run manifest inherit the full
+`manifest.private.json` and each private run manifest inherit the full
 materialization provenance (key-extraction Profile, Weixin version, module
 hashes, backend bundle), so a training or dataset consumer can audit exactly
 which verified source produced the voices.

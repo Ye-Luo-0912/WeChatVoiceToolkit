@@ -23,6 +23,12 @@ public sealed class DatasetSelectionProfileStore
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(exportDirectory);
         ArgumentNullException.ThrowIfNull(profile);
+        await using var exportLock = await ExportRootLock.AcquireAsync(
+            Path.GetFullPath(exportDirectory),
+            ExportRootLockMode.Exclusive,
+            Guid.NewGuid().ToString("N"),
+            runId: profile.RunId,
+            cancellationToken).ConfigureAwait(false);
         var path = GetPath(exportDirectory);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await AtomicFileWriter.WriteJsonAsync(path, profile, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);

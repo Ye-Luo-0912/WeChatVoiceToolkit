@@ -70,7 +70,7 @@ public sealed class ExportMaintenanceTests
             CreateEntry("two", "original/two.silk", "same-hash", null, 4, VoiceDirection.Incoming),
             CreateEntry("three", "original/three.silk", "other-hash", 200, 5, VoiceDirection.Outgoing),
         };
-        var manifestPath = Path.Combine(temporary.RootPath, "export", "latest.manifest.json");
+        var manifestPath = Path.Combine(temporary.RootPath, "export", "manifest.private.json");
         Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
         await WriteManifestAsync(manifestPath, entries);
 
@@ -128,7 +128,7 @@ public sealed class ExportMaintenanceTests
     {
         using var temporary = new TestTemporaryDirectory();
         var entry = CreateEntry("one", "original/one.silk", "hash", 100, 3, VoiceDirection.Incoming);
-        var manifestPath = Path.Combine(temporary.RootPath, "export", "latest.manifest.json");
+        var manifestPath = Path.Combine(temporary.RootPath, "export", "manifest.private.json");
         Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
         await WriteManifestAsync(manifestPath, [entry]);
 
@@ -138,6 +138,87 @@ public sealed class ExportMaintenanceTests
                 ExpectedManifestSha256: new string('0', 64)),
             NewContext(),
             CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Dataset_build_verifies_all_derived_outputs_and_reuses_a_verified_build()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow();
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+
+        var first = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root),
+            NewContext(),
+            CancellationToken.None);
+        Assert.Equal(1, first.ItemCount);
+        Assert.True(File.Exists(Path.Combine(first.OutputDirectory, "dataset.json")));
+        Assert.True(File.Exists(Path.Combine(first.OutputDirectory, "dataset.csv")));
+        Assert.True(File.Exists(Path.Combine(first.OutputDirectory, "selection-profile.json")));
+        Assert.False(string.IsNullOrWhiteSpace(first.ManifestPath));
+
+        var firstBuildHash = await File.ReadAllBytesAsync(first.BuildManifestPath);
+        var second = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root),
+            NewContext(),
+            CancellationToken.None);
+        Assert.Equal(first.OutputDirectory, second.OutputDirectory);
+        Assert.Equal(first.ManifestPath, second.ManifestPath);
+        Assert.Equal(firstBuildHash, await File.ReadAllBytesAsync(second.BuildManifestPath));
+
+        await File.AppendAllTextAsync(Path.Combine(first.OutputDirectory, "dataset.csv"), "tampered\n");
+        await Assert.ThrowsAsync<WeChatVoice.Core.Errors.AppFailureException>(() => curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root),
+            NewContext(),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Dataset_build_verify_and_repair_rebuild_only_derived_metadata()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow();
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+
+        var built = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root),
+            NewContext(),
+            CancellationToken.None);
+        var silkPath = Path.Combine(built.OutputDirectory, "audio", itemId + ".silk");
+        var silkBytes = await File.ReadAllBytesAsync(silkPath);
+        var verified = await curation.VerifyDatasetAsync(
+            new DatasetBuildRequest(export.Root, OutputDirectory: built.OutputDirectory),
+            NewContext(),
+            CancellationToken.None);
+        Assert.True(verified.IsValid, string.Join(Environment.NewLine, verified.Issues.Select(issue => issue.Code)));
+
+        await File.WriteAllTextAsync(Path.Combine(built.OutputDirectory, "dataset.csv"), "broken\n");
+        var invalid = await curation.VerifyDatasetAsync(
+            new DatasetBuildRequest(export.Root, OutputDirectory: built.OutputDirectory),
+            NewContext(),
+            CancellationToken.None);
+        Assert.False(invalid.IsValid);
+
+        var repaired = await curation.RepairDatasetAsync(
+            new DatasetBuildRepairRequest(export.Root, built.OutputDirectory),
+            NewContext(),
+            CancellationToken.None);
+        Assert.True(repaired.IsValid, string.Join(Environment.NewLine, repaired.Issues.Select(issue => issue.Code)));
+        Assert.Equal(silkBytes, await File.ReadAllBytesAsync(silkPath));
     }
 
     private static async Task<(string Root, VoiceExportEntry Entry)> CreateCommittedExportAsync(TestTemporaryDirectory temporary)
@@ -202,6 +283,15 @@ public sealed class ExportMaintenanceTests
         }
 
         return (root, entry);
+    }
+
+    private static async Task<VoiceExportManifest> ReadPrivateManifestAsync(string root)
+    {
+        await using var stream = File.OpenRead(Path.Combine(root, "manifest.private.json"));
+        return await JsonSerializer.DeserializeAsync<VoiceExportManifest>(stream, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        }) ?? throw new InvalidDataException("The private manifest is empty.");
     }
 
     private static VoiceExportEntry CreateEntry(

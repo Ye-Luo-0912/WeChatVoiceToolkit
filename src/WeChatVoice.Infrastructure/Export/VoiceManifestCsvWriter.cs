@@ -31,6 +31,11 @@ internal static class VoiceManifestCsvWriter
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
         ArgumentNullException.ThrowIfNull(manifest);
+        if (string.IsNullOrWhiteSpace(manifest.DatasetNamespaceKey))
+        {
+            throw new InvalidDataException("A portable export CSV requires a dataset namespace key.");
+        }
+
         return AtomicFileWriter.WriteStreamAsync(
             destinationPath,
             async (stream, token) =>
@@ -46,7 +51,7 @@ internal static class VoiceManifestCsvWriter
                     token.ThrowIfCancellationRequested();
                     await writer.WriteLineAsync(BuildRow(
                     [
-                        ExportItemIdentity.ComputeItemId(entry),
+                        ExportItemIdentity.ComputeItemId(entry, manifest.DatasetNamespaceKey),
                         entry.OriginalPath,
                         entry.OriginalSha256,
                         entry.DurationMs?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
@@ -54,6 +59,44 @@ internal static class VoiceManifestCsvWriter
                         string.Join('|', entry.QualityFlags),
                         entry.TrainingEligibility.ToString(),
                         (entry.UserSelectionState == UserSelectionState.Selected).ToString(CultureInfo.InvariantCulture),
+                    ])).ConfigureAwait(false);
+                }
+
+                await writer.FlushAsync(token).ConfigureAwait(false);
+            },
+            cancellationToken);
+    }
+
+    public static Task WritePortableAsync(
+        string destinationPath,
+        VoiceDatasetManifest manifest,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+        ArgumentNullException.ThrowIfNull(manifest);
+        return AtomicFileWriter.WriteStreamAsync(
+            destinationPath,
+            async (stream, token) =>
+            {
+                await using var writer = new StreamWriter(
+                    stream,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                    bufferSize: 64 * 1024,
+                    leaveOpen: true);
+                await writer.WriteLineAsync(BuildRow(Header)).ConfigureAwait(false);
+                foreach (var entry in manifest.Items)
+                {
+                    token.ThrowIfCancellationRequested();
+                    await writer.WriteLineAsync(BuildRow(
+                    [
+                        entry.ItemId,
+                        entry.RelativeAudioPath,
+                        entry.Sha256,
+                        entry.DurationMs?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                        entry.ByteLength.ToString(CultureInfo.InvariantCulture),
+                        string.Join('|', entry.QualityFlags),
+                        entry.TrainingEligibility.ToString(),
+                        entry.Selected.ToString(CultureInfo.InvariantCulture),
                     ])).ConfigureAwait(false);
                 }
 

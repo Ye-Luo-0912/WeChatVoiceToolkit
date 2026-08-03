@@ -1,8 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$PackagePath,
-    [string]$UpdateManifestPath = '',
+    [Parameter(Mandatory = $true)][string]$UpdateManifestPath,
     [string]$PackageName = 'WeChatVoiceToolkit',
+    [string]$AllowedPublisherThumbprint = $env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT,
+    [string]$AllowedPublisherKeyId = $env:WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID,
     [switch]$RunTrustSmoke,
     [switch]$ForceUpdateFromAnyVersion
 )
@@ -13,7 +15,53 @@ $package = [IO.Path]::GetFullPath($PackagePath.Trim().Trim('"'))
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "The MSIX package does not exist: $package" }
 if ([IO.Path]::GetExtension($package) -ne '.msix') { throw 'PackagePath must point to an .msix package.' }
 
-if (-not [string]::IsNullOrWhiteSpace($UpdateManifestPath)) {
+if ([string]::IsNullOrWhiteSpace($AllowedPublisherThumbprint) -or [string]::IsNullOrWhiteSpace($AllowedPublisherKeyId)) {
+    throw 'An independent allowed publisher thumbprint and public-key ID are required.'
+}
+. (Join-Path $PSScriptRoot 'publisher-fingerprint.ps1')
+
+function Read-AppxIdentity([string]$path) {
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($path)
+    try {
+        $entry = $archive.GetEntry('AppxManifest.xml')
+        if ($null -eq $entry) { throw 'The MSIX has no AppxManifest.xml.' }
+        $reader = [IO.StreamReader]::new($entry.Open())
+        try { [xml]$document = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        $namespace = [System.Xml.XmlNamespaceManager]::new($document.NameTable)
+        $namespace.AddNamespace('f', 'http://schemas.microsoft.com/appx/manifest/foundation/windows10')
+        $identity = $document.SelectSingleNode('/f:Package/f:Identity', $namespace)
+        $application = $document.SelectSingleNode('/f:Package/f:Applications/f:Application', $namespace)
+        if ($null -eq $identity -or $null -eq $application) { throw 'The MSIX identity or application is incomplete.' }
+        $executable = [string]$application.Executable
+        if ([string]::IsNullOrWhiteSpace($executable) -or
+            [IO.Path]::IsPathRooted($executable) -or
+            $executable.Replace('\', '/').Split('/') -contains '..') {
+            throw 'The MSIX application executable path is invalid.'
+        }
+        if ($null -eq $archive.GetEntry($executable.Replace('\', '/'))) {
+            throw "The MSIX application executable is not present in the package: $executable"
+        }
+        [pscustomobject]@{
+            Name = [string]$identity.Name
+            Publisher = [string]$identity.Publisher
+            PublisherId = Get-AppxPublisherId -Publisher ([string]$identity.Publisher)
+            PackageFamilyName = [string]$identity.Name + '_' + (Get-AppxPublisherId -Publisher ([string]$identity.Publisher))
+            Version = [string]$identity.Version
+            Architecture = [string]$identity.ProcessorArchitecture
+            Executable = $executable
+        }
+    }
+    finally { $archive.Dispose() }
+}
+
+$packageIdentity = Read-AppxIdentity $package
+if ($packageIdentity.Name -ne $PackageName) { throw "The MSIX Identity Name does not match PackageName: $($packageIdentity.Name)" }
+if ($packageIdentity.Architecture -ne 'x64') { throw "The MSIX architecture is not x64: $($packageIdentity.Architecture)" }
+$parsedPackageVersion = $null
+if (-not [version]::TryParse($packageIdentity.Version, [ref]$parsedPackageVersion)) { throw 'The MSIX Identity Version is invalid.' }
+
     $updateManifest = [IO.Path]::GetFullPath($UpdateManifestPath.Trim().Trim('"'))
     if (-not (Test-Path -LiteralPath $updateManifest -PathType Leaf)) { throw "The update manifest does not exist: $updateManifest" }
     try {
@@ -30,14 +78,39 @@ if (-not [string]::IsNullOrWhiteSpace($UpdateManifestPath)) {
         throw 'The package does not match the update manifest packageFile.'
     }
     $actualHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne ([string]$metadata.packageSha256).ToLowerInvariant()) {
+    if (([string]$metadata.packageSha256 -notmatch '^[0-9a-fA-F]{64}$') -or
+        ($actualHash -ne ([string]$metadata.packageSha256).ToLowerInvariant())) {
         throw 'The MSIX package hash does not match the update manifest.'
     }
-    if ((Get-Item -LiteralPath $package).Length -ne [int64]$metadata.packageByteLength) {
+    if ($null -eq $metadata.packageByteLength -or [int64]$metadata.packageByteLength -lt 1 -or
+        (Get-Item -LiteralPath $package).Length -ne [int64]$metadata.packageByteLength) {
         throw 'The MSIX package length does not match the update manifest.'
     }
-    if ([string]::IsNullOrWhiteSpace([string]$metadata.publisherThumbprint)) {
-        throw 'The update manifest has no publisher thumbprint.'
+    foreach ($field in @('publisherThumbprint', 'publisherKeyId', 'identityName', 'identityPublisher', 'publisherId', 'packageFamilyName', 'identityVersion', 'identityArchitecture', 'applicationExecutable')) {
+        if ([string]::IsNullOrWhiteSpace([string]$metadata.$field)) { throw "The update manifest field '$field' is missing." }
+    }
+    $allowedThumbprint = $AllowedPublisherThumbprint.Replace(' ', '').ToLowerInvariant()
+    $allowedKeyId = $AllowedPublisherKeyId.Replace(' ', '').ToLowerInvariant()
+    if ($allowedThumbprint -notmatch '^[0-9a-f]{64}$' -or $allowedKeyId -notmatch '^[0-9a-f]{64}$') {
+        throw 'The independent publisher anchors must be 64-character SHA-256 values.'
+    }
+    if ($metadata.publisherThumbprint.ToLowerInvariant() -ne $allowedThumbprint) {
+        throw 'The update manifest publisher is not in the built-in allowed publisher set.'
+    }
+    if ($metadata.publisherKeyId.ToLowerInvariant() -ne $allowedKeyId) {
+        throw 'The update manifest publisher key is not in the built-in allowed publisher set.'
+    }
+    if ($metadata.identityName -ne $packageIdentity.Name -or
+        $metadata.identityPublisher -ne $packageIdentity.Publisher -or
+        $metadata.publisherId -ne $packageIdentity.PublisherId -or
+        $metadata.packageFamilyName -ne $packageIdentity.PackageFamilyName -or
+        $metadata.identityVersion -ne $packageIdentity.Version -or
+        $metadata.identityArchitecture -ne $packageIdentity.Architecture -or
+        $metadata.applicationExecutable -ne $packageIdentity.Executable) {
+        throw 'The MSIX AppxManifest identity does not match the independently supplied update manifest.'
+    }
+    if ([string]$metadata.version -ne $packageIdentity.Version) {
+        throw 'The update manifest version does not match the MSIX Identity Version.'
     }
     $signature = Get-AuthenticodeSignature -LiteralPath $package
     if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
@@ -47,7 +120,10 @@ if (-not [string]::IsNullOrWhiteSpace($UpdateManifestPath)) {
     if ($actualPublisherThumbprint -ne ([string]$metadata.publisherThumbprint).Replace(' ', '').ToLowerInvariant()) {
         throw 'The MSIX signer thumbprint does not match the update manifest.'
     }
-}
+    $actualPublisherKeyId = Get-CertificatePublicKeyId -Certificate $signature.SignerCertificate
+    if ($actualPublisherKeyId -ne ([string]$metadata.publisherKeyId).Replace(' ', '').ToLowerInvariant()) {
+        throw 'The MSIX signer public key does not match the update manifest.'
+    }
 if ($ForceUpdateFromAnyVersion) {
     Add-AppxPackage -Path $package -ForceUpdateFromAnyVersion
 }
@@ -55,17 +131,34 @@ else {
     Add-AppxPackage -Path $package
 }
 
-$installed = @(Get-AppxPackage -Name $PackageName | Sort-Object Version -Descending | Select-Object -First 1)
+$installed = @(Get-AppxPackage -Name $PackageName | Where-Object { $_.Version -eq $parsedPackageVersion })
 if ($installed.Count -ne 1) { throw "The installed package '$PackageName' could not be found after installation." }
+$installedPackage = $installed[0]
+if ([string]$installedPackage.Name -ne $packageIdentity.Name -or
+    [string]$installedPackage.Publisher -ne $packageIdentity.Publisher -or
+    [version]$installedPackage.Version -ne $parsedPackageVersion) {
+    throw 'The installed AppX identity does not exactly match the signed package.'
+}
+if ([string]::IsNullOrWhiteSpace([string]$installedPackage.PackageFamilyName) -or
+    [string]$installedPackage.PackageFamilyName -cne $packageIdentity.PackageFamilyName) {
+    throw 'The installed PackageFamilyName is missing or does not match the package identity.'
+}
+if ([string]::IsNullOrWhiteSpace([string]$installedPackage.PublisherId) -or
+    [string]$installedPackage.PublisherId -cne $packageIdentity.PublisherId) {
+    throw 'The installed PublisherId is missing or does not match the package identity.'
+}
+if ([string]$installedPackage.PackageFamilyName -cne [string]$metadata.packageFamilyName) {
+    throw 'The installed PackageFamilyName does not match the independent update manifest.'
+}
 $programFiles = [IO.Path]::GetFullPath([Environment]::GetFolderPath('ProgramFiles')).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-$installLocation = [IO.Path]::GetFullPath([string]$installed[0].InstallLocation)
+$installLocation = [IO.Path]::GetFullPath([string]$installedPackage.InstallLocation)
 if (-not $installLocation.StartsWith($programFiles, [StringComparison]::OrdinalIgnoreCase)) {
     throw "The package was not installed under the protected Program Files root: $installLocation"
 }
-Write-Host "Installed $PackageName version $($installed[0].Version)."
+Write-Host "Installed $PackageName version $($installedPackage.Version) ($($installedPackage.PackageFamilyName))."
 
 if ($RunTrustSmoke) {
-    $desktop = Join-Path $installed[0].InstallLocation 'WeChatVoice.Desktop.exe'
+    $desktop = Join-Path $installedPackage.InstallLocation $packageIdentity.Executable
     if (-not (Test-Path -LiteralPath $desktop -PathType Leaf)) { throw 'The installed Desktop executable is missing.' }
     $smoke = Start-Process -FilePath $desktop -ArgumentList @('--smoke-check', '--release-trust-smoke') -Wait -PassThru -WindowStyle Hidden
     if ($smoke.ExitCode -ne 0) { throw "Installed trust smoke failed with exit code $($smoke.ExitCode)." }

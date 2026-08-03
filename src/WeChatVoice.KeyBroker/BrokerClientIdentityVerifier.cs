@@ -13,6 +13,9 @@ internal static class BrokerClientIdentityVerifier
     private const int TokenUser = 1;
 
     internal static string? Verify(SafePipeHandle pipe)
+        => VerifyDetailed(pipe).Sid;
+
+    internal static VerifiedClientIdentity VerifyDetailed(SafePipeHandle pipe)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -25,7 +28,11 @@ internal static class BrokerClientIdentityVerifier
         // transport pretend to be an elevated security boundary.
         if (!new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
         {
-            return WindowsIdentity.GetCurrent().User?.Value;
+            var currentSid = WindowsIdentity.GetCurrent().User?.Value;
+            return GetNamedPipeClientProcessId(pipe.DangerousGetHandle(), out var unelevatedClientPid)
+                && unelevatedClientPid != 0
+                ? new VerifiedClientIdentity(checked((int)unelevatedClientPid), currentSid)
+                : new VerifiedClientIdentity(Environment.ProcessId, currentSid);
         }
 
         if (!GetNamedPipeClientProcessId(pipe.DangerousGetHandle(), out var clientPid)
@@ -51,9 +58,11 @@ internal static class BrokerClientIdentityVerifier
                 throw new UnauthorizedAccessException("The pipe client is not running as the same user as the elevated broker request.");
             }
 
-            return clientSid;
+            return new VerifiedClientIdentity(checked((int)clientPid), clientSid);
         }
     }
+
+    internal sealed record VerifiedClientIdentity(int ProcessId, string? Sid);
 
     private static string ReadUserSid(SafeAccessTokenHandle token)
     {

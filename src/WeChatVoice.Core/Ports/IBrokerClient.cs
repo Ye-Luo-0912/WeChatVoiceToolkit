@@ -21,4 +21,11 @@ public interface IBrokerClient
         string workspaceOutput,
         CancellationToken cancellationToken,
         IProgress<OperationProgress>? progress = null);
+
+    /// <summary>
+    /// Starts the elevated Broker's no-data self-test. Implementations must
+    /// not read a Snapshot, database, or process memory for this operation.
+    /// </summary>
+    Task<BrokerSelfTestResponse> SelfTestAsync(CancellationToken cancellationToken)
+        => Task.FromException<BrokerSelfTestResponse>(new NotSupportedException("Broker self-test is not supported by this client."));
 }

@@ -85,8 +85,10 @@ conversation, message primary key, and media primary key); physical paths use
 only a content hash fan-out and never the message timestamp. Snapshot and
 database hashes remain provenance only. Missing identity or media association
 is rejected before payload access. Runs are stored under
-`runs/<run-id>.manifest.json` and an append-and-flush
-`runs/<run-id>.jsonl` journal; only `latest.manifest.json` is replaced.
+`runs/<run-id>.manifest.private.json`, the portable
+`runs/<run-id>.dataset.manifest.json`, and an append-and-flush
+`runs/<run-id>.jsonl` journal. The rolling products are explicitly split into
+`manifest.private.json`, `dataset.manifest.json`, and `dataset.csv`.
 The voice commands use exit code `0` for complete success or safe skips, `2`
 for invalid parameters, `3` for item-level partial failure, `4` for no
 matching records, `1` for run-level failure, and `130` for cancellation.
@@ -152,5 +154,15 @@ automation:
 ```
 
 Upgrade and rollback never remove Snapshot, Workspace, or Export data. The
-update manifest binds the package filename, version, publisher, length, and
-SHA-256 before installation.
+update manifest binds the package filename, identity name/publisher,
+PublisherId/PackageFamilyName, architecture, executable, version, length, and
+SHA-256 before installation; the installer also requires the independently
+pinned release certificate thumbprint and public-key ID.
+
+Curated training datasets can be checked or repaired without changing the
+original export SILK files:
+
+```powershell
+wechatvoice dataset verify --export <export-root> --output <dataset-root>
+wechatvoice dataset repair --export <export-root> --output <dataset-root>
+```

@@ -45,3 +45,16 @@ public sealed record BrokerStageEvent(
     int? CompletedDatabases = null,
     int? TotalDatabases = null,
     int? FirstUnvalidatedGroupOrdinal = null);
+
+/// <summary>
+/// Result of the no-data Broker self-test. It proves the elevated pipe and
+/// Worker bundle path without reading Weixin memory or opening a database.
+/// </summary>
+public sealed record BrokerSelfTestResponse(
+    string Status,
+    string? RequestId,
+    int BrokerProcessId,
+    string WorkerBundleStatus,
+    string? NonSensitiveReason = null,
+    int? ClientProcessId = null,
+    string? ClientSid = null);

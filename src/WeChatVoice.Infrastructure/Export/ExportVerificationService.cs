@@ -44,6 +44,24 @@ public sealed class ExportVerificationService
             return Result(exportRoot, runId, null, issues, 0, false, false, false);
         }
 
+        try
+        {
+            var recoveryStore = new FileSystemVoiceExportStore(exportRoot);
+            await recoveryStore.RecoverPendingTransactionsAsync(cancellationToken).ConfigureAwait(false);
+            await RecoverCommittedTransactionsAsync(recoveryStore, exportRoot, runId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ExportRootBusyException)
+        {
+            issues.Add(Issue("export-busy", ".wechatvoice/export.lock", "The export root is busy with another operation."));
+            return Result(exportRoot, runId, null, issues, 0, false, false, false);
+        }
+        await using var verificationLock = await ExportRootLock.AcquireAsync(
+            exportRoot,
+            ExportRootLockMode.Shared,
+            Guid.NewGuid().ToString("N"),
+            runId,
+            cancellationToken).ConfigureAwait(false);
+
         var selectedRunId = runId;
         var manifestPath = ResolveManifestPath(exportRoot, runId);
         VoiceExportManifest? manifest = null;
@@ -59,6 +77,10 @@ public sealed class ExportVerificationService
                 manifestHash = await FileHashing.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
                 manifest = await ReadManifestAsync(manifestPath, cancellationToken).ConfigureAwait(false);
                 selectedRunId ??= manifest.RunId;
+                if (string.IsNullOrWhiteSpace(manifest.DatasetNamespaceKey))
+                {
+                    issues.Add(Issue("portable-id-namespace-missing", RelativePath(exportRoot, manifestPath), "The private manifest has no dataset namespace key; portable IDs cannot be trusted."));
+                }
             }
             catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
             {
@@ -107,6 +129,7 @@ public sealed class ExportVerificationService
             }
 
             await AddManifestConsistencyIssuesAsync(exportRoot, manifest, selectedRunId, runId is null, issues, cancellationToken).ConfigureAwait(false);
+            await VerifyMetadataCommitAsync(exportRoot, manifest, selectedRunId, runId is null, issues, cancellationToken).ConfigureAwait(false);
             var artifactResult = await VerifyArtifactsAsync(exportRoot, manifest, issues, cancellationToken).ConfigureAwait(false);
             verifiedOriginalCount = artifactResult.VerifiedOriginalCount;
             missingFileCount = artifactResult.MissingFileCount;
@@ -136,33 +159,42 @@ public sealed class ExportVerificationService
         CancellationToken cancellationToken)
     {
         var exportRoot = Path.GetFullPath(exportDirectory);
-        var journalPath = await ResolveRepairJournalPathAsync(exportRoot, runId, cancellationToken).ConfigureAwait(false);
-        if (journalPath is null)
-        {
-            throw new InvalidDataException("No export Journal with a committed manifest was found.");
-        }
-
-        var journalRunId = Path.GetFileNameWithoutExtension(journalPath);
-        var manifest = await FileSystemVoiceExportStore.ReadManifestFromJournalAsync(
-            new VoiceExportManifest(DateTimeOffset.UtcNow, RunId: journalRunId, RunStatus: ExportRunStatus.Failed),
-            journalPath,
-            cancellationToken).ConfigureAwait(false);
-        var issues = new List<ExportVerificationIssue>();
-        var journal = await ReadJournalAsync(journalPath, cancellationToken, issues).ConfigureAwait(false);
-        var commit = journal.Events.LastOrDefault(static item => item.Event == "manifest-committed");
-        if (commit is null || issues.Count > 0)
-        {
-            throw new InvalidDataException("The export Journal was not committed.");
-        }
-
-        var artifactResult = await VerifyArtifactsAsync(exportRoot, manifest, issues, cancellationToken).ConfigureAwait(false);
-        if (issues.Count > 0 || artifactResult.MissingFileCount > 0 || artifactResult.ExtraFileCount > 0)
-        {
-            throw new InvalidDataException("Export repair refused to proceed because the immutable SILK artifact set is not valid.");
-        }
-
         var store = new FileSystemVoiceExportStore(exportRoot);
-        await store.RecoverRunAsync(journalPath, cancellationToken).ConfigureAwait(false);
+        string journalPath;
+        VoiceExportManifest manifest;
+        await using (var exportLock = await ExportRootLock.AcquireAsync(
+            exportRoot,
+            ExportRootLockMode.Exclusive,
+            Guid.NewGuid().ToString("N"),
+            runId,
+            cancellationToken).ConfigureAwait(false))
+        {
+            await store.RecoverPendingTransactionsUnderLockAsync(cancellationToken, exportLock).ConfigureAwait(false);
+            journalPath = await ResolveRepairJournalPathAsync(exportRoot, runId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("No export Journal with a committed manifest was found.");
+
+            var journalRunId = Path.GetFileNameWithoutExtension(journalPath);
+            manifest = await FileSystemVoiceExportStore.ReadManifestFromJournalAsync(
+                new VoiceExportManifest(DateTimeOffset.UtcNow, RunId: journalRunId, RunStatus: ExportRunStatus.Failed),
+                journalPath,
+                cancellationToken).ConfigureAwait(false);
+            var issues = new List<ExportVerificationIssue>();
+            var journal = await ReadJournalAsync(journalPath, cancellationToken, issues).ConfigureAwait(false);
+            var commit = journal.Events.LastOrDefault(static item => item.Event == "manifest-committed");
+            if (commit is null || issues.Count > 0)
+            {
+                throw new InvalidDataException("The export Journal was not committed.");
+            }
+
+            var artifactResult = await VerifyArtifactsAsync(exportRoot, manifest, issues, cancellationToken).ConfigureAwait(false);
+            if (issues.Count > 0 || artifactResult.MissingFileCount > 0 || artifactResult.ExtraFileCount > 0)
+            {
+                throw new InvalidDataException("Export repair refused to proceed because the immutable SILK artifact set is not valid.");
+            }
+
+            await store.RecoverRunUnderLockAsync(journalPath, manifest.RunId, cancellationToken).ConfigureAwait(false);
+        }
+
         var verification = await VerifyAsync(exportRoot, manifest.RunId, cancellationToken).ConfigureAwait(false);
         return new ExportRepairResult(verification, journalPath, OriginalArtifactsChanged: false);
     }
@@ -352,13 +384,11 @@ public sealed class ExportVerificationService
         var paths = new List<string>();
         if (latestSelected)
         {
-            paths.Add(Path.Combine(exportRoot, "dataset.csv"));
-            paths.Add(Path.Combine(exportRoot, "manifest.csv"));
+            paths.Add(Path.Combine(exportRoot, ExportManifestLayout.PortableCsvFileName));
         }
         if (!string.IsNullOrWhiteSpace(runId))
         {
-            paths.Add(Path.Combine(exportRoot, "runs", runId + ".dataset.csv"));
-            paths.Add(Path.Combine(exportRoot, "runs", runId + ".manifest.csv"));
+            paths.Add(Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPortableCsvFileName(runId)));
         }
 
         var allConsistent = true;
@@ -385,7 +415,9 @@ public sealed class ExportVerificationService
                     continue;
                 }
 
-                var expected = manifest.Entries.ToDictionary(ExportItemIdentity.ComputeItemId, StringComparer.OrdinalIgnoreCase);
+                var expected = manifest.Entries.ToDictionary(
+                    entry => ExportItemIdentity.ComputeItemId(entry, manifest.DatasetNamespaceKey),
+                    StringComparer.OrdinalIgnoreCase);
                 var actual = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
                 foreach (var row in rows.Skip(1))
                 {
@@ -498,6 +530,151 @@ public sealed class ExportVerificationService
         }
     }
 
+    private static async Task VerifyMetadataCommitAsync(
+        string exportRoot,
+        VoiceExportManifest manifest,
+        string? runId,
+        bool latestSelected,
+        ICollection<ExportVerificationIssue> issues,
+        CancellationToken cancellationToken)
+    {
+        var selectedRunId = runId ?? manifest.RunId;
+        var descriptorPath = Path.Combine(exportRoot, "runs", selectedRunId + ".metadata-commit.json");
+        if (!File.Exists(descriptorPath))
+        {
+            issues.Add(Issue("metadata-commit-missing", RelativePath(exportRoot, descriptorPath), "The metadata commit descriptor is missing."));
+            return;
+        }
+
+        ExportMetadataCommitDescriptor? descriptor;
+        try
+        {
+            descriptor = await ReadJsonAsync<ExportMetadataCommitDescriptor>(descriptorPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+        {
+            issues.Add(Issue("metadata-commit-invalid", RelativePath(exportRoot, descriptorPath), "The metadata commit descriptor is invalid."));
+            return;
+        }
+
+        if (!string.Equals(descriptor.RunId, selectedRunId, StringComparison.Ordinal))
+        {
+            issues.Add(Issue("metadata-commit-run-mismatch", RelativePath(exportRoot, descriptorPath), "The metadata commit descriptor RunId does not match the selected manifest."));
+        }
+
+        var runFiles = new[]
+        {
+            (Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(selectedRunId)), descriptor.PrivateManifestSha256, "private-manifest"),
+            (Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPortableManifestFileName(selectedRunId)), descriptor.PortableManifestSha256, "portable-manifest"),
+            (Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPortableCsvFileName(selectedRunId)), descriptor.DatasetCsvSha256, "dataset-csv"),
+            (Path.Combine(exportRoot, "artifact-index.jsonl"), descriptor.ArtifactIndexSha256, "artifact-index"),
+        };
+        foreach (var (path, expectedHash, label) in runFiles)
+        {
+            if (!File.Exists(path))
+            {
+                issues.Add(Issue("metadata-commit-file-missing", RelativePath(exportRoot, path), $"The committed {label} is missing."));
+                continue;
+            }
+
+            var actualHash = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                issues.Add(Issue("metadata-commit-hash-mismatch", RelativePath(exportRoot, path), $"The committed {label} hash does not match the descriptor."));
+            }
+        }
+
+        if (latestSelected)
+        {
+            var latestFiles = new[]
+            {
+                (Path.Combine(exportRoot, ExportManifestLayout.PrivateManifestFileName), descriptor.PrivateManifestSha256, "latest-private-manifest"),
+                (Path.Combine(exportRoot, ExportManifestLayout.PortableManifestFileName), descriptor.PortableManifestSha256, "latest-portable-manifest"),
+                (Path.Combine(exportRoot, ExportManifestLayout.PortableCsvFileName), descriptor.DatasetCsvSha256, "latest-dataset-csv"),
+            };
+            foreach (var (path, expectedHash, label) in latestFiles)
+            {
+                if (!File.Exists(path))
+                {
+                    issues.Add(Issue("metadata-latest-file-missing", RelativePath(exportRoot, path), $"The committed {label} is missing."));
+                    continue;
+                }
+
+                var actualHash = await FileHashing.ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    issues.Add(Issue("metadata-latest-file-mismatch", RelativePath(exportRoot, path), $"The committed {label} hash does not match the descriptor."));
+                }
+            }
+
+            var latestPath = Path.Combine(exportRoot, "latest.metadata-commit.json");
+            if (!File.Exists(latestPath))
+            {
+                issues.Add(Issue("metadata-latest-missing", RelativePath(exportRoot, latestPath), "The latest metadata commit pointer is missing."));
+            }
+            else
+            {
+                try
+                {
+                    var latest = await ReadJsonAsync<ExportMetadataCommitDescriptor>(latestPath, cancellationToken).ConfigureAwait(false);
+                    if (!Equals(latest, descriptor))
+                    {
+                        issues.Add(Issue("metadata-latest-mismatch", RelativePath(exportRoot, latestPath), "The latest metadata commit pointer differs from the selected run."));
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+                {
+                    issues.Add(Issue("metadata-latest-invalid", RelativePath(exportRoot, latestPath), "The latest metadata commit pointer is invalid."));
+                }
+            }
+        }
+    }
+
+    private static async Task RecoverCommittedTransactionsAsync(
+        FileSystemVoiceExportStore store,
+        string exportRoot,
+        string? requestedRunId,
+        CancellationToken cancellationToken)
+    {
+        var runs = Path.Combine(exportRoot, "runs");
+        if (!Directory.Exists(runs)) return;
+        var candidates = new List<(string Path, ExportTransactionDocument Document)>();
+        foreach (var path in Directory.EnumerateFiles(runs, "*.transaction.json", SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                var document = await ReadJsonAsync<ExportTransactionDocument>(path, cancellationToken).ConfigureAwait(false);
+                if (document.State is ExportTransactionState.ArtifactsCommitted or ExportTransactionState.MetadataCommitted
+                    && (string.IsNullOrWhiteSpace(requestedRunId) || string.Equals(document.RunId, requestedRunId, StringComparison.Ordinal))
+                    && document.Items.All(static item => item.Entry is not null))
+                {
+                    candidates.Add((path, document));
+                }
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
+            {
+            }
+        }
+
+        foreach (var candidate in candidates.OrderByDescending(static item => item.Document.UpdatedAtUtc))
+        {
+            var journal = Path.Combine(runs, candidate.Document.RunId + ".jsonl");
+            if (File.Exists(journal))
+            {
+                await store.RecoverRunAsync(journal, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!string.IsNullOrWhiteSpace(requestedRunId)) break;
+        }
+    }
+
+    private static async Task<T> ReadJsonAsync<T>(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The JSON document is empty.");
+    }
+
     private static async Task<IReadOnlyList<string[]>> ReadCsvAsync(string path, CancellationToken cancellationToken)
     {
         var text = await File.ReadAllTextAsync(path, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
@@ -568,13 +745,13 @@ public sealed class ExportVerificationService
         cancellationToken.ThrowIfCancellationRequested();
         var paths = new List<string>
         {
-            Path.Combine(exportRoot, "runs", (runId ?? manifest.RunId) + ".manifest.private.json"),
-            Path.Combine(exportRoot, "runs", (runId ?? manifest.RunId) + ".manifest.json"),
+            Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(runId ?? manifest.RunId)),
+            Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPortableManifestFileName(runId ?? manifest.RunId)),
         };
         if (latestSelected)
         {
             paths.Add(Path.Combine(exportRoot, "manifest.private.json"));
-            paths.Add(Path.Combine(exportRoot, "latest.manifest.json"));
+            paths.Add(Path.Combine(exportRoot, ExportManifestLayout.PortableManifestFileName));
         }
         foreach (var path in paths)
         {
@@ -586,10 +763,24 @@ public sealed class ExportVerificationService
 
             try
             {
-                var alias = await ReadManifestAsync(path, cancellationToken).ConfigureAwait(false);
-                if (!CanonicalEquals(alias, manifest))
+                if (path.EndsWith(".dataset.manifest.json", StringComparison.OrdinalIgnoreCase)
+                    || path.EndsWith(".manifest.json", StringComparison.OrdinalIgnoreCase)
+                        && !path.EndsWith(".manifest.private.json", StringComparison.OrdinalIgnoreCase))
                 {
-                    issues.Add(Issue("manifest-alias-mismatch", RelativePath(exportRoot, path), "A committed manifest alias differs from the selected manifest."));
+                    var alias = await ReadPortableManifestAsync(path, cancellationToken).ConfigureAwait(false);
+                    var expected = ExportItemIdentity.ToPortableManifest(manifest);
+                    if (!CanonicalEquals(alias, expected))
+                    {
+                        issues.Add(Issue("manifest-alias-mismatch", RelativePath(exportRoot, path), "A committed portable manifest alias differs from the selected manifest."));
+                    }
+                }
+                else
+                {
+                    var alias = await ReadManifestAsync(path, cancellationToken).ConfigureAwait(false);
+                    if (!CanonicalEquals(alias, manifest))
+                    {
+                        issues.Add(Issue("manifest-alias-mismatch", RelativePath(exportRoot, path), "A committed private manifest alias differs from the selected manifest."));
+                    }
                 }
             }
             catch (Exception)
@@ -619,9 +810,16 @@ public sealed class ExportVerificationService
     }
 
     private static string? ResolveManifestPath(string exportRoot, string? runId)
-        => string.IsNullOrWhiteSpace(runId)
-            ? Path.Combine(exportRoot, "latest.manifest.json")
-            : Path.Combine(exportRoot, "runs", runId + ".manifest.json");
+    {
+        var candidates = string.IsNullOrWhiteSpace(runId)
+            ? new[] { Path.Combine(exportRoot, ExportManifestLayout.PrivateManifestFileName), Path.Combine(exportRoot, ExportManifestLayout.LegacyPortableManifestFileName) }
+            : new[]
+            {
+                Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(runId)),
+                Path.Combine(exportRoot, "runs", runId + ".manifest.json"),
+            };
+        return candidates.FirstOrDefault(File.Exists) ?? candidates[0];
+    }
 
     private static string? ResolveJournalPath(string exportRoot, string? runId)
         => string.IsNullOrWhiteSpace(runId) ? null : Path.Combine(exportRoot, "runs", runId + ".jsonl");
@@ -667,7 +865,21 @@ public sealed class ExportVerificationService
     }
 
     private static bool CanonicalEquals(VoiceExportManifest left, VoiceExportManifest right)
-        => JsonSerializer.SerializeToUtf8Bytes(left, JsonOptions).AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(right, JsonOptions));
+        => JsonSerializer.SerializeToUtf8Bytes(left with { DatasetNamespaceKey = null }, JsonOptions)
+            .AsSpan()
+            .SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(right with { DatasetNamespaceKey = null }, JsonOptions));
+
+    private static bool CanonicalEquals(VoiceDatasetManifest left, VoiceDatasetManifest right)
+        => JsonSerializer.SerializeToUtf8Bytes(left, JsonOptions)
+            .AsSpan()
+            .SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(right, JsonOptions));
+
+    private static async Task<VoiceDatasetManifest> ReadPortableManifestAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return await JsonSerializer.DeserializeAsync<VoiceDatasetManifest>(stream, JsonOptions, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The portable dataset manifest is empty.");
+    }
 
     private static string NormalizeRelativePath(string path)
         => path.Replace('\\', '/');

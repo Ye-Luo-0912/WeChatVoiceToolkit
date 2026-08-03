@@ -1,5 +1,9 @@
 using System.IO.Pipes;
 using System.Text;
+using System.Text.Json;
+using WeChatVoice.Core.Models;
+using WeChatVoice.Core.Protocol;
+using WeChatVoice.Infrastructure.Trust;
 
 namespace WeChatVoice.KeyBroker;
 
@@ -78,6 +82,62 @@ internal static class BrokerPipeServer
         }
     }
 
+    internal static async Task<int> RunSelfTestAsync(
+        string pipeToken,
+        string workerDirectory,
+        CancellationToken cancellationToken)
+    {
+        ValidatePipeToken(pipeToken);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workerDirectory);
+        if (!Path.IsPathFullyQualified(workerDirectory))
+        {
+            throw new ArgumentException("The Worker directory must be absolute.", nameof(workerDirectory));
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("The Key Broker self-test is Windows-only.");
+        }
+
+        var pipeSecurity = BrokerPipeSecurity.CreateForCurrentUser();
+        await using var pipe = NamedPipeServerStreamAcl.Create(
+            PipePrefix + pipeToken.ToLowerInvariant(),
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous,
+            BrokerProtocol.MaximumRequestLength,
+            BrokerProtocol.MaximumResponseLength,
+            pipeSecurity);
+        using var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        connectionTimeout.CancelAfter(ConnectionTimeout);
+        await pipe.WaitForConnectionAsync(connectionTimeout.Token).ConfigureAwait(false);
+        var caller = BrokerClientIdentityVerifier.VerifyDetailed(pipe.SafePipeHandle);
+        if (string.IsNullOrWhiteSpace(caller.Sid))
+        {
+            throw new UnauthorizedAccessException("The Broker self-test could not verify the named-pipe client SID.");
+        }
+
+        using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false, 4096, leaveOpen: true);
+        await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
+        using var framedReader = new BoundedLineReader(reader, BrokerProtocol.MaximumRequestLength);
+        var line = await framedReader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The Broker self-test request was empty.");
+        var request = ParseSelfTestRequest(line);
+        var worker = await WorkerBundleTrustEvaluator.VerifyAsync(workerDirectory, cancellationToken).ConfigureAwait(false);
+        var response = new BrokerSelfTestResponse(
+            worker.Verified ? "completed" : "failed",
+            request.RequestId,
+            Environment.ProcessId,
+            worker.Verified ? "verified" : "untrusted",
+            worker.NonSensitiveReason,
+            caller.ProcessId,
+            caller.Sid);
+        await writer.WriteLineAsync(JsonSerializer.Serialize(response)).ConfigureAwait(false);
+        await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return worker.Verified ? 0 : 3;
+    }
+
     /// <summary>
     /// The one-shot client has no second control channel. Closing the named
     /// pipe is therefore the cancellation protocol: a disconnected client
@@ -122,4 +182,33 @@ internal static class BrokerPipeServer
             throw new ArgumentException("The pipe token must be exactly 256 random bits encoded as hex.", nameof(pipeToken));
         }
     }
+
+    private static SelfTestRequest ParseSelfTestRequest(string line)
+    {
+        using var document = JsonDocument.Parse(line, new JsonDocumentOptions { MaxDepth = 8, AllowTrailingCommas = false, CommentHandling = JsonCommentHandling.Disallow });
+        if (document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("protocolVersion", out var version)
+            || version.ValueKind != JsonValueKind.Number
+            || version.GetInt32() != 1
+            || !document.RootElement.TryGetProperty("requestId", out var requestId)
+            || requestId.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(requestId.GetString())
+            || !document.RootElement.TryGetProperty("operation", out var operation)
+            || !string.Equals(operation.GetString(), "self-test", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The Broker self-test request is invalid.");
+        }
+
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (property.Name is not ("protocolVersion" or "requestId" or "operation"))
+            {
+                throw new InvalidDataException("The Broker self-test request contains an unsupported field.");
+            }
+        }
+
+        return new SelfTestRequest(requestId.GetString()!);
+    }
+
+    private sealed record SelfTestRequest(string RequestId);
 }

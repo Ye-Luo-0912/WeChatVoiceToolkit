@@ -37,6 +37,12 @@ public static class SmokeCheckRunner
                 var brokerPath = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.KeyBroker.exe");
                 var trust = new ReleaseBrokerTrustPolicy(installDirectory: AppContext.BaseDirectory).Verify(brokerPath);
                 Assert(trust.Verified, $"release broker trust failed: {trust.NonSensitiveReason}");
+                var brokerClient = new KeyBrokerClient(
+                    new ReleaseBrokerTrustPolicy(installDirectory: AppContext.BaseDirectory),
+                    AppContext.BaseDirectory);
+                var selfTest = brokerClient.SelfTestAsync(CancellationToken.None).GetAwaiter().GetResult();
+                Assert(string.Equals(selfTest.Status, "completed", StringComparison.Ordinal), "Broker self-test did not complete");
+                Assert(string.Equals(selfTest.WorkerBundleStatus, "verified", StringComparison.Ordinal), "Broker self-test did not verify the Worker bundle");
             }
 
             // 2. State machine transitions: run -> complete.

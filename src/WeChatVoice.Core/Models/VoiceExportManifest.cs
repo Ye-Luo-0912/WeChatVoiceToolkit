@@ -22,7 +22,8 @@ public sealed record VoiceExportManifest
         ExportRunStatus RunStatus = ExportRunStatus.Completed,
         bool Cancelled = false,
         MaterializationProvenance? Provenance = null,
-        AccountIdentity? AccountIdentity = null)
+        AccountIdentity? AccountIdentity = null,
+        string? DatasetNamespaceKey = null)
     {
         this.GeneratedAtUtc = GeneratedAtUtc.ToUniversalTime();
         this.Entries = Freeze(Entries);
@@ -38,6 +39,7 @@ public sealed record VoiceExportManifest
         this.Cancelled = Cancelled || RunStatus == ExportRunStatus.Cancelled;
         this.Provenance = Provenance;
         this.AccountIdentity = AccountIdentity ?? Core.Models.AccountIdentity.CandidateOnly;
+        this.DatasetNamespaceKey = DatasetNamespaceKey;
     }
 
     public DateTimeOffset GeneratedAtUtc { get; }
@@ -78,6 +80,12 @@ public sealed record VoiceExportManifest
     /// </summary>
     public AccountIdentity AccountIdentity { get; }
 
+    /// <summary>
+    /// Private HMAC namespace used to derive portable item IDs. It is never
+    /// emitted by <see cref="VoiceDatasetManifest"/> or the portable CSV.
+    /// </summary>
+    public string? DatasetNamespaceKey { get; init; }
+
     /// <summary>Duration of every successfully selected voice in this run.</summary>
     public long TotalDurationMs => SumDuration(Entries, trainingOnly: false);
 
@@ -117,6 +125,65 @@ public sealed record VoiceExportManifest
         => new ReadOnlyCollection<T>((values ?? Array.Empty<T>()).ToArray());
 }
 
+/// <summary>
+/// Portable dataset metadata. This type deliberately has no account,
+/// conversation, source database, stable source key, or local path fields.
+/// </summary>
+public sealed record VoiceDatasetManifest
+{
+    public VoiceDatasetManifest(
+        DateTimeOffset GeneratedAtUtc,
+        string RunId,
+        IReadOnlyList<VoiceDatasetEntry>? Items = null,
+        string Format = "wechatvoice-dataset-manifest-v1")
+    {
+        this.GeneratedAtUtc = GeneratedAtUtc.ToUniversalTime();
+        this.RunId = RunId;
+        this.Items = (Items ?? Array.Empty<VoiceDatasetEntry>()).ToArray();
+        this.Format = Format;
+    }
+
+    public DateTimeOffset GeneratedAtUtc { get; }
+    public string RunId { get; }
+    public IReadOnlyList<VoiceDatasetEntry> Items { get; }
+    public string Format { get; }
+
+    public long TotalDurationMs => Items.Where(static item => item.DurationMs is > 0).Sum(static item => item.DurationMs!.Value);
+    public long TotalByteLength => Items.Sum(static item => Math.Max(0, item.ByteLength));
+}
+
+public sealed record VoiceDatasetEntry
+{
+    public VoiceDatasetEntry(
+        string ItemId,
+        string RelativeAudioPath,
+        string Sha256,
+        long ByteLength,
+        long? DurationMs,
+        IReadOnlyList<string>? QualityFlags,
+        TrainingEligibility TrainingEligibility,
+        bool Selected)
+    {
+        this.ItemId = ItemId;
+        this.RelativeAudioPath = RelativeAudioPath;
+        this.Sha256 = Sha256;
+        this.ByteLength = ByteLength;
+        this.DurationMs = DurationMs;
+        this.QualityFlags = (QualityFlags ?? Array.Empty<string>()).ToArray();
+        this.TrainingEligibility = TrainingEligibility;
+        this.Selected = Selected;
+    }
+
+    public string ItemId { get; }
+    public string RelativeAudioPath { get; }
+    public string Sha256 { get; }
+    public long ByteLength { get; }
+    public long? DurationMs { get; }
+    public IReadOnlyList<string> QualityFlags { get; }
+    public TrainingEligibility TrainingEligibility { get; }
+    public bool Selected { get; }
+}
+
 public enum ExportRunStatus
 {
     Completed,
@@ -148,7 +215,8 @@ public enum UserSelectionState
 public sealed record VoiceExportRunContext(
     string RunId,
     VoiceCatalogContext CatalogContext,
-    DateTimeOffset StartedAtUtc)
+    DateTimeOffset StartedAtUtc,
+    string? SelectionFingerprint = null)
 {
     public DateTimeOffset StartedAtUtc { get; init; } = StartedAtUtc.ToUniversalTime();
 }

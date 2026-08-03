@@ -14,6 +14,10 @@ jobs:
     env:
       CI: true
       WECHATVOICE_SIGNED_RELEASE: true
+      # Keep the allowed publisher anchors independent from the generated
+      # update manifest and the package itself.
+      WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT: ${{ secrets.WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT }}
+      WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID: ${{ secrets.WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -67,6 +71,17 @@ jobs:
               -Version $version `
               -PublisherThumbprint $publisherFingerprint `
               -PackageUri $packageUri
+            $updateMetadata = Get-Content -LiteralPath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.update-manifest.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ([string]::IsNullOrWhiteSpace($env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT) -or
+                [string]::IsNullOrWhiteSpace($env:WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID)) {
+              throw 'Independent publisher anchors are not configured in repository secrets.'
+            }
+            $allowedThumbprint = $env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT.Replace(' ', '').ToLowerInvariant()
+            $allowedKeyId = $env:WECHATVOICE_ALLOWED_PUBLISHER_KEY_ID.Replace(' ', '').ToLowerInvariant()
+            if ($updateMetadata.publisherThumbprint -ne $allowedThumbprint -or
+                $updateMetadata.publisherKeyId -ne $allowedKeyId) {
+              throw 'The signing certificate does not match the independent release publisher anchors.'
+            }
           }
           finally { $certificate.Dispose() }
       - name: Install formal MSIX and run ordinary-user trust smoke
@@ -99,6 +114,7 @@ jobs:
               $rollbackDirectory = "$env:GITHUB_WORKSPACE\artifacts\rollback"
               New-Item -ItemType Directory -Path $rollbackDirectory -Force | Out-Null
               ./scripts/package-msix.ps1 -PublishDirectory "$env:GITHUB_WORKSPACE\artifacts\package" -OutputPath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -PfxPath "$env:WECHATVOICE_SIGNING_PFX_PATH" -PfxPassword "$env:WECHATVOICE_SIGNING_PFX_PASSWORD" -Version '0.0.0.0'
+              ./scripts/generate-update-manifest.ps1 -PackagePath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -OutputPath "$rollbackDirectory\update-manifest.json" -Version '0.0.0.0' -PublisherThumbprint $env:WECHATVOICE_ALLOWED_PUBLISHER_THUMBPRINT
               ./scripts/rollback-msix.ps1 -PackagePath "$rollbackDirectory\WeChatVoiceToolkit-win-x64.msix" -RunTrustSmoke
             } else {
               Write-Host 'No lower AppX version exists for rollback smoke at 0.0.0.0.'

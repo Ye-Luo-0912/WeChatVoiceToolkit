@@ -32,9 +32,10 @@ internal static class AtomicFileWriter
                 await JsonSerializer.SerializeAsync(stream, value, serializerOptions, cancellationToken)
                     .ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
             }
 
-            File.Move(temporaryPath, destinationPath, overwrite: true);
+            CommitTemporary(temporaryPath, destinationPath);
         }
         finally
         {
@@ -55,8 +56,14 @@ internal static class AtomicFileWriter
         var temporaryPath = CreateTemporarySibling(destinationPath);
         try
         {
-            await File.WriteAllTextAsync(temporaryPath, content, System.Text.Encoding.UTF8, cancellationToken).ConfigureAwait(false);
-            File.Move(temporaryPath, destinationPath, overwrite: true);
+            await using (var stream = OpenWrite(temporaryPath))
+            await using (var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false), BufferSize, leaveOpen: true))
+            {
+                await writer.WriteAsync(content.AsMemory(), cancellationToken).ConfigureAwait(false);
+                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
+            CommitTemporary(temporaryPath, destinationPath);
         }
         finally
         {
@@ -81,9 +88,10 @@ internal static class AtomicFileWriter
             {
                 await write(stream, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
             }
 
-            File.Move(temporaryPath, destinationPath, overwrite: true);
+            CommitTemporary(temporaryPath, destinationPath);
         }
         finally
         {
@@ -106,6 +114,20 @@ internal static class AtomicFileWriter
         FileShare.None,
         BufferSize,
         FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+    private static void CommitTemporary(string temporaryPath, string destinationPath)
+    {
+        if (!File.Exists(destinationPath))
+        {
+            File.Move(temporaryPath, destinationPath);
+            return;
+        }
+
+        // File.Replace is the explicit same-volume atomic replacement path.
+        // A null backup avoids leaving another sensitive copy beside the
+        // committed metadata file.
+        File.Replace(temporaryPath, destinationPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+    }
 
     private static void TryDelete(string path)
     {

@@ -186,7 +186,10 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
         }
         if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(Path.Combine(root, "runs"))) return [];
         var results = new List<ExportRunHistoryEntry>();
-        foreach (var path in Directory.EnumerateFiles(Path.Combine(root, "runs"), "*.manifest.json"))
+        foreach (var path in Directory.EnumerateFiles(Path.Combine(root, "runs"), "*", SearchOption.TopDirectoryOnly)
+                     .Where(path => path.EndsWith(".dataset.manifest.json", StringComparison.OrdinalIgnoreCase)
+                         || path.EndsWith(".manifest.json", StringComparison.OrdinalIgnoreCase)
+                             && !path.EndsWith(".manifest.private.json", StringComparison.OrdinalIgnoreCase)))
         {
             try
             {

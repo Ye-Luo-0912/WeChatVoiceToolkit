@@ -31,6 +31,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         : "请先完成一次 SILK 导出，再进入数据集整理";
 
     [ObservableProperty] private string? _exportDirectory;
+    [ObservableProperty] private string? _datasetOutputDirectory;
     [ObservableProperty] private string? _minimumDurationMsText;
     [ObservableProperty] private string? _maximumDurationMsText;
     [ObservableProperty] private string? _minimumByteLengthText;
@@ -39,6 +40,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     [ObservableProperty] private bool _includeUnknownDuration;
     [ObservableProperty] private string? _curationSummary;
     [ObservableProperty] private string? _profileSummary;
+    [ObservableProperty] private string? _buildSummary;
     [ObservableProperty] private long _selectedDurationMs;
     [ObservableProperty] private long _selectedByteLength;
     [ObservableProperty] private int _selectedCount;
@@ -96,6 +98,65 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
                 return profile;
             },
             saved => ProfileSummary = $"Selection Profile 已保存：{saved.SelectedItemIds.Count} 条，Fingerprint {Short(saved.SelectionFingerprint)}");
+    }
+
+    [RelayCommand]
+    private Task BuildDatasetAsync()
+    {
+        var exportDirectory = string.IsNullOrWhiteSpace(ExportDirectory)
+            ? Services.Project.ExportDirectory
+            : ExportDirectory;
+        var outputDirectory = DatasetOutputDirectory;
+        return RunHost.RunAsync<DatasetBuildResult>(
+            async (context, cancellationToken) => await Workflows.DatasetCuration.BuildDatasetAsync(
+                new DatasetBuildRequest(
+                    exportDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required."),
+                    OutputDirectory: string.IsNullOrWhiteSpace(outputDirectory) ? null : outputDirectory),
+                context,
+                cancellationToken).ConfigureAwait(false),
+            result =>
+            {
+                DatasetOutputDirectory = result.OutputDirectory;
+                BuildSummary = $"训练数据集已构建：{result.ItemCount} 条，{result.TotalDurationMs} ms，{result.TotalByteLength} bytes。";
+            });
+    }
+
+    [RelayCommand]
+    private Task VerifyDatasetAsync()
+    {
+        var exportDirectory = string.IsNullOrWhiteSpace(ExportDirectory)
+            ? Services.Project.ExportDirectory
+            : ExportDirectory;
+        var outputDirectory = DatasetOutputDirectory;
+        return RunHost.RunAsync<DatasetBuildVerificationResult>(
+            async (context, cancellationToken) => await Workflows.DatasetCuration.VerifyDatasetAsync(
+                new DatasetBuildRequest(
+                    exportDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required."),
+                    OutputDirectory: outputDirectory),
+                context,
+                cancellationToken).ConfigureAwait(false),
+            result => BuildSummary = result.IsValid
+                ? $"训练数据集验证通过：{result.ItemCount} 条。"
+                : $"训练数据集验证失败：{string.Join(", ", result.Issues.Select(static issue => issue.Code))}");
+    }
+
+    [RelayCommand]
+    private Task RepairDatasetAsync()
+    {
+        var exportDirectory = string.IsNullOrWhiteSpace(ExportDirectory)
+            ? Services.Project.ExportDirectory
+            : ExportDirectory;
+        var outputDirectory = DatasetOutputDirectory;
+        return RunHost.RunAsync<DatasetBuildVerificationResult>(
+            async (context, cancellationToken) => await Workflows.DatasetCuration.RepairDatasetAsync(
+                new DatasetBuildRepairRequest(
+                    exportDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required."),
+                    outputDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Dataset output directory is required.")),
+                context,
+                cancellationToken).ConfigureAwait(false),
+            result => BuildSummary = result.IsValid
+                ? $"训练数据集元数据已修复：{result.ItemCount} 条；SILK 未修改。"
+                : $"训练数据集修复失败：{string.Join(", ", result.Issues.Select(static issue => issue.Code))}");
     }
 
     [RelayCommand]

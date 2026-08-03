@@ -220,3 +220,83 @@ public sealed record DatasetCurationResult(
 {
     public string SelectionFingerprint => Profile.SelectionFingerprint;
 }
+
+public sealed record DatasetBuildRequest(
+    string ExportDirectory,
+    string? ProfilePath = null,
+    string? ManifestPath = null,
+    string? OutputDirectory = null);
+
+public sealed record DatasetBuildRepairRequest(
+    string ExportDirectory,
+    string OutputDirectory,
+    string? ProfilePath = null,
+    string? ManifestPath = null);
+
+public sealed record DatasetBuildVerificationIssue(
+    string Code,
+    string? RelativePath,
+    string Detail);
+
+public sealed record DatasetBuildVerificationResult(
+    string OutputDirectory,
+    bool IsValid,
+    string? SelectionFingerprint,
+    int ItemCount,
+    long TotalDurationMs,
+    long TotalByteLength,
+    IReadOnlyList<DatasetBuildVerificationIssue> Issues);
+
+public sealed record DatasetBuildResult(
+    string OutputDirectory,
+    string SelectionFingerprint,
+    string ManifestPath,
+    string DatasetManifestPath,
+    string DatasetCsvPath,
+    string BuildManifestPath,
+    int ItemCount,
+    long TotalDurationMs,
+    long TotalByteLength,
+    bool UsedHardLinks);
+
+public sealed record DatasetBuildManifest
+{
+    public DatasetBuildManifest(
+        string SelectionFingerprint,
+        string SourceManifestSha256,
+        string ProfileSha256,
+        DateTimeOffset BuiltAtUtc,
+        IReadOnlyList<DatasetBuildItem>? Items = null,
+        string? DatasetManifestSha256 = null,
+        string? DatasetCsvSha256 = null,
+        string? ProfileOutputSha256 = null,
+        string Format = "wechatvoice-dataset-build-v1")
+    {
+        this.SelectionFingerprint = SelectionFingerprint;
+        this.SourceManifestSha256 = SourceManifestSha256;
+        this.ProfileSha256 = ProfileSha256;
+        this.BuiltAtUtc = BuiltAtUtc.ToUniversalTime();
+        this.Items = (Items ?? Array.Empty<DatasetBuildItem>()).ToArray();
+        this.DatasetManifestSha256 = DatasetManifestSha256;
+        this.DatasetCsvSha256 = DatasetCsvSha256;
+        this.ProfileOutputSha256 = ProfileOutputSha256;
+        this.Format = Format;
+    }
+
+    public string SelectionFingerprint { get; }
+    public string SourceManifestSha256 { get; }
+    public string ProfileSha256 { get; }
+    public DateTimeOffset BuiltAtUtc { get; }
+    public IReadOnlyList<DatasetBuildItem> Items { get; }
+    public string? DatasetManifestSha256 { get; }
+    public string? DatasetCsvSha256 { get; }
+    public string? ProfileOutputSha256 { get; }
+    public string Format { get; }
+}
+
+public sealed record DatasetBuildItem(
+    string ItemId,
+    string RelativeAudioPath,
+    string Sha256,
+    long ByteLength,
+    long? DurationMs);

@@ -36,7 +36,9 @@ Missing/VerifiedExisting/Conflict states, so a later run can add a missing WAV
 without rewriting verified SILK. Physical paths use only the stable-key hash,
 not message time. Run history is appended and flushed as JSONL events under
 `runs/`; `processing-completed` is distinct from `manifest-committed`, and
-`latest.manifest.json` is the only rolling pointer. A truncated final Journal
+`latest.metadata-commit.json` is the only rolling metadata pointer. The public
+`dataset.manifest.json` and private `manifest.private.json` are separate
+products. A truncated final Journal
 line is ignored by `voice export recover`.
 
 `dataset probe` discovers database files, pairs message/media shards, records

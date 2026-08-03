@@ -138,7 +138,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
             Services.Project.ExportDirectory = outputDirectory;
             ManifestPath = string.IsNullOrWhiteSpace(outputDirectory)
                 ? null
-                : Path.Combine(Path.GetFullPath(outputDirectory), "runs", result.Manifest.RunId + ".manifest.json");
+                : Path.Combine(Path.GetFullPath(outputDirectory), "runs", result.Manifest.RunId + ".dataset.manifest.json");
             if (!string.IsNullOrWhiteSpace(outputDirectory)
                 && !string.IsNullOrWhiteSpace(Services.Project.WorkspacePath))
             {

@@ -229,7 +229,7 @@ internal static partial class CliApplication
 
         var verifyExportCommand = new Command("verify", "Verify export manifests, Journal commit, CSV, index, and SILK artifacts without modifying them.");
         var verifyOutputOption = new Option<string>("--output") { Description = "Export root directory.", Required = true };
-        var verifyRunIdOption = new Option<string?>("--run-id") { Description = "Optional run ID; defaults to latest.manifest.json." };
+        var verifyRunIdOption = new Option<string?>("--run-id") { Description = "Optional run ID; defaults to the latest private manifest." };
         verifyExportCommand.Options.Add(verifyOutputOption);
         verifyExportCommand.Options.Add(verifyRunIdOption);
         verifyExportCommand.SetAction(async (parseResult, cancellationToken) =>

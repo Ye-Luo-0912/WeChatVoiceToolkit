@@ -1,6 +1,7 @@
 using System.CommandLine;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Sqlite;
+using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Cli;
 
@@ -71,6 +72,120 @@ internal static partial class CliApplication
         });
 
         datasetCommand.Subcommands.Add(probeCommand);
+
+        var buildCommand = new Command("build", "Build a derived training dataset from a verified export selection profile.");
+        var exportRootOption = new Option<string>("--export") { Description = "Export root containing manifest.private.json and selection-profile.json.", Required = true };
+        var profileOption = new Option<string?>("--profile") { Description = "Optional selection-profile.json path." };
+        var manifestOption = new Option<string?>("--manifest") { Description = "Optional private export manifest path." };
+        var outputOption = new Option<string?>("--output") { Description = "Optional curated dataset output directory." };
+        buildCommand.Options.Add(exportRootOption);
+        buildCommand.Options.Add(profileOption);
+        buildCommand.Options.Add(manifestOption);
+        buildCommand.Options.Add(outputOption);
+        buildCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            try
+            {
+                var root = CreateRoot();
+                var result = await root.DatasetCuration.BuildDatasetAsync(
+                    new DatasetBuildRequest(
+                        parseResult.GetValue(exportRootOption)!,
+                        parseResult.GetValue(profileOption),
+                        parseResult.GetValue(manifestOption),
+                        parseResult.GetValue(outputOption)),
+                    new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return 0;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Dataset build was cancelled.");
+                return 130;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+        datasetCommand.Subcommands.Add(buildCommand);
+
+        var verifyCommand = new Command("verify", "Verify a curated dataset's audio hashes and derived metadata without modifying it.");
+        var verifyExportOption = new Option<string>("--export") { Description = "Export root containing the private manifest and selection profile.", Required = true };
+        var verifyOutputOption = new Option<string>("--output") { Description = "Curated dataset output directory.", Required = true };
+        var verifyProfileOption = new Option<string?>("--profile") { Description = "Optional selection-profile.json path." };
+        var verifyManifestOption = new Option<string?>("--manifest") { Description = "Optional private export manifest path." };
+        verifyCommand.Options.Add(verifyExportOption);
+        verifyCommand.Options.Add(verifyOutputOption);
+        verifyCommand.Options.Add(verifyProfileOption);
+        verifyCommand.Options.Add(verifyManifestOption);
+        verifyCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            try
+            {
+                var root = CreateRoot();
+                var result = await root.DatasetCuration.VerifyDatasetAsync(
+                    new DatasetBuildRequest(
+                        parseResult.GetValue(verifyExportOption)!,
+                        parseResult.GetValue(verifyProfileOption),
+                        parseResult.GetValue(verifyManifestOption),
+                        parseResult.GetValue(verifyOutputOption)),
+                    new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return result.IsValid ? 0 : 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Dataset verification was cancelled.");
+                return 130;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+        datasetCommand.Subcommands.Add(verifyCommand);
+
+        var repairCommand = new Command("repair", "Regenerate curated dataset metadata after verifying existing audio; never changes SILK files.");
+        var repairExportOption = new Option<string>("--export") { Description = "Export root containing the private manifest and selection profile.", Required = true };
+        var repairOutputOption = new Option<string>("--output") { Description = "Curated dataset output directory.", Required = true };
+        var repairProfileOption = new Option<string?>("--profile") { Description = "Optional selection-profile.json path." };
+        var repairManifestOption = new Option<string?>("--manifest") { Description = "Optional private export manifest path." };
+        repairCommand.Options.Add(repairExportOption);
+        repairCommand.Options.Add(repairOutputOption);
+        repairCommand.Options.Add(repairProfileOption);
+        repairCommand.Options.Add(repairManifestOption);
+        repairCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            try
+            {
+                var root = CreateRoot();
+                var result = await root.DatasetCuration.RepairDatasetAsync(
+                    new DatasetBuildRepairRequest(
+                        parseResult.GetValue(repairExportOption)!,
+                        parseResult.GetValue(repairOutputOption)!,
+                        parseResult.GetValue(repairProfileOption),
+                        parseResult.GetValue(repairManifestOption)),
+                    new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return result.IsValid ? 0 : 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Dataset repair was cancelled.");
+                return 130;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+        datasetCommand.Subcommands.Add(repairCommand);
         return datasetCommand;
     }
 

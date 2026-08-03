@@ -24,6 +24,47 @@ if ($publisherFingerprint -notmatch '^[0-9a-f]{64}$') {
     throw 'PublisherThumbprint must be the 64-character SHA-256 fingerprint of the signer certificate.'
 }
 
+. (Join-Path $PSScriptRoot 'publisher-fingerprint.ps1')
+$signature = Get-AuthenticodeSignature -LiteralPath $package
+if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
+    throw "The MSIX Authenticode signature is not valid: $($signature.Status)."
+}
+$actualPublisherFingerprint = Get-CertificateSha256Fingerprint -Certificate $signature.SignerCertificate
+if ($actualPublisherFingerprint -ne $publisherFingerprint) {
+    throw 'PublisherThumbprint does not match the MSIX signer certificate.'
+}
+$publisherKeyId = Get-CertificatePublicKeyId -Certificate $signature.SignerCertificate
+
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [IO.Compression.ZipFile]::OpenRead($package)
+try {
+    $manifestEntry = $archive.GetEntry('AppxManifest.xml')
+    if ($null -eq $manifestEntry) { throw 'The MSIX has no AppxManifest.xml.' }
+    $reader = [IO.StreamReader]::new($manifestEntry.Open())
+    try { [xml]$appx = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    $identity = $appx.Package.Identity
+    $application = $appx.Package.Applications.Application
+    if ($null -eq $identity -or $null -eq $application) { throw 'The MSIX AppxManifest identity is incomplete.' }
+    $packageName = [string]$identity.Name
+    $packagePublisher = [string]$identity.Publisher
+    $publisherId = Get-AppxPublisherId -Publisher $packagePublisher
+    $packageVersion = [string]$identity.Version
+    $packageArchitecture = [string]$identity.ProcessorArchitecture
+    $applicationExecutable = [string]$application.Executable
+    if ([string]::IsNullOrWhiteSpace($packageName) -or [string]::IsNullOrWhiteSpace($packagePublisher) -or [string]::IsNullOrWhiteSpace($applicationExecutable)) {
+        throw 'The MSIX AppxManifest identity or executable is empty.'
+    }
+}
+finally { $archive.Dispose() }
+
+if ($packageVersion -ne $Version) {
+    throw "The requested update version $Version does not match the MSIX Identity Version $packageVersion."
+}
+if ($packageArchitecture -ne 'x64') {
+    throw "The release installer requires an x64 MSIX package; found architecture $packageArchitecture."
+}
+
 $parsedVersion = $null
 if (-not [version]::TryParse($Version, [ref]$parsedVersion)) {
     throw "Version is not a valid four-part Windows package version: $Version"
@@ -38,6 +79,14 @@ $manifest = [ordered]@{
     packageSha256 = $packageHash
     packageByteLength = (Get-Item -LiteralPath $package).Length
     publisherThumbprint = $publisherFingerprint
+    publisherKeyId = $publisherKeyId
+    identityName = $packageName
+    identityPublisher = $packagePublisher
+    publisherId = $publisherId
+    packageFamilyName = $packageName + '_' + $publisherId
+    identityVersion = $packageVersion
+    identityArchitecture = $packageArchitecture
+    applicationExecutable = $applicationExecutable
     packageUri = if ([string]::IsNullOrWhiteSpace($PackageUri)) { $null } else { $PackageUri }
     generatedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
 }

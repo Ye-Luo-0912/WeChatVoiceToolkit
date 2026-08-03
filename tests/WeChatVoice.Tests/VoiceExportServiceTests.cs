@@ -43,7 +43,7 @@ public sealed class VoiceExportServiceTests
         Assert.Equal(UserSelectionState.NotSelected, entry.UserSelectionState);
         Assert.Equal(0, manifest.TotalTrainingDurationMs);
         Assert.Equal(0, manifest.TrainingEntryCount);
-        var csvPath = Path.Combine(temporary.GetPath("export"), "manifest.csv");
+        var csvPath = Path.Combine(temporary.GetPath("export"), "dataset.csv");
         Assert.True(File.Exists(csvPath));
         var csv = await File.ReadAllTextAsync(csvPath);
         Assert.Contains("duration_ms", csv, StringComparison.Ordinal);
@@ -118,7 +118,7 @@ public sealed class VoiceExportServiceTests
         Assert.Equal(payload, await File.ReadAllBytesAsync(Path.Combine(exportRoot, entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar))));
         Assert.Single(manifest.Failures, failure => failure.MessageId == "voice-1" && failure.Stage == "decode");
         Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.wav", SearchOption.AllDirectories));
-        Assert.True(File.Exists(Path.Combine(exportRoot, "latest.manifest.json")));
+        Assert.True(File.Exists(Path.Combine(exportRoot, "dataset.manifest.json")));
         var journalLines = await File.ReadAllLinesAsync(Assert.Single(Directory.EnumerateFiles(Path.Combine(exportRoot, "runs"), "*.jsonl")));
         var events = journalLines.Select(line => JsonDocument.Parse(line).RootElement.GetProperty("event").GetString()!).ToArray();
         Assert.Equal(["run-started", "item-failed", "item-committed", "processing-completed", "manifest-committed"], events);
