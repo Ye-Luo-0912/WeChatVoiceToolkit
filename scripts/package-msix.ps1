@@ -9,6 +9,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'release-identity.ps1')
+$releaseIdentity = Get-WeChatVoiceReleaseIdentity
 
 function Assert-GeneratedPath([string]$path, [string]$description) {
     if ([string]::IsNullOrWhiteSpace($path)) { throw "$description is required." }
@@ -109,7 +111,7 @@ try {
          xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
          xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
          IgnorableNamespaces="uap rescap">
-  <Identity Name="WeChatVoiceToolkit" Publisher="$(Escape-Xml $publisher)" Version="$Version" />
+  <Identity Name="$($releaseIdentity.Name)" Publisher="$(Escape-Xml $publisher)" Version="$Version" ProcessorArchitecture="$($releaseIdentity.Architecture)" />
   <Properties>
     <DisplayName>WeChatVoiceToolkit</DisplayName>
     <PublisherDisplayName>WeChatVoiceToolkit</PublisherDisplayName>
@@ -120,7 +122,7 @@ try {
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
   <Applications>
-    <Application Id="App" Executable="WeChatVoice.Desktop.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="App" Executable="$($releaseIdentity.ApplicationExecutable)" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements AppListEntry="default" DisplayName="WeChatVoiceToolkit" Description="WeChat voice export toolkit" BackgroundColor="#FFFFFF" Square44x44Logo="Assets\Square44x44Logo.png" Square150x150Logo="Assets\Square150x150Logo.png" />
     </Application>
   </Applications>

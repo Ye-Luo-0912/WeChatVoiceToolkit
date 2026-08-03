@@ -10,6 +10,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'release-identity.ps1')
+$releaseIdentity = Get-WeChatVoiceReleaseIdentity
 . (Join-Path $PSScriptRoot 'publisher-fingerprint.ps1')
 $package = [IO.Path]::GetFullPath($PackagePath.Trim().Trim('"'))
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "The MSIX package does not exist: $package" }
@@ -18,6 +20,7 @@ if ([IO.Path]::GetExtension($package) -ne '.msix') { throw 'PackagePath must poi
 if ([string]::IsNullOrWhiteSpace($AllowedPublisherThumbprint) -or [string]::IsNullOrWhiteSpace($AllowedPublisherKeyId)) {
     throw 'An independent allowed publisher thumbprint and public-key ID are required.'
 }
+Assert-WeChatVoicePackageName $PackageName
 . (Join-Path $PSScriptRoot 'publisher-fingerprint.ps1')
 
 function Read-AppxIdentity([string]$path) {
@@ -57,8 +60,8 @@ function Read-AppxIdentity([string]$path) {
 }
 
 $packageIdentity = Read-AppxIdentity $package
+Assert-WeChatVoiceReleaseIdentity $packageIdentity
 if ($packageIdentity.Name -ne $PackageName) { throw "The MSIX Identity Name does not match PackageName: $($packageIdentity.Name)" }
-if ($packageIdentity.Architecture -ne 'x64') { throw "The MSIX architecture is not x64: $($packageIdentity.Architecture)" }
 $parsedPackageVersion = $null
 if (-not [version]::TryParse($packageIdentity.Version, [ref]$parsedPackageVersion)) { throw 'The MSIX Identity Version is invalid.' }
 

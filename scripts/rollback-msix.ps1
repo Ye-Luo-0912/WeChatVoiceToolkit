@@ -6,6 +6,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'release-identity.ps1')
+Assert-WeChatVoicePackageName $PackageName
 $installed = @(Get-AppxPackage -Name $PackageName | Sort-Object Version -Descending | Select-Object -First 1)
 if ($installed.Count -ne 1) { throw "The package '$PackageName' is not installed; rollback has no current version." }
 

@@ -75,6 +75,10 @@ unless the user explicitly opts into the development policy.
   signed layout, signs the MSIX with the same certificate, and installs the
   Broker/Worker under a Windows protected directory. The ZIP produced for
   diagnostics is not a formal Broker distribution.
+- The formal AppX identity is fixed to `WeChatVoiceToolkit`, `x64`, and
+  `WeChatVoice.Desktop.exe`. Release automation rejects caller-supplied identity
+  overrides. The allowed publisher certificate thumbprint and public-key ID
+  remain protected release inputs; they are never guessed from an artifact.
 - `scripts/generate-spdx.ps1` invokes the repository-pinned Microsoft SBOM Tool
   (`microsoft.sbom.dotnettool` 4.1.5); the checked-in `sbom.spdx.json` is an
   official SPDX document generated from the final package drop, not a custom

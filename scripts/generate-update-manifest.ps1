@@ -8,6 +8,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'release-identity.ps1')
+$releaseIdentity = Get-WeChatVoiceReleaseIdentity
 
 $package = [IO.Path]::GetFullPath($PackagePath.Trim().Trim('"'))
 $output = [IO.Path]::GetFullPath($OutputPath.Trim().Trim('"'))
@@ -57,6 +59,12 @@ try {
     }
 }
 finally { $archive.Dispose() }
+
+Assert-WeChatVoiceReleaseIdentity ([pscustomobject]@{
+    Name = $packageName
+    Architecture = $packageArchitecture
+    Executable = $applicationExecutable
+})
 
 if ($packageVersion -ne $Version) {
     throw "The requested update version $Version does not match the MSIX Identity Version $packageVersion."

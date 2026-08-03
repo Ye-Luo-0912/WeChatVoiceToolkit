@@ -159,6 +159,11 @@ PublisherId/PackageFamilyName, architecture, executable, version, length, and
 SHA-256 before installation; the installer also requires the independently
 pinned release certificate thumbprint and public-key ID.
 
+Formal packages use the fixed `WeChatVoiceToolkit` / `x64` /
+`WeChatVoice.Desktop.exe` AppX identity. Publisher trust is supplied by the
+protected release policy and is never inferred from a package supplied by a
+caller.
+
 Curated training datasets can be checked or repaired without changing the
 original export SILK files:
 
