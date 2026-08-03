@@ -235,7 +235,7 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
         => string.Equals(artifact.LogicalRole, role, StringComparison.OrdinalIgnoreCase);
 }
 
-internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
+internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog, IVoiceCatalogQueryCapabilities
 {
     private const int VoiceQueryBatchSize = 128;
     private readonly VerifiedLocalWorkspace _workspace;
@@ -272,6 +272,8 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
     }
 
     public VoiceCatalogContext Context { get; }
+
+    public bool SupportsPayloadByteLengthFiltering => true;
 
     public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(
         ContactQuery query,
@@ -344,13 +346,18 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         // materialized. The preflight keeps memory bounded (one row per shard)
         // and prevents a late group-chat speaker from allowing an earlier
         // batch to be written to an export directory.
-        if (query.Direction is null or VoiceDirection.Incoming)
+        var messageQuery = query.HasPayloadSizeFilter
+            ? query.WithMaximumResults(null)
+            : query;
+
+        if (messageQuery.Direction is null or VoiceDirection.Incoming)
         {
-            await EnsureSingleIncomingSpeakerAsync(username, query, cancellationToken).ConfigureAwait(false);
+            await EnsureSingleIncomingSpeakerAsync(username, messageQuery, cancellationToken).ConfigureAwait(false);
         }
 
         var batch = new List<MessageRow>(VoiceQueryBatchSize);
-        await foreach (var row in MergeMessageRowsAsync(_messages, username, query, cancellationToken).ConfigureAwait(false))
+        var emitted = 0;
+        await foreach (var row in MergeMessageRowsAsync(_messages, username, messageQuery, cancellationToken).ConfigureAwait(false))
         {
             if (row.OriginSource == 2
                 && !string.Equals(row.SpeakerId ?? username, username, StringComparison.Ordinal))
@@ -361,9 +368,14 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             batch.Add(row);
             if (batch.Count >= VoiceQueryBatchSize)
             {
-                await foreach (var record in MaterializeVoiceBatchAsync(batch, username, query.DeepScan, cancellationToken).ConfigureAwait(false))
+                await foreach (var record in MaterializeVoiceBatchAsync(batch, username, query, cancellationToken).ConfigureAwait(false))
                 {
                     yield return record;
+                    emitted++;
+                    if (query.MaximumResults is not null && emitted >= query.MaximumResults.Value)
+                    {
+                        yield break;
+                    }
                 }
 
                 batch.Clear();
@@ -372,9 +384,14 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
 
         if (batch.Count > 0)
         {
-            await foreach (var record in MaterializeVoiceBatchAsync(batch, username, query.DeepScan, cancellationToken).ConfigureAwait(false))
+            await foreach (var record in MaterializeVoiceBatchAsync(batch, username, query, cancellationToken).ConfigureAwait(false))
             {
                 yield return record;
+                emitted++;
+                if (query.MaximumResults is not null && emitted >= query.MaximumResults.Value)
+                {
+                    yield break;
+                }
             }
         }
     }
@@ -402,18 +419,27 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
     private async IAsyncEnumerable<VoiceRecord> MaterializeVoiceBatchAsync(
         IReadOnlyList<MessageRow> messages,
         string username,
-        bool deepScan,
+        VoiceQuery query,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var requestedKeys = messages
             .Select(static message => new AssociationKey(message.LocalId, message.ServerId, message.CreateTime))
             .ToHashSet();
-        var payloads = await ReadMediaRowsAsync(username, requestedKeys, deepScan, cancellationToken).ConfigureAwait(false);
+        var payloads = await ReadMediaRowsAsync(username, requestedKeys, query, cancellationToken).ConfigureAwait(false);
         foreach (var message in messages)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var key = new AssociationKey(message.LocalId, message.ServerId, message.CreateTime);
             payloads.TryGetValue(key, out var payload);
+            // A size-bounded query is defined over linked media rows. A
+            // missing association cannot satisfy the size predicate, even
+            // though it is still represented as Missing for an unfiltered
+            // diagnostic scan.
+            if (query.HasPayloadSizeFilter
+                && (payload is null || payload.SizeFilteredOut))
+            {
+                continue;
+            }
             var direction = message.OriginSource switch
             {
                 2 => VoiceDirection.Incoming,
@@ -586,7 +612,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
     private async Task<IReadOnlyDictionary<AssociationKey, MediaRow>> ReadMediaRowsAsync(
         string username,
         IReadOnlyCollection<AssociationKey> requestedKeys,
-        bool deepScan,
+        VoiceQuery query,
         CancellationToken cancellationToken)
     {
         var result = new Dictionary<AssociationKey, MediaRow>();
@@ -613,9 +639,18 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
                 command.Parameters.AddWithValue($"$time{index}", batch[index].CreateTime);
             }
 
+            var payloadSizePredicate = BuildPayloadSizePredicate(query, command);
+            // Keep the source BLOB as a direct SQLite column expression so
+            // SequentialAccess can expose it as a stream. The SQL predicate
+            // still decides whether the BLOB is opened below.
+            const string payloadExpression = "v.voice_data";
+            var payloadMatchExpression = payloadSizePredicate is null
+                ? "1"
+                : $"CASE WHEN {payloadSizePredicate} THEN 1 ELSE 0 END";
             command.CommandText = $"""
                 WITH requested(local_id, server_id, create_time) AS (VALUES {values})
-                SELECT v.rowid, v.local_id, v.svr_id, v.create_time, length(v.voice_data), v.voice_data
+                SELECT v.rowid, v.local_id, v.svr_id, v.create_time, length(v.voice_data),
+                       {payloadExpression}, {payloadMatchExpression}
                 FROM VoiceInfo AS v
                 INNER JOIN Name2Id AS n ON n.rowid = v.chat_name_id
                 INNER JOIN requested AS r
@@ -629,7 +664,7 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 var key = new AssociationKey(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
-                var payload = await ReadMediaPayloadAsync(reader, deepScan, cancellationToken).ConfigureAwait(false);
+                var payload = await ReadMediaPayloadAsync(reader, query.DeepScan, cancellationToken).ConfigureAwait(false);
                 AddMediaRow(result, key, payload);
             }
         }
@@ -643,12 +678,17 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         CancellationToken cancellationToken)
     {
         var rowId = reader.GetInt64(0);
-        if (reader.IsDBNull(4) || reader.IsDBNull(5) || reader.GetInt64(4) == 0)
+        var length = reader.IsDBNull(4) ? 0 : reader.GetInt64(4);
+        if (!reader.IsDBNull(6) && reader.GetInt64(6) == 0)
+        {
+            return new MediaRow(rowId, length, null, VoicePayloadState.Linked, SizeFilteredOut: true);
+        }
+
+        if (reader.IsDBNull(4) || reader.IsDBNull(5) || length == 0)
         {
             return new MediaRow(rowId, 0, null, VoicePayloadState.Empty);
         }
 
-        var length = reader.GetInt64(4);
         await using var stream = reader.GetStream(5);
         var prefix = new byte[SilkHeader.MaxLength];
         var prefixLength = 0;
@@ -788,7 +828,30 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
         long? SenderRowId = null,
         string? SpeakerId = null);
 
-    private sealed record MediaRow(long RowId, long ByteLength, string? Sha256, VoicePayloadState State);
+    private static string? BuildPayloadSizePredicate(VoiceQuery query, SqliteCommand command)
+    {
+        var predicates = new List<string>(2);
+        if (query.MinimumPayloadBytes is not null)
+        {
+            predicates.Add("length(v.voice_data) >= $minimumPayloadBytes");
+            command.Parameters.AddWithValue("$minimumPayloadBytes", query.MinimumPayloadBytes.Value);
+        }
+
+        if (query.MaximumPayloadBytes is not null)
+        {
+            predicates.Add("length(v.voice_data) <= $maximumPayloadBytes");
+            command.Parameters.AddWithValue("$maximumPayloadBytes", query.MaximumPayloadBytes.Value);
+        }
+
+        return predicates.Count == 0 ? null : string.Join(" AND ", predicates);
+    }
+
+    private sealed record MediaRow(
+        long RowId,
+        long ByteLength,
+        string? Sha256,
+        VoicePayloadState State,
+        bool SizeFilteredOut = false);
 
     /// <summary>
     /// Merges ordered shard readers into one global order. Only one current

@@ -33,6 +33,8 @@ public sealed class FakeBackend
 
     public int OpenPayloadCount { get; private set; }
 
+    public int QueryVoiceCount { get; private set; }
+
     public VoiceQuery? LastVoiceQuery { get; private set; }
 
     /// <summary>Replaces the canned voice set (used to make failures retryable).</summary>
@@ -69,6 +71,7 @@ public sealed class FakeBackend
 
     public IAsyncEnumerable<VoiceRecord> QueryVoicesAsync(VoiceQuery query, CancellationToken cancellationToken)
     {
+        QueryVoiceCount++;
         LastVoiceQuery = query;
         OnQueryCancellation?.Invoke(cancellationToken);
         if (_voicesFactory is not null)

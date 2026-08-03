@@ -230,7 +230,7 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
     }
 
     [Fact]
-    public async Task Formal_export_rejects_when_the_verified_result_set_fingerprint_changes()
+    public async Task Formal_export_uses_the_prepared_records_without_a_second_catalog_query()
     {
         _backend.Fill(FakeBackend.Linked("planned", 1_700_000_000, VoiceDirection.Incoming));
         var scan = await new VoiceScanWorkflow(_opener, new ContactResolver()).RunAsync(
@@ -238,19 +238,19 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
             new WorkflowContext(new TestConfirmation()),
             CancellationToken.None);
         Assert.NotNull(scan.Selection);
+        Assert.Equal(1, _backend.QueryVoiceCount);
 
         _backend.Fill(FakeBackend.Linked("changed", 1_700_000_001, VoiceDirection.Incoming));
         var context = new WorkflowContext(new TestConfirmation());
-        var exception = await Assert.ThrowsAsync<AppFailureException>(() =>
-            new VoiceExportWorkflow(_opener, new ContactResolver()).RunAsync(
-                scan.Selection!,
-                new ExportDestination(Path.Combine(_root, "changed-export")),
-                context,
-                CancellationToken.None));
+        var result = await new VoiceExportWorkflow(_opener, new ContactResolver()).RunAsync(
+            scan.Selection!,
+            new ExportDestination(Path.Combine(_root, "changed-export")),
+            context,
+            CancellationToken.None);
 
-        Assert.Equal(ErrorCode.SelectionPlanMismatch, exception.Code);
-        Assert.Equal(WorkflowState.Failed, context.StateMachine.State);
-        Assert.False(Directory.Exists(Path.Combine(_root, "changed-export", "original")));
+        Assert.Equal(1, _backend.QueryVoiceCount);
+        Assert.Equal("planned", Assert.Single(result.Manifest.Entries).MessageId);
+        Assert.Equal(WorkflowState.Completed, context.StateMachine.State);
     }
 
     [Fact]

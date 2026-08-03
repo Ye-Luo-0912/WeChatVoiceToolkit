@@ -94,6 +94,44 @@ public sealed class DecoderVoiceDurationResolverTests
         Assert.Equal(987, result);
         Assert.Equal(0, decoder.Calls);
     }
+
+    [Fact]
+    public async Task Cached_resolver_hashes_and_stages_the_payload_in_one_catalog_read()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        await using var cache = new JsonlVoiceDurationCache(
+            temporary.GetPath("duration-cache.jsonl"),
+            "stream-decoder-v1");
+        var decoder = new StreamingDurationResolver();
+        var catalog = new FakeCatalog();
+        var payload = "#!SILK_V3"u8.ToArray();
+        var record = new VoiceRecord(
+            "message",
+            "contact",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "1"),
+            AdapterId: "adapter",
+            AccountId: "account",
+            DataSetId: "dataset",
+            AdapterVersion: "1",
+            PayloadByteLength: payload.Length);
+
+        var duration = await new CachedVoiceDurationResolver(decoder, cache).ResolveAsync(
+            catalog,
+            record,
+            CancellationToken.None);
+
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+        Assert.Equal(1234, duration);
+        Assert.Equal(1, catalog.OpenPayloadCount);
+        Assert.Equal(1, decoder.StreamCalls);
+        Assert.Equal(payload.Length, decoder.BytesRead);
+        Assert.Equal(1234, await cache.TryGetAsync(
+            new VoiceDurationCacheKey(record.SourceStableKey!, hash, "stream-decoder-v1"),
+            CancellationToken.None));
+    }
+
     [Fact]
     public async Task Resolver_reads_duration_from_valid_pcm_wav_without_persisting_output()
     {
@@ -131,11 +169,16 @@ public sealed class DecoderVoiceDurationResolverTests
 
     private sealed class FakeCatalog : IVoiceCatalog
     {
+        public int OpenPayloadCount { get; private set; }
+
         public VoiceCatalogContext Context { get; } = new("dataset", "adapter", "1", "account", ["fingerprint"]);
         public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(ContactQuery query, [EnumeratorCancellation] CancellationToken cancellationToken) { await Task.CompletedTask; yield break; }
         public async IAsyncEnumerable<VoiceRecord> QueryVoicesAsync(VoiceQuery query, [EnumeratorCancellation] CancellationToken cancellationToken) { await Task.CompletedTask; yield break; }
         public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
-            => ValueTask.FromResult<Stream>(new MemoryStream("#!SILK_V3"u8.ToArray()));
+        {
+            OpenPayloadCount++;
+            return ValueTask.FromResult<Stream>(new MemoryStream("#!SILK_V3"u8.ToArray()));
+        }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -149,6 +192,30 @@ public sealed class DecoderVoiceDurationResolverTests
         {
             Calls++;
             return Task.FromResult<long?>(1);
+        }
+    }
+
+    private sealed class StreamingDurationResolver : IVersionedVoiceDurationResolver, IVoiceStreamDurationResolver
+    {
+        public int StreamCalls { get; private set; }
+        public int BytesRead { get; private set; }
+        public string DecoderVersion => "stream-decoder-v1";
+
+        public Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("The catalog-based resolver path should not be used.");
+
+        public async Task<long?> ResolveAsync(Stream payload, CancellationToken cancellationToken)
+        {
+            StreamCalls++;
+            var buffer = new byte[32];
+            while (true)
+            {
+                var read = await payload.ReadAsync(buffer, cancellationToken);
+                if (read == 0) break;
+                BytesRead += read;
+            }
+
+            return 1234;
         }
     }
 }

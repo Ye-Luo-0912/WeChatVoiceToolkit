@@ -10,7 +10,7 @@ namespace WeChatVoice.Infrastructure.Audio;
 /// A single resolver instance serializes decoder calls, avoiding unbounded
 /// process and temporary-file pressure during a scan.
 /// </summary>
-public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolver, IVoiceDecoderIdentity, IAsyncDisposable
+public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolver, IVoiceDecoderIdentity, IVoiceStreamDurationResolver, IAsyncDisposable
 {
     public const string CurrentDecoderVersion = "silk-wav-decoder-v1";
 
@@ -33,6 +33,18 @@ public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolv
         if (record.PayloadState != VoicePayloadState.Linked || record.PayloadLocator is null)
             return null;
 
+        await using var input = await catalog.OpenPayloadAsync(record.PayloadLocator, cancellationToken).ConfigureAwait(false);
+        return await ResolveAsync(input, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<long?> ResolveAsync(Stream payload, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        if (!payload.CanRead)
+        {
+            throw new InvalidDataException("The duration resolver requires a readable payload stream.");
+        }
+
         await _decoderGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var directory = Path.Combine(Path.GetTempPath(), "wechatvoice-duration");
         var token = Guid.NewGuid().ToString("N");
@@ -40,10 +52,9 @@ public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolv
         try
         {
             Directory.CreateDirectory(directory);
-            await using var input = await catalog.OpenPayloadAsync(record.PayloadLocator, cancellationToken).ConfigureAwait(false);
             await using (var output = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                await _decoder.DecodeAsync(input, output, cancellationToken).ConfigureAwait(false);
+                await _decoder.DecodeAsync(payload, output, cancellationToken).ConfigureAwait(false);
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
             return await WavFileValidator.TryReadDurationMsAsync(outputPath, cancellationToken).ConfigureAwait(false);

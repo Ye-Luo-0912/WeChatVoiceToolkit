@@ -64,6 +64,33 @@ internal static class AtomicFileWriter
         }
     }
 
+    internal static async Task WriteStreamAsync(
+        string destinationPath,
+        Func<Stream, CancellationToken, Task> write,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+        ArgumentNullException.ThrowIfNull(write);
+        var directory = Path.GetDirectoryName(destinationPath)
+            ?? throw new ArgumentException("The destination path must include a directory.", nameof(destinationPath));
+        Directory.CreateDirectory(directory);
+        var temporaryPath = CreateTemporarySibling(destinationPath);
+        try
+        {
+            await using (var stream = OpenWrite(temporaryPath))
+            {
+                await write(stream, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            File.Move(temporaryPath, destinationPath, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(temporaryPath);
+        }
+    }
+
     internal static string CreateTemporarySibling(string destinationPath)
     {
         var directory = Path.GetDirectoryName(destinationPath)

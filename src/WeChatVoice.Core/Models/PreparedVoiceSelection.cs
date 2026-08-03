@@ -40,7 +40,8 @@ public sealed record PreparedVoiceSelection
         long TotalPayloadBytes,
         string SelectionEngineVersion,
         string DurationResolverVersion,
-        VoiceScanReport ScanReport)
+        VoiceScanReport ScanReport,
+        IReadOnlyList<VoiceRecord>? Records = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(WorkspaceDocumentPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(WorkspaceId);
@@ -103,6 +104,8 @@ public sealed record PreparedVoiceSelection
         this.SelectionEngineVersion = SelectionEngineVersion;
         this.DurationResolverVersion = DurationResolverVersion;
         this.ScanReport = ScanReport;
+        this.Records = new System.Collections.ObjectModel.ReadOnlyCollection<VoiceRecord>(
+            (Records ?? Array.Empty<VoiceRecord>()).ToArray());
     }
 
     public string WorkspaceDocumentPath { get; }
@@ -132,6 +135,16 @@ public sealed record PreparedVoiceSelection
     public string DurationResolverVersion { get; }
     public VoiceScanReport ScanReport { get; }
 
+    /// <summary>
+    /// The exact metadata rows emitted by the verified catalog during the scan.
+    /// A formal export consumes these records directly and opens only their
+    /// payload locators; it must not re-query the catalog. The list is frozen
+    /// so the query and result-set identity cannot drift in memory.
+    /// </summary>
+    public IReadOnlyList<VoiceRecord> Records { get; }
+
+    public bool HasPreparedRecords => ResultCount == 0 || Records.Count > 0;
+
     /// <summary>Compatibility name used by older Desktop presentation code.</summary>
     public string PlanFingerprint => QueryFingerprint;
 
@@ -142,7 +155,8 @@ public sealed record PreparedVoiceSelection
         ContactRecord contact,
         VoiceQuery query,
         VoiceScanReport report,
-        string durationResolverVersion)
+        string durationResolverVersion,
+        IReadOnlyList<VoiceRecord>? records = null)
     {
         ArgumentNullException.ThrowIfNull(workspace);
         ArgumentNullException.ThrowIfNull(catalogContext);
@@ -189,7 +203,8 @@ public sealed record PreparedVoiceSelection
             report.TotalPayloadBytes,
             CurrentSelectionEngineVersion,
             durationResolverVersion,
-            report);
+            report,
+            records);
     }
 
     public static string ComputeQueryFingerprint(

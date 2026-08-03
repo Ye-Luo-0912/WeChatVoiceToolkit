@@ -91,6 +91,12 @@ public sealed class WorkflowCompositionRoot
 
     private static IVoiceDurationResolver? CreateDurationResolver()
     {
+        var workerPath = Environment.GetEnvironmentVariable("WECHATVOICE_SILK_DECODER_WORKER_PATH");
+        if (!string.IsNullOrWhiteSpace(workerPath) && File.Exists(workerPath))
+        {
+            return new DecoderVoiceDurationResolver(new ExternalSilkDecoderWorker(workerPath));
+        }
+
         var path = Environment.GetEnvironmentVariable("WECHATVOICE_SILK_DECODER_PATH");
         return string.IsNullOrWhiteSpace(path) || !File.Exists(path)
             ? null

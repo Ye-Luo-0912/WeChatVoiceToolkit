@@ -31,28 +31,40 @@ internal static class VoiceManifestCsvWriter
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
         ArgumentNullException.ThrowIfNull(manifest);
-        var builder = new StringBuilder(Math.Max(512, manifest.Entries.Count * 180));
-        AppendRow(builder, Header);
-        foreach (var entry in manifest.Entries)
-        {
-            AppendRow(builder,
-            [
-                ExportItemIdentity.ComputeItemId(entry),
-                entry.OriginalPath,
-                entry.OriginalSha256,
-                entry.DurationMs?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
-                entry.OriginalByteLength.ToString(CultureInfo.InvariantCulture),
-                string.Join('|', entry.QualityFlags),
-                entry.TrainingEligibility.ToString(),
-                (entry.UserSelectionState == UserSelectionState.Selected).ToString(CultureInfo.InvariantCulture),
-            ]);
-        }
+        return AtomicFileWriter.WriteStreamAsync(
+            destinationPath,
+            async (stream, token) =>
+            {
+                await using var writer = new StreamWriter(
+                    stream,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                    bufferSize: 64 * 1024,
+                    leaveOpen: true);
+                await writer.WriteLineAsync(BuildRow(Header)).ConfigureAwait(false);
+                foreach (var entry in manifest.Entries)
+                {
+                    token.ThrowIfCancellationRequested();
+                    await writer.WriteLineAsync(BuildRow(
+                    [
+                        ExportItemIdentity.ComputeItemId(entry),
+                        entry.OriginalPath,
+                        entry.OriginalSha256,
+                        entry.DurationMs?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                        entry.OriginalByteLength.ToString(CultureInfo.InvariantCulture),
+                        string.Join('|', entry.QualityFlags),
+                        entry.TrainingEligibility.ToString(),
+                        (entry.UserSelectionState == UserSelectionState.Selected).ToString(CultureInfo.InvariantCulture),
+                    ])).ConfigureAwait(false);
+                }
 
-        return AtomicFileWriter.WriteTextAsync(destinationPath, builder.ToString(), cancellationToken);
+                await writer.FlushAsync(token).ConfigureAwait(false);
+            },
+            cancellationToken);
     }
 
-    private static void AppendRow(StringBuilder builder, IReadOnlyList<string?> values)
+    private static string BuildRow(IReadOnlyList<string?> values)
     {
+        var builder = new StringBuilder(192);
         for (var index = 0; index < values.Count; index++)
         {
             if (index > 0)
@@ -71,7 +83,7 @@ internal static class VoiceManifestCsvWriter
             }
         }
 
-        builder.AppendLine();
+        return builder.ToString();
     }
 
     private static string SanitizeForSpreadsheet(string value)

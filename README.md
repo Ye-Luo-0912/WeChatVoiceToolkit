@@ -108,6 +108,14 @@ the OS temporary directory, validates RIFF/PCM structure, computes duration
 from PCM frames, and deletes the derived file. Normal scans and raw SILK export
 never start the decoder.
 
+For high-volume duration work, a reviewed decoder may expose the resident
+`wechatvoice-decoder-jsonl-v1` protocol. Set
+`WECHATVOICE_SILK_DECODER_WORKER_PATH` instead; the host keeps one controlled
+worker process alive, sends one bounded JSONL request at a time, and exchanges
+only temporary input/output paths. Worker stdout is protocol-only and stderr is
+bounded. The worker executable must support `--worker --protocol
+wechatvoice-decoder-jsonl-v1 --sample-rate 24000`.
+
 For a complete self-contained `win-x64` layout, use the single package entry
 point below. It publishes CLI, Desktop, Broker, Worker, native SQLCipher,
 post-signature bundle manifests, package manifest, a pinned Microsoft SBOM Tool

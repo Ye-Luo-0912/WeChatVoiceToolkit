@@ -34,6 +34,16 @@ public interface IVoiceCatalog : IAsyncDisposable
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Optional catalog capabilities used to keep metadata filters and global
+/// limits in the verified adapter/query layer. A catalog must opt in only when
+/// its adapter applies the byte-length predicate before the global limit.
+/// </summary>
+public interface IVoiceCatalogQueryCapabilities
+{
+    bool SupportsPayloadByteLengthFiltering { get; }
+}
+
 public interface IWeChatDataSetAdapterResolver
 {
     IWeChatDataSetAdapter Resolve(WeChatDataSet dataSet);

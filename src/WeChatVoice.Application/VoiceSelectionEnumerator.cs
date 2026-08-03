@@ -35,7 +35,11 @@ public static class VoiceSelectionEnumerator
                 "Duration filters require duration analysis to be enabled.");
         }
 
-        var catalogQuery = query.RequiresPostQueryFiltering
+        var payloadSizeHandledByCatalog = query.HasPayloadSizeFilter
+            && catalog is IVoiceCatalogQueryCapabilities { SupportsPayloadByteLengthFiltering: true };
+        var requiresPostQueryFiltering = query.HasDurationFilter
+            || query.HasPayloadSizeFilter && !payloadSizeHandledByCatalog;
+        var catalogQuery = requiresPostQueryFiltering
             ? query.WithMaximumResults(null)
             : query;
         if (bypassCatalogDeepScan && catalogQuery.DeepScan)

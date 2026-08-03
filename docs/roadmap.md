@@ -77,8 +77,11 @@
    `--resolve-durations` and the Desktop option use the reviewed external SILK
    decoder boundary and report unknown duration when it is not configured or
    cannot decode.
-3. Add a batch or resident decoder worker only after the raw SILK path is
-   stable; keep strict RIFF/PCM validation and never overwrite SILK.
+3. The resident decoder boundary now supports the reviewed
+   `wechatvoice-decoder-jsonl-v1` protocol through
+   `WECHATVOICE_SILK_DECODER_WORKER_PATH`; keep strict RIFF/PCM validation and
+   never overwrite SILK. A decoder that does not implement this protocol uses
+   the existing one-shot compatibility path.
 4. Expand installer certificate-rotation and multi-release update policy. The
    ZIP package remains a diagnostic-only artifact; formal Broker distribution
    uses the signed MSIX installed to a protected directory.

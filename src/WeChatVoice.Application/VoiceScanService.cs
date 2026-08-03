@@ -23,6 +23,16 @@ public sealed class VoiceScanService
     }
 
     public async Task<VoiceScanReport> ScanAsync(VoiceQuery query, CancellationToken cancellationToken = default)
+        => (await ScanWithRecordsAsync(query, cancellationToken).ConfigureAwait(false)).Report;
+
+    /// <summary>
+    /// Executes the authoritative metadata selection once and returns both the
+    /// report and the exact immutable record list that produced it. Formal
+    /// exports use this list instead of querying the catalog a second time.
+    /// </summary>
+    public async Task<VoiceScanExecutionResult> ScanWithRecordsAsync(
+        VoiceQuery query,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         var shardCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -39,6 +49,7 @@ public sealed class VoiceScanService
         var exportable = 0;
         long totalPayloadBytes = 0;
         var durationKnown = 0;
+        var records = new List<VoiceRecord>();
         using var resultSetFingerprint = new VoiceResultSetFingerprintBuilder();
         var eligibilityEvaluator = new VoiceExportEligibilityEvaluator();
 
@@ -49,6 +60,7 @@ public sealed class VoiceScanService
             bypassCatalogDeepScan: _payloadHashResolver is not null,
             cancellationToken: cancellationToken).ConfigureAwait(false))
         {
+            records.Add(record);
             count++;
             if (record.DurationMs is > 0)
             {
@@ -103,7 +115,7 @@ public sealed class VoiceScanService
         }
 
         var duplicates = payloadHashes.Values.Where(static value => value > 1).Sum(static value => value - 1);
-        return new VoiceScanReport(
+        var report = new VoiceScanReport(
             count,
             duration,
             earliest,
@@ -120,5 +132,12 @@ public sealed class VoiceScanService
             totalPayloadBytes,
             durationKnown,
             resultSetFingerprint.Complete());
+        return new VoiceScanExecutionResult(
+            report,
+            new System.Collections.ObjectModel.ReadOnlyCollection<VoiceRecord>(records));
     }
 }
+
+public sealed record VoiceScanExecutionResult(
+    VoiceScanReport Report,
+    IReadOnlyList<VoiceRecord> Records);

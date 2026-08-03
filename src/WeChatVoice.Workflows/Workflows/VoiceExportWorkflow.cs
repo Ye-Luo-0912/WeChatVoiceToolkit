@@ -66,13 +66,16 @@ public sealed class VoiceExportWorkflow(
                 durationCache: durationCache,
                 durationResolver: effectiveDurationResolver);
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Exporting);
-            var manifest = await service.ExportAsync(query, new VoiceExportOptions
+            var options = new VoiceExportOptions
             {
                 DecodeToWav = false,
                 ExpectedResultSetFingerprint = plan.ResultSetFingerprint,
                 ExpectedResultCount = plan.ResultCount,
                 ExpectedTotalPayloadBytes = plan.TotalPayloadBytes,
-            }, cancellationToken).ConfigureAwait(false);
+            };
+            var manifest = plan.HasPreparedRecords
+                ? await service.ExportPreparedAsync(query, options, plan.Records, cancellationToken).ConfigureAwait(false)
+                : await service.ExportAsync(query, options, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing);
             return new VoiceExportWorkflowResult(manifest, session.Workspace);

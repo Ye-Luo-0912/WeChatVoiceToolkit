@@ -85,10 +85,13 @@ public sealed record VoiceQuery
     public long? MaximumPayloadBytes { get; }
 
     public bool RequiresPostQueryFiltering
-        => MinimumDurationMs is not null
-            || MaximumDurationMs is not null
-            || MinimumPayloadBytes is not null
-            || MaximumPayloadBytes is not null;
+        => HasDurationFilter || HasPayloadSizeFilter;
+
+    public bool HasDurationFilter
+        => MinimumDurationMs is not null || MaximumDurationMs is not null;
+
+    public bool HasPayloadSizeFilter
+        => MinimumPayloadBytes is not null || MaximumPayloadBytes is not null;
 
     public VoiceQuery WithMaximumResults(int? maximumResults)
         => new(

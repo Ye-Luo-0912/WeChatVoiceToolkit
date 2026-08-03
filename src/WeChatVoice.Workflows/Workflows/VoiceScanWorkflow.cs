@@ -45,18 +45,21 @@ public sealed class VoiceScanWorkflow(
             var effectiveDurationResolver = durationResolver is not null && durationCache is not null
                 ? new CachedVoiceDurationResolver(durationResolver, durationCache)
                 : durationResolver;
-            var report = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache).ScanAsync(query, cancellationToken).ConfigureAwait(false);
+            var scan = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache)
+                .ScanWithRecordsAsync(query, cancellationToken)
+                .ConfigureAwait(false);
             var selection = PreparedVoiceSelection.Create(
                 request.WorkspacePath,
                 session.Workspace,
                 session.Catalog.Context,
                 contact,
                 query,
-                report,
-                SelectionIdentity.DurationResolverVersion(effectiveDurationResolver));
+                scan.Report,
+                SelectionIdentity.DurationResolverVersion(effectiveDurationResolver),
+                scan.Records);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceScan, OperationStageIds.Completing);
-            return new VoiceScanWorkflowResult(report, session.Workspace, selection);
+            return new VoiceScanWorkflowResult(scan.Report, session.Workspace, selection);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

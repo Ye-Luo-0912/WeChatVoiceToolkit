@@ -203,6 +203,42 @@ public sealed class WeixinWindows4AdapterTests
     }
 
     [Fact]
+    public async Task Adapter_pushes_payload_size_filter_before_global_limit()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateFixtureAsync(root);
+        var tableName = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(ContactId))).ToLowerInvariant();
+        await ExecuteAsync(Path.Combine(root, "databases", "message", "message_0.db"), $"""
+            INSERT INTO "{tableName}"
+                (local_id, server_id, local_type, sort_seq, real_sender_id, create_time, status, upload_status,
+                 download_status, server_seq, origin_source)
+            VALUES (16, 106, 34, 7, 2, 1700000360, 3, 0, 0, 7, 2);
+            """);
+        var largerPayload = Encoding.ASCII.GetBytes("#!SILK_V3\nxyz");
+        await ExecuteAsync(Path.Combine(root, "databases", "message", "media_0.db"), $"""
+            INSERT INTO VoiceInfo (chat_name_id, create_time, local_id, svr_id, voice_data, data_index)
+            VALUES (1, 1700000360, 16, 106, X'{Convert.ToHexString(largerPayload)}', '0');
+            """);
+        var verified = await CreateVerifiedWorkspaceAsync(root);
+        await using var catalog = await new WeixinWindows4Adapter().OpenAsync(verified, CancellationToken.None);
+
+        var query = new VoiceQuery(
+            ContactId,
+            VoiceDirection.Incoming,
+            MaximumResults: 1,
+            ContactUsername: ContactId,
+            ContactId: ContactId,
+            MinimumPayloadBytes: 11,
+            MaximumPayloadBytes: 13);
+        var result = await CollectAsync(catalog.QueryVoicesAsync(query, CancellationToken.None));
+
+        var record = Assert.Single(result);
+        Assert.Equal(VoicePayloadState.Linked, record.PayloadState);
+        Assert.Equal(13, record.PayloadByteLength);
+    }
+
+    [Fact]
     public async Task Adapter_merges_message_shards_under_a_global_maximum_results()
     {
         using var temporary = new TestTemporaryDirectory();
