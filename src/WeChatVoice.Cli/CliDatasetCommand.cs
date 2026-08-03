@@ -86,7 +86,7 @@ internal static partial class CliApplication
         {
             try
             {
-                var root = CreateRoot();
+                await using var root = CreateRoot();
                 var result = await root.DatasetCuration.BuildDatasetAsync(
                     new DatasetBuildRequest(
                         parseResult.GetValue(exportRootOption)!,
@@ -124,7 +124,7 @@ internal static partial class CliApplication
         {
             try
             {
-                var root = CreateRoot();
+                await using var root = CreateRoot();
                 var result = await root.DatasetCuration.VerifyDatasetAsync(
                     new DatasetBuildRequest(
                         parseResult.GetValue(verifyExportOption)!,
@@ -162,7 +162,7 @@ internal static partial class CliApplication
         {
             try
             {
-                var root = CreateRoot();
+                await using var root = CreateRoot();
                 var result = await root.DatasetCuration.RepairDatasetAsync(
                     new DatasetBuildRepairRequest(
                         parseResult.GetValue(repairExportOption)!,

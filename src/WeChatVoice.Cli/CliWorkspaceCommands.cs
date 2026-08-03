@@ -37,8 +37,9 @@ internal static partial class CliApplication
 
             try
             {
-                var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
-                var result = await CreateRoot().Workspace.CreateAsync(
+                await using var composition = CreateRoot();
+                var context = new WorkflowContext(composition.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var result = await composition.Workspace.CreateAsync(
                     new WorkspaceCreateRequest(root, output),
                     context,
                     cancellationToken).ConfigureAwait(false);
@@ -81,8 +82,9 @@ internal static partial class CliApplication
 
             try
             {
-                var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
-                var verified = await CreateRoot().Workspace.VerifyAsync(workspacePath, context, cancellationToken).ConfigureAwait(false);
+                await using var composition = CreateRoot();
+                var context = new WorkflowContext(composition.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var verified = await composition.Workspace.VerifyAsync(workspacePath, context, cancellationToken).ConfigureAwait(false);
                 WriteJson(new WorkspaceVerifyResult(
                     Path.GetFullPath(workspacePath),
                     verified.Workspace.WorkspaceId,
@@ -176,7 +178,7 @@ internal static partial class CliApplication
 
             try
             {
-                var root = CreateRoot(allowDevelopmentBroker);
+                await using var root = CreateRoot(allowDevelopmentBroker);
                 var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
                 var result = await root.Materialization.RunAsync(
                     new MaterializationWorkflowRequest(
@@ -268,7 +270,7 @@ internal static partial class CliApplication
 
             try
             {
-                var root = CreateRoot();
+                await using var root = CreateRoot();
                 var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
                 var verified = await root.Workspace.RepairMaterializationAsync(
                     new MaterializationRecoveryRequest(output, workspaceOutput, account),
@@ -343,7 +345,7 @@ internal static partial class CliApplication
 
             try
             {
-                var root = CreateRoot();
+                await using var root = CreateRoot();
                 var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
                 var verified = await root.Workspace.RecoverMaterializationAsync(
                     new MaterializationRecoveryRequest(output, workspaceOutput, account),

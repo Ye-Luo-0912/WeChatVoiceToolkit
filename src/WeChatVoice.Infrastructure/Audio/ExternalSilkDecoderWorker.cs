@@ -34,6 +34,7 @@ public sealed class ExternalSilkDecoderWorker : IVoiceDecoder, IVoiceDecoderIden
     private readonly string _executablePath;
     private readonly int _sampleRate;
     private readonly string _workingDirectory;
+    private readonly ITemporaryFileCleanupQueue? _cleanupQueue;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lazy<string> _decoderIdentity;
     private Process? _process;
@@ -48,7 +49,8 @@ public sealed class ExternalSilkDecoderWorker : IVoiceDecoder, IVoiceDecoderIden
     public ExternalSilkDecoderWorker(
         string executablePath,
         int sampleRate = 24000,
-        string? workingDirectory = null)
+        string? workingDirectory = null,
+        ITemporaryFileCleanupQueue? cleanupQueue = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sampleRate);
@@ -68,6 +70,7 @@ public sealed class ExternalSilkDecoderWorker : IVoiceDecoder, IVoiceDecoderIden
             throw new DirectoryNotFoundException("The configured SILK decoder worker directory was not found.");
         }
 
+        _cleanupQueue = cleanupQueue;
         _decoderIdentity = new Lazy<string>(ComputeDecoderIdentity, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
@@ -168,12 +171,18 @@ public sealed class ExternalSilkDecoderWorker : IVoiceDecoder, IVoiceDecoderIden
         {
             try
             {
-                TryDelete(inputPath);
-                TryDelete(outputPath);
+                EnqueueCleanupIfNeeded(inputPath, "decoder-worker-input");
             }
             finally
             {
-                _gate.Release();
+                try
+                {
+                    EnqueueCleanupIfNeeded(outputPath, "decoder-worker-output");
+                }
+                finally
+                {
+                    _gate.Release();
+                }
             }
         }
     }
@@ -384,25 +393,46 @@ public sealed class ExternalSilkDecoderWorker : IVoiceDecoder, IVoiceDecoderIden
         }
     }
 
-    private static void TryDelete(string path)
+    private void EnqueueCleanupIfNeeded(string path, string resourceKind)
     {
-        if (!File.Exists(path))
+        var failure = TryDelete(path, resourceKind);
+        if (failure is null || _cleanupQueue is null)
         {
             return;
         }
 
         try
         {
-            File.Delete(path);
+            _cleanupQueue.Enqueue(path, failure);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            throw new IOException("A temporary resident-decoder file could not be removed.", exception);
+            // Cleanup is diagnostic-only and must never replace the decoder
+            // result or prevent the gate from being released.
         }
+    }
 
-        if (File.Exists(path))
+    private static CleanupDiagnostic? TryDelete(string path, string resourceKind)
+    {
+        try
         {
-            throw new IOException("A temporary resident-decoder file still exists after cleanup.");
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            File.Delete(path);
+            return File.Exists(path)
+                ? new CleanupDiagnostic(resourceKind, "delete-still-present", nameof(IOException))
+                : null;
+        }
+        catch (IOException exception)
+        {
+            return new CleanupDiagnostic(resourceKind, "delete-failed", exception.GetType().Name);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            return new CleanupDiagnostic(resourceKind, "delete-failed", exception.GetType().Name);
         }
     }
 

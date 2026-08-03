@@ -15,10 +15,16 @@ public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolv
     public const string CurrentDecoderVersion = "silk-wav-decoder-v1";
 
     private readonly IVoiceDecoder _decoder;
+    private readonly ITemporaryFileCleanupQueue? _cleanupQueue;
     private readonly SemaphoreSlim _decoderGate = new(1, 1);
 
-    public DecoderVoiceDurationResolver(IVoiceDecoder decoder)
-        => _decoder = decoder ?? throw new ArgumentNullException(nameof(decoder));
+    public DecoderVoiceDurationResolver(
+        IVoiceDecoder decoder,
+        ITemporaryFileCleanupQueue? cleanupQueue = null)
+    {
+        _decoder = decoder ?? throw new ArgumentNullException(nameof(decoder));
+        _cleanupQueue = cleanupQueue;
+    }
 
     public string DecoderVersion => _decoder is IVoiceDecoderIdentity identity
         ? identity.DecoderIdentity
@@ -69,36 +75,73 @@ public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolv
         }
         finally
         {
-            TryDelete(outputPath);
-            _decoderGate.Release();
+            try
+            {
+                EnqueueCleanupIfNeeded(outputPath);
+            }
+            finally
+            {
+                _decoderGate.Release();
+            }
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        _decoderGate.Dispose();
-        return ValueTask.CompletedTask;
+        await _decoderGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_decoder is IAsyncDisposable disposable)
+            {
+                await disposable.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _decoderGate.Release();
+            _decoderGate.Dispose();
+        }
     }
 
-    private static void TryDelete(string path)
+    private void EnqueueCleanupIfNeeded(string path)
     {
-        if (!File.Exists(path))
+        var failure = TryDelete(path);
+        if (failure is null || _cleanupQueue is null)
         {
             return;
         }
 
         try
         {
-            File.Delete(path);
+            _cleanupQueue.Enqueue(path, failure);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            throw new IOException("The temporary duration WAV could not be removed.", exception);
+            // Cleanup diagnostics must not replace the duration result.
         }
+    }
 
-        if (File.Exists(path))
+    private static CleanupDiagnostic? TryDelete(string path)
+    {
+        try
         {
-            throw new IOException("The temporary duration WAV still exists after cleanup.");
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            File.Delete(path);
+            return File.Exists(path)
+                ? new CleanupDiagnostic("duration-wav", "delete-still-present", nameof(IOException))
+                : null;
+        }
+        catch (IOException exception)
+        {
+            return new CleanupDiagnostic("duration-wav", "delete-failed", exception.GetType().Name);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            return new CleanupDiagnostic("duration-wav", "delete-failed", exception.GetType().Name);
         }
     }
 }

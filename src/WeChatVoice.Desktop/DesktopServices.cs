@@ -8,7 +8,7 @@ namespace WeChatVoice.Desktop;
 /// Desktop infrastructure; it never touches SQLite, process memory, or a Key
 /// Broker implementation directly.
 /// </summary>
-public sealed class DesktopServices
+public sealed class DesktopServices : IAsyncDisposable
 {
     /// <summary>
     /// Public for tests: hosts and tests can supply a composition root built
@@ -70,4 +70,9 @@ public sealed class DesktopServices
     public DesktopFolderPicker FolderPicker { get; }
 
     public WeixinDataSourceDiscovery DataSourceDiscovery { get; }
+
+    public async ValueTask DisposeAsync()
+    {
+        await Workflows.DisposeAsync().ConfigureAwait(false);
+    }
 }

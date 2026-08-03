@@ -82,6 +82,9 @@ public sealed class ExportMaintenanceTests
 
         Assert.DoesNotContain(first.Items, item => item.IsSelected);
         Assert.Equal(1, first.Items.Count(item => item.PassesFilters));
+        Assert.Equal(
+            first.Items.Single(item => item.ItemId == ExportItemIdentity.ComputeItemId(entries[0])).DuplicateGroupId,
+            first.Items.Single(item => item.ItemId == ExportItemIdentity.ComputeItemId(entries[1])).DuplicateGroupId);
         Assert.Equal(0, first.SelectedDurationMs);
         Assert.Equal(TrainingEligibility.Rejected, first.Items.Single(item => item.DurationMs is null).TrainingEligibility);
         Assert.Equal(first.Profile.SelectionFingerprint, first.SelectionFingerprint);

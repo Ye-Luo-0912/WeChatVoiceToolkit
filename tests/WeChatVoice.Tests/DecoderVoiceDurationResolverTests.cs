@@ -4,6 +4,7 @@ using WeChatVoice.Application;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Audio;
+using WeChatVoice.Workflows.Composition;
 
 namespace WeChatVoice.Tests;
 
@@ -145,6 +146,36 @@ public sealed class DecoderVoiceDurationResolverTests
         Assert.Equal(1000, duration);
     }
 
+    [Fact]
+    public async Task Composition_root_disposes_the_configured_duration_resolver()
+    {
+        var resolver = new DisposableDurationResolver();
+
+        await using (var root = new WorkflowCompositionRoot(
+            new TestAccountConfirmation(),
+            voiceDurationResolver: resolver))
+        {
+            Assert.True(root.DurationAnalysisAvailable);
+        }
+
+        Assert.Equal(1, resolver.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Cleanup_queue_retries_private_temporary_paths_without_exposing_them_in_diagnostics()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var path = temporary.GetPath("private-input.silk");
+        await File.WriteAllBytesAsync(path, [1, 2, 3]);
+        var queue = new TemporaryFileCleanupQueue();
+        queue.Enqueue(path, new CleanupDiagnostic("duration-input", "delete-failed", nameof(IOException)));
+
+        await queue.RetryPendingAsync(CancellationToken.None);
+
+        Assert.False(File.Exists(path));
+        Assert.Empty(queue.GetSnapshot());
+    }
+
     private sealed class FixedWavDecoder(int dataBytes) : IVoiceDecoder
     {
         public async Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken)
@@ -217,5 +248,27 @@ public sealed class DecoderVoiceDurationResolverTests
 
             return 1234;
         }
+    }
+
+    private sealed class DisposableDurationResolver : IVersionedVoiceDurationResolver, IAsyncDisposable
+    {
+        public string DecoderVersion => "test-decoder-v1";
+
+        public int DisposeCount { get; private set; }
+
+        public Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
+            => Task.FromResult<long?>(null);
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class TestAccountConfirmation : IAccountConfirmation
+    {
+        public Task<AccountConfirmation> ConfirmAsync(AccountIdentityReport report, CancellationToken cancellationToken)
+            => Task.FromResult(new AccountConfirmation(true, report.AccountCandidate));
     }
 }

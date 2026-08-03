@@ -17,13 +17,16 @@ public sealed class CachedVoiceDurationResolver : IVersionedVoiceDurationResolve
     private const int BufferSize = 128 * 1024;
     private readonly IVoiceDurationResolver _inner;
     private readonly IVoiceDurationCache _cache;
+    private readonly ITemporaryFileCleanupQueue? _cleanupQueue;
 
     public CachedVoiceDurationResolver(
         IVoiceDurationResolver inner,
-        IVoiceDurationCache cache)
+        IVoiceDurationCache cache,
+        ITemporaryFileCleanupQueue? cleanupQueue = null)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        _cleanupQueue = cleanupQueue;
         DecoderVersion = inner is IVersionedVoiceDurationResolver versioned
             ? versioned.DecoderVersion
             : cache.DecoderVersion;
@@ -114,7 +117,7 @@ public sealed class CachedVoiceDurationResolver : IVersionedVoiceDurationResolve
         }
         finally
         {
-            TryDelete(temporaryPath);
+            EnqueueCleanupIfNeeded(temporaryPath);
         }
     }
 
@@ -227,25 +230,45 @@ public sealed class CachedVoiceDurationResolver : IVersionedVoiceDurationResolve
         }
     }
 
-    private static void TryDelete(string path)
+    private void EnqueueCleanupIfNeeded(string path)
     {
-        if (!File.Exists(path))
+        var failure = TryDelete(path);
+        if (failure is null || _cleanupQueue is null)
         {
             return;
         }
 
         try
         {
-            File.Delete(path);
+            _cleanupQueue.Enqueue(path, failure);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            throw new IOException("The temporary duration input could not be removed.", exception);
+            // Cleanup diagnostics must not replace the duration result.
         }
+    }
 
-        if (File.Exists(path))
+    private static CleanupDiagnostic? TryDelete(string path)
+    {
+        try
         {
-            throw new IOException("The temporary duration input still exists after cleanup.");
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            File.Delete(path);
+            return File.Exists(path)
+                ? new CleanupDiagnostic("duration-input", "delete-still-present", nameof(IOException))
+                : null;
+        }
+        catch (IOException exception)
+        {
+            return new CleanupDiagnostic("duration-input", "delete-failed", exception.GetType().Name);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            return new CleanupDiagnostic("duration-input", "delete-failed", exception.GetType().Name);
         }
     }
 

@@ -14,8 +14,12 @@ namespace WeChatVoice.Workflows.Composition;
 /// this root (optionally overriding the broker trust policy and the broker
 /// install directory) and call the workflow interfaces.
 /// </summary>
-public sealed class WorkflowCompositionRoot
+public sealed class WorkflowCompositionRoot : IAsyncDisposable
 {
+    private readonly TemporaryFileCleanupQueue _cleanupQueue;
+    private readonly IAsyncDisposable? _durationResolver;
+    private int _disposed;
+
     public WorkflowCompositionRoot(
         IAccountConfirmation accountConfirmation,
         bool allowDevelopmentBroker = false,
@@ -31,6 +35,7 @@ public sealed class WorkflowCompositionRoot
         IVoiceDurationResolver? voiceDurationResolver = null)
     {
         ArgumentNullException.ThrowIfNull(accountConfirmation);
+        _cleanupQueue = new TemporaryFileCleanupQueue();
         var loader = new Workspaces.WorkspaceLoader();
         var adapters = BuiltInAdapters.Create();
         var resolver = new DataSetAdapterResolver(adapters);
@@ -48,7 +53,8 @@ public sealed class WorkflowCompositionRoot
         Materialization = materialization ?? new MaterializationWorkflow(brokerExecutor);
         Workspace = workspace ?? new WorkspaceWorkflow(loader: loader);
         ContactDiscovery = contactDiscovery ?? new ContactDiscoveryWorkflow(opener);
-        var configuredDecoder = voiceDurationResolver ?? CreateDurationResolver();
+        var configuredDecoder = voiceDurationResolver ?? CreateDurationResolver(_cleanupQueue);
+        _durationResolver = configuredDecoder as IAsyncDisposable;
         DurationAnalysisAvailable = configuredDecoder is not null;
         Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = configuredDecoder is null
             ? null
@@ -59,8 +65,8 @@ public sealed class WorkflowCompositionRoot
                     : DecoderVoiceDurationResolver.CurrentDecoderVersion);
         Func<VerifiedLocalWorkspace, IVoicePayloadHashCache> deepScanCacheFactory = workspaceResult =>
             new JsonlVoicePayloadHashCache(VoicePayloadHashCachePath.ForWorkspace(workspaceResult));
-        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory, deepScanCacheFactory);
-        VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory, configuredDecoder);
+        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory, deepScanCacheFactory, _cleanupQueue);
+        VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory, configuredDecoder, cleanupQueue: _cleanupQueue);
         DatasetCuration = datasetCuration ?? new DatasetCurationWorkflow();
         AccountConfirmation = accountConfirmation;
         AllowDevelopmentBroker = allowDevelopmentBroker;
@@ -89,17 +95,37 @@ public sealed class WorkflowCompositionRoot
 
     public bool DurationAnalysisAvailable { get; }
 
-    private static IVoiceDurationResolver? CreateDurationResolver()
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_durationResolver is not null)
+            {
+                await _durationResolver.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await _cleanupQueue.RetryPendingAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private static IVoiceDurationResolver? CreateDurationResolver(ITemporaryFileCleanupQueue cleanupQueue)
     {
         var workerPath = Environment.GetEnvironmentVariable("WECHATVOICE_SILK_DECODER_WORKER_PATH");
         if (!string.IsNullOrWhiteSpace(workerPath) && File.Exists(workerPath))
         {
-            return new DecoderVoiceDurationResolver(new ExternalSilkDecoderWorker(workerPath));
+            return new DecoderVoiceDurationResolver(new ExternalSilkDecoderWorker(workerPath, cleanupQueue: cleanupQueue), cleanupQueue);
         }
 
         var path = Environment.GetEnvironmentVariable("WECHATVOICE_SILK_DECODER_PATH");
         return string.IsNullOrWhiteSpace(path) || !File.Exists(path)
             ? null
-            : new DecoderVoiceDurationResolver(new ExternalSilkDecoder(path));
+            : new DecoderVoiceDurationResolver(new ExternalSilkDecoder(path, cleanupQueue: cleanupQueue), cleanupQueue);
     }
 }

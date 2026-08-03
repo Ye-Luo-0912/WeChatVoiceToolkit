@@ -18,8 +18,9 @@ internal static partial class CliApplication
         {
             try
             {
-                var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
-                var result = await CreateRoot().EnvironmentAssessment.RunAsync(
+                await using var root = CreateRoot();
+                var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var result = await root.EnvironmentAssessment.RunAsync(
                     new EnvironmentAssessmentRequest(parseResult.GetValue(workspaceOption)),
                     context,
                     cancellationToken).ConfigureAwait(false);

@@ -84,7 +84,7 @@ internal static partial class CliApplication
 
             try
             {
-                var root = CreateRoot();
+                await using var root = CreateRoot();
                 var direction = ParseDirection(directionText) ?? VoiceDirection.Incoming;
                 var scanContext = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
                 var scanResult = await root.VoiceScan.RunAsync(
@@ -155,8 +155,9 @@ internal static partial class CliApplication
 
             try
             {
-                var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
-                var result = await CreateRoot().VoiceScan.RunAsync(
+                await using var root = CreateRoot();
+                var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var result = await root.VoiceScan.RunAsync(
                     new VoiceScanWorkflowRequest(
                         workspace,
                         ContactUsername: parseResult.GetValue(scanContactOption),
@@ -210,7 +211,8 @@ internal static partial class CliApplication
 
             try
             {
-                var manifest = await CreateRoot().VoiceExport.RecoverRunAsync(journalPath, cancellationToken).ConfigureAwait(false);
+                await using var root = CreateRoot();
+                var manifest = await root.VoiceExport.RecoverRunAsync(journalPath, cancellationToken).ConfigureAwait(false);
                 WriteJson(manifest);
                 return 0;
             }
@@ -238,7 +240,7 @@ internal static partial class CliApplication
             var runId = parseResult.GetValue(verifyRunIdOption);
             try
             {
-                var root = CreateRoot();
+                await using var root = CreateRoot();
                 var result = await root.VoiceExport.VerifyAsync(
                     new ExportVerificationRequest(output!, runId),
                     new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
@@ -269,7 +271,7 @@ internal static partial class CliApplication
             var runId = parseResult.GetValue(repairRunIdOption);
             try
             {
-                var root = CreateRoot();
+                await using var root = CreateRoot();
                 var result = await root.VoiceExport.RepairAsync(
                     new ExportRepairRequest(output!, runId),
                     new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),

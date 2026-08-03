@@ -49,8 +49,9 @@ internal static partial class CliApplication
 
             try
             {
-                var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
-                var result = await CreateRoot().Snapshot.RunAsync(
+                await using var root = CreateRoot();
+                var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var result = await root.Snapshot.RunAsync(
                     new SnapshotWorkflowRequest(source, output, AllowLiveSource: allowLiveSource, MaxAttempts: maxAttempts),
                     context,
                     cancellationToken).ConfigureAwait(false);

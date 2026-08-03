@@ -21,8 +21,9 @@ internal static partial class CliApplication
             var workspace = parseResult.GetValue(listWorkspaceOption);
             try
             {
-                var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
-                var result = await CreateRoot().ContactDiscovery.RunAsync(
+                await using var root = CreateRoot();
+                var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var result = await root.ContactDiscovery.RunAsync(
                     new ContactDiscoveryRequest(workspace!),
                     context,
                     cancellationToken).ConfigureAwait(false);
@@ -49,8 +50,9 @@ internal static partial class CliApplication
             var queryText = parseResult.GetValue(searchOption);
             try
             {
-                var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
-                var result = await CreateRoot().ContactDiscovery.RunAsync(
+                await using var root = CreateRoot();
+                var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var result = await root.ContactDiscovery.RunAsync(
                     new ContactDiscoveryRequest(workspace!, SearchTerm: queryText),
                     context,
                     cancellationToken).ConfigureAwait(false);

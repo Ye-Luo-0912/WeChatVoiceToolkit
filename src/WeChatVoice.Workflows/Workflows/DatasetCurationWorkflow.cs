@@ -319,6 +319,15 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
             })
             .ToArray();
 
+        var groupByItemId = new Dictionary<string, DatasetDuplicateGroup>(StringComparer.OrdinalIgnoreCase);
+        foreach (var duplicateGroup in duplicateGroups)
+        {
+            foreach (var itemId in duplicateGroup.ItemIds)
+            {
+                groupByItemId[itemId] = duplicateGroup;
+            }
+        }
+
         foreach (var group in duplicateGroups)
         {
             var selected = group.ItemIds.Count(id => requestedSelected.Contains(id) || requestedRepresentatives.Contains(id));
@@ -335,7 +344,9 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         {
             cancellationToken.ThrowIfCancellationRequested();
             var itemId = ExportItemIdentity.ComputeItemId(entry, manifest.DatasetNamespaceKey);
-            var group = duplicateGroups.FirstOrDefault(candidate => candidate.ItemIds.Contains(itemId, StringComparer.OrdinalIgnoreCase));
+            DatasetDuplicateGroup? group = groupByItemId.TryGetValue(itemId, out var foundGroup)
+                ? foundGroup
+                : null;
             var passes = PassesFilters(entry, filters);
             var isRepresentative = group?.RepresentativeItemId is not null
                 && string.Equals(group.RepresentativeItemId, itemId, StringComparison.OrdinalIgnoreCase);

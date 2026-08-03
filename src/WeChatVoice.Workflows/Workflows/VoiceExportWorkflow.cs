@@ -16,7 +16,8 @@ public sealed class VoiceExportWorkflow(
     Workspaces.ContactResolver resolver,
     Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null,
     IVoiceDurationResolver? durationResolver = null,
-    ExportVerificationService? verificationService = null) : IVoiceExportWorkflow
+    ExportVerificationService? verificationService = null,
+    ITemporaryFileCleanupQueue? cleanupQueue = null) : IVoiceExportWorkflow
 {
     private readonly ExportVerificationService _verificationService = verificationService ?? new();
 
@@ -40,7 +41,7 @@ public sealed class VoiceExportWorkflow(
             await using var session = await opener.OpenAsync(plan.WorkspaceDocumentPath, cancellationToken).ConfigureAwait(false);
             await using var durationCache = durationCacheFactory?.Invoke(session.Workspace);
             var effectiveDurationResolver = durationResolver is not null && durationCache is not null
-                ? new CachedVoiceDurationResolver(durationResolver, durationCache)
+                ? new CachedVoiceDurationResolver(durationResolver, durationCache, cleanupQueue)
                 : durationResolver;
             ValidatePlanIdentity(plan, session, effectiveDurationResolver);
             context.Report(OperationPhase.VoiceExport, OperationStageIds.ResolvingContact);
@@ -108,7 +109,8 @@ public sealed class VoiceExportWorkflow(
             resolver,
             durationResolver,
             durationCacheFactory,
-            deepScanCacheFactory: null);
+            deepScanCacheFactory: null,
+            cleanupQueue);
         VoiceScanWorkflowResult scanResult;
         try
         {

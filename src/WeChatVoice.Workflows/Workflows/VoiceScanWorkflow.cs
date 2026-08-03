@@ -14,7 +14,8 @@ public sealed class VoiceScanWorkflow(
     Workspaces.ContactResolver resolver,
     IVoiceDurationResolver? durationResolver = null,
     Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null,
-    Func<VerifiedLocalWorkspace, IVoicePayloadHashCache>? deepScanCacheFactory = null) : IVoiceScanWorkflow
+    Func<VerifiedLocalWorkspace, IVoicePayloadHashCache>? deepScanCacheFactory = null,
+    ITemporaryFileCleanupQueue? cleanupQueue = null) : IVoiceScanWorkflow
 {
     public async Task<VoiceScanWorkflowResult> RunAsync(
         VoiceScanWorkflowRequest request,
@@ -43,7 +44,7 @@ public sealed class VoiceScanWorkflow(
                 request.MinimumPayloadBytes, request.MaximumPayloadBytes);
             context.Report(OperationPhase.VoiceScan, OperationStageIds.QueryingVoices);
             var effectiveDurationResolver = durationResolver is not null && durationCache is not null
-                ? new CachedVoiceDurationResolver(durationResolver, durationCache)
+                ? new CachedVoiceDurationResolver(durationResolver, durationCache, cleanupQueue)
                 : durationResolver;
             var scan = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache)
                 .ScanWithRecordsAsync(query, cancellationToken)

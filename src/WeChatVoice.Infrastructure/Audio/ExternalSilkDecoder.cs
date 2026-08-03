@@ -21,9 +21,14 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder, IVoiceDecoderIdentity
     private readonly string _executablePath;
     private readonly int _sampleRate;
     private readonly string? _workingDirectory;
+    private readonly ITemporaryFileCleanupQueue? _cleanupQueue;
     private readonly Lazy<string> _decoderIdentity;
 
-    public ExternalSilkDecoder(string executablePath, int sampleRate = 24000, string? workingDirectory = null)
+    public ExternalSilkDecoder(
+        string executablePath,
+        int sampleRate = 24000,
+        string? workingDirectory = null,
+        ITemporaryFileCleanupQueue? cleanupQueue = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sampleRate);
@@ -33,6 +38,7 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder, IVoiceDecoderIdentity
         _workingDirectory = string.IsNullOrWhiteSpace(workingDirectory)
             ? null
             : Path.GetFullPath(workingDirectory);
+        _cleanupQueue = cleanupQueue;
         _decoderIdentity = new Lazy<string>(ComputeDecoderIdentity, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
@@ -63,23 +69,8 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder, IVoiceDecoderIdentity
         }
         finally
         {
-            Exception? cleanupFailure = null;
-            foreach (var temporaryPath in new[] { temporaryInputPath, temporaryOutputPath })
-            {
-                try
-                {
-                    TryDelete(temporaryPath);
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                {
-                    cleanupFailure ??= exception;
-                }
-            }
-
-            if (cleanupFailure is not null)
-            {
-                throw cleanupFailure;
-            }
+            EnqueueCleanupIfNeeded(temporaryInputPath, "decoder-input");
+            EnqueueCleanupIfNeeded(temporaryOutputPath, "decoder-output");
         }
     }
 
@@ -153,8 +144,8 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder, IVoiceDecoderIdentity
         }
         finally
         {
-            TryDelete(temporaryInputPath);
-            TryDelete(temporaryOutputPath);
+            EnqueueCleanupIfNeeded(temporaryInputPath, "decoder-input");
+            EnqueueCleanupIfNeeded(temporaryOutputPath, "decoder-output");
         }
     }
 
@@ -332,25 +323,45 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder, IVoiceDecoderIdentity
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(contract))).ToLowerInvariant();
     }
 
-    private static void TryDelete(string path)
+    private void EnqueueCleanupIfNeeded(string path, string resourceKind)
     {
-        if (!File.Exists(path))
+        var failure = TryDelete(path, resourceKind);
+        if (failure is null || _cleanupQueue is null)
         {
             return;
         }
 
         try
         {
-            File.Delete(path);
+            _cleanupQueue.Enqueue(path, failure);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            throw new IOException("A temporary SILK decoder file could not be removed.", exception);
+            // Cleanup diagnostics must not replace the decoder result.
         }
+    }
 
-        if (File.Exists(path))
+    private static CleanupDiagnostic? TryDelete(string path, string resourceKind)
+    {
+        try
         {
-            throw new IOException("A temporary SILK decoder file still exists after cleanup.");
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            File.Delete(path);
+            return File.Exists(path)
+                ? new CleanupDiagnostic(resourceKind, "delete-still-present", nameof(IOException))
+                : null;
+        }
+        catch (IOException exception)
+        {
+            return new CleanupDiagnostic(resourceKind, "delete-failed", exception.GetType().Name);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            return new CleanupDiagnostic(resourceKind, "delete-failed", exception.GetType().Name);
         }
     }
 
