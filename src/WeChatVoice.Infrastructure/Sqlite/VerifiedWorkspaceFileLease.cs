@@ -12,12 +12,18 @@ namespace WeChatVoice.Infrastructure.Sqlite;
 public sealed class VerifiedWorkspaceFileLease : IAsyncDisposable
 {
     private readonly IReadOnlyList<WorkspaceFile> _files;
+    private readonly IReadOnlyDictionary<string, IReadOnlySet<string>> _sidecarsByDirectory;
     private readonly SemaphoreSlim _verificationGate = new(1, 1);
     private readonly Dictionary<string, ContentVerificationStamp> _contentVerification = new(StringComparer.OrdinalIgnoreCase);
     private int _disposed;
 
-    private VerifiedWorkspaceFileLease(IReadOnlyList<WorkspaceFile> files)
-        => _files = files;
+    private VerifiedWorkspaceFileLease(
+        IReadOnlyList<WorkspaceFile> files,
+        IReadOnlyDictionary<string, IReadOnlySet<string>> sidecarsByDirectory)
+    {
+        _files = files;
+        _sidecarsByDirectory = sidecarsByDirectory;
+    }
 
     public static async Task<VerifiedWorkspaceFileLease> OpenAsync(
         VerifiedLocalWorkspace workspace,
@@ -28,6 +34,18 @@ public sealed class VerifiedWorkspaceFileLease : IAsyncDisposable
 
         var files = new List<WorkspaceFile>();
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var directories = workspace.DataSet.Databases
+            .Select(RequireLocalPath)
+            .Select(Path.GetDirectoryName)
+            .Where(static path => path is not null)
+            .Select(static path => Path.GetFullPath(path!))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var initialSidecars = CaptureSidecars(directories);
+        if (initialSidecars.Values.Any(static sidecars => sidecars.Count > 0))
+        {
+            throw new WorkspaceVerificationException("The immutable local Workspace must not contain SQLite WAL or SHM sidecars.");
+        }
         try
         {
             foreach (var artifact in workspace.DataSet.Databases)
@@ -38,7 +56,7 @@ public sealed class VerifiedWorkspaceFileLease : IAsyncDisposable
                 await AddAsync(files, paths, mainPath + "-shm", artifact.LogicalRole, artifact.ShmPresent, artifact.ShmSha256, artifact.ShmLength, cancellationToken).ConfigureAwait(false);
             }
 
-            var lease = new VerifiedWorkspaceFileLease(files);
+            var lease = new VerifiedWorkspaceFileLease(files, initialSidecars);
             await lease.VerifyAsync(cancellationToken).ConfigureAwait(false);
             return lease;
         }
@@ -68,6 +86,7 @@ public sealed class VerifiedWorkspaceFileLease : IAsyncDisposable
         await _verificationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            VerifySidecars();
             foreach (var file in _files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -139,6 +158,40 @@ public sealed class VerifiedWorkspaceFileLease : IAsyncDisposable
         }
 
         return new ContentVerificationStamp(actualIdentity, actualLength, actualWriteTicks);
+    }
+
+    private void VerifySidecars()
+    {
+        var current = CaptureSidecars(_sidecarsByDirectory.Keys);
+        foreach (var directory in _sidecarsByDirectory.Keys)
+        {
+            var expected = _sidecarsByDirectory[directory];
+            var actual = current.TryGetValue(directory, out var found)
+                ? found
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!expected.SetEquals(actual))
+            {
+                throw new WorkspaceVerificationException("SQLite sidecar files changed while the verified Workspace was open.");
+            }
+        }
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlySet<string>> CaptureSidecars(IEnumerable<string> directories)
+    {
+        var result = new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var directory in directories.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var sidecars = Directory.Exists(directory)
+                ? Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+                    .Where(static path => path.EndsWith("-wal", StringComparison.OrdinalIgnoreCase)
+                        || path.EndsWith("-shm", StringComparison.OrdinalIgnoreCase))
+                    .Select(Path.GetFullPath)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            result[Path.GetFullPath(directory)] = sidecars;
+        }
+
+        return result;
     }
 
     private static async Task AddAsync(

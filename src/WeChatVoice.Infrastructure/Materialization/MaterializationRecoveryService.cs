@@ -86,6 +86,8 @@ public sealed class MaterializationRecoveryService
             }
 
             var manifest = await ReadAndVerifyManifestAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+            var binding = await MaterializationStateStore.ReadManifestBindingAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+            EnsureStateBinding(state, binding);
             var effectiveAccountId = ResolveAccountId(accountId ?? accountIdentity?.ConfirmedAccountId, manifest.AccountId);
 
             VerifiedLocalWorkspace verified;
@@ -147,7 +149,8 @@ public sealed class MaterializationRecoveryService
                     operationId,
                     failureCode: null,
                     cancellationToken: cancellationToken,
-                    heldLock: stateLock!).ConfigureAwait(false);
+                    heldLock: stateLock!,
+                    binding: binding).ConfigureAwait(false);
                 await MaterializationStateStore.TransitionAsync(
                     fullRoot,
                     [MaterializationCommitStates.WorkspaceCommitted],
@@ -155,7 +158,8 @@ public sealed class MaterializationRecoveryService
                     operationId,
                     failureCode: null,
                     cancellationToken: cancellationToken,
-                    heldLock: stateLock!).ConfigureAwait(false);
+                    heldLock: stateLock!,
+                    binding: binding).ConfigureAwait(false);
             }
             else if (state.State is MaterializationCommitStates.WorkspaceCommitted)
             {
@@ -166,7 +170,8 @@ public sealed class MaterializationRecoveryService
                     operationId,
                     failureCode: null,
                     cancellationToken: cancellationToken,
-                    heldLock: stateLock!).ConfigureAwait(false);
+                    heldLock: stateLock!,
+                    binding: binding).ConfigureAwait(false);
             }
 
             return verified;
@@ -251,6 +256,16 @@ public sealed class MaterializationRecoveryService
         }
 
         var manifest = await ReadAndVerifyManifestAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+        var binding = await MaterializationStateStore.ReadManifestBindingAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+        var stateBinding = state.Binding
+            ?? throw new InvalidDataException("The materialization state lacks its binding.");
+        if (!string.Equals(stateBinding.ManifestSha256, binding.ManifestSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(stateBinding.WorkspaceId, binding.WorkspaceId, StringComparison.Ordinal)
+            || !string.Equals(stateBinding.SourceSnapshotId, binding.SourceSnapshotId, StringComparison.Ordinal)
+            || !string.Equals(stateBinding.BackendId, binding.BackendId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The materialization state is bound to a different manifest or backend.");
+        }
         var effectiveAccountId = ResolveAccountId(accountId ?? accountIdentity?.ConfirmedAccountId, manifest.AccountId);
         if (effectiveAccountId is null)
         {
@@ -358,6 +373,23 @@ public sealed class MaterializationRecoveryService
         }
 
         return requestedAccountId ?? manifestAccountId;
+    }
+
+    private static void EnsureStateBinding(
+        MaterializationStateDocument state,
+        MaterializationStateBinding manifestBinding)
+    {
+        var stateBinding = state.Binding
+            ?? throw new InvalidDataException("The materialization state lacks its binding.");
+        if (!string.Equals(stateBinding.SourceSnapshotId, manifestBinding.SourceSnapshotId, StringComparison.Ordinal)
+            || !string.Equals(stateBinding.BackendId, manifestBinding.BackendId, StringComparison.Ordinal)
+            || stateBinding.ManifestSha256 is not null
+                && !string.Equals(stateBinding.ManifestSha256, manifestBinding.ManifestSha256, StringComparison.OrdinalIgnoreCase)
+            || stateBinding.WorkspaceId is not null
+                && !string.Equals(stateBinding.WorkspaceId, manifestBinding.WorkspaceId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The materialization state is bound to a different manifest or backend.");
+        }
     }
 
     private static void EnsureRecoveryIdentity(

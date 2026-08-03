@@ -94,7 +94,8 @@ public interface IVoiceScanWorkflow
 public interface IVoiceExportWorkflow
 {
     Task<VoiceExportWorkflowResult> RunAsync(
-        VoiceExportWorkflowRequest request,
+        PreparedVoiceSelection plan,
+        ExportDestination destination,
         WorkflowContext context,
         CancellationToken cancellationToken);
 
@@ -181,8 +182,15 @@ public sealed record VoiceScanWorkflowRequest(
 
 public sealed record VoiceScanWorkflowResult(
     VoiceScanReport Report,
-    VerifiedLocalWorkspace Workspace);
+    VerifiedLocalWorkspace Workspace,
+    PreparedVoiceSelection? Selection = null);
 
+/// <summary>
+/// Legacy request retained only as a source-compatible migration adapter for
+/// callers that have not yet adopted the scan-then-export workflow. Desktop
+/// and the public workflow interface use <see cref="PreparedVoiceSelection"/>
+/// directly.
+/// </summary>
 public sealed record VoiceExportWorkflowRequest(
     string WorkspacePath,
     string OutputDirectory,

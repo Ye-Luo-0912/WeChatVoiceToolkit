@@ -234,7 +234,11 @@ public sealed partial class WorkflowRunHost : ObservableObject
         QueueStateChanged(session);
         var context = new WorkflowContext(
             confirmation,
-            new Progress<OperationProgress>(progress => QueueProgress(session, progress)),
+            // Progress<T> dispatches through SynchronizationContext and can
+            // invoke the callback after the operation task has completed.
+            // Use a synchronous adapter here so the session queue contains
+            // every progress item before ExecuteAsync drains it.
+            new SessionProgress(progress => QueueProgress(session, progress)),
             session.StateMachine);
         return ExecuteAsync(session, context, operation, applyOnUiThread, operationLease);
     }
@@ -410,5 +414,15 @@ public sealed partial class WorkflowRunHost : ObservableObject
     private readonly struct Unit
     {
         public static Unit Value { get; } = new();
+    }
+
+    private sealed class SessionProgress : IProgress<OperationProgress>
+    {
+        private readonly Action<OperationProgress> _report;
+
+        public SessionProgress(Action<OperationProgress> report)
+            => _report = report ?? throw new ArgumentNullException(nameof(report));
+
+        public void Report(OperationProgress value) => _report(value);
     }
 }

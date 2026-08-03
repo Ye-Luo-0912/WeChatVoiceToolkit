@@ -238,18 +238,27 @@ internal static partial class CliApplication
 
             try
             {
-                var context = new WorkflowContext(CreateRoot().AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
-                var result = await CreateRoot().VoiceExport.RunAsync(
-                    new VoiceExportWorkflowRequest(
+                var root = CreateRoot();
+                var direction = ParseDirection(directionText) ?? VoiceDirection.Incoming;
+                var scanContext = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var scanResult = await root.VoiceScan.RunAsync(
+                    new VoiceScanWorkflowRequest(
                         workspacePath,
-                        output,
                         ContactUsername: contactUsername,
                         ConversationId: conversationId,
-                        Direction: ParseDirection(directionText),
+                        Direction: direction,
                         From: VoiceQueryBuilder.ParseUtc(fromText, "--from"),
                         To: VoiceQueryBuilder.ParseUtc(toText, "--to"),
                         MaximumResults: maximumResults),
-                    context,
+                    scanContext,
+                    cancellationToken).ConfigureAwait(false);
+                var prepared = scanResult.Selection
+                    ?? throw new AppFailureException(ErrorCode.WorkflowFailed, "The scan did not produce a prepared export selection.");
+                var exportContext = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var result = await root.VoiceExport.RunAsync(
+                    prepared,
+                    new ExportDestination(output),
+                    exportContext,
                     cancellationToken).ConfigureAwait(false);
                 WriteJson(result.Manifest);
                 return GetExportExitCode(result.Manifest);

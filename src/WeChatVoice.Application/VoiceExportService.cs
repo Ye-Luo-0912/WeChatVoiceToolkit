@@ -20,6 +20,7 @@ public sealed class VoiceExportService
     private readonly IVoiceDecoder? _voiceDecoder;
     private readonly IVoiceDurationCache? _durationCache;
     private readonly IVoiceDurationResolver? _durationResolver;
+    private readonly VoiceExportEligibilityEvaluator _eligibilityEvaluator = new();
 
     public VoiceExportService(
         IVoiceCatalog voiceCatalog,
@@ -91,13 +92,16 @@ public sealed class VoiceExportService
             await foreach (var record in records.ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                resultSetFingerprint.Append(record);
+                if (_eligibilityEvaluator.Evaluate(record, context, query).IsEligible)
+                {
+                    resultSetFingerprint.Append(record);
+                }
                 if (activeExports.Count >= options.MaxDegreeOfParallelism)
                 {
                     await DrainOneAsync(activeExports, cancellationToken).ConfigureAwait(false);
                 }
 
-                activeExports.Add(ExportOneAsync(record, options, context, runId, transaction, journal, entries, failures, cancellationToken));
+                activeExports.Add(ExportOneAsync(record, query, options, context, runId, transaction, journal, entries, failures, cancellationToken));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -252,7 +256,10 @@ public sealed class VoiceExportService
             bypassCatalogDeepScan: false,
             cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            fingerprint.Append(record);
+            if (_eligibilityEvaluator.Evaluate(record, _voiceCatalog.Context, query).IsEligible)
+            {
+                fingerprint.Append(record);
+            }
             prepared.Add(record);
         }
 
@@ -298,6 +305,7 @@ public sealed class VoiceExportService
 
     private async Task ExportOneAsync(
         VoiceRecord record,
+        VoiceQuery query,
         VoiceExportOptions options,
         VoiceCatalogContext context,
         string runId,
@@ -317,18 +325,18 @@ public sealed class VoiceExportService
                 return;
             }
 
-            if (record.PayloadState != VoicePayloadState.Linked
-                || record.PayloadLocator is null
-                || record.PayloadByteLength is <= 0)
+            var eligibility = _eligibilityEvaluator.Evaluate(record, context, query);
+            if (!eligibility.IsEligible)
             {
                 var stage = record.PayloadState switch
                 {
                     VoicePayloadState.Empty => "payload-empty",
                     VoicePayloadState.InvalidHeader => "payload-invalid-header",
                     VoicePayloadState.Ambiguous => "payload-ambiguous",
-                    _ => "association",
+                    VoicePayloadState.Missing => "association",
+                    _ => eligibility.ReasonCode ?? "eligibility",
                 };
-                await RecordFailureAsync(record, stage, $"The voice payload state is {record.PayloadState} and is not exportable.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
+                await RecordFailureAsync(record, stage, eligibility.Detail ?? "The voice record is not exportable.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
                 return;
             }
 

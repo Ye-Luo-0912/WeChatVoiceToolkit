@@ -40,6 +40,7 @@ public sealed class VoiceScanService
         long totalPayloadBytes = 0;
         var durationKnown = 0;
         using var resultSetFingerprint = new VoiceResultSetFingerprintBuilder();
+        var eligibilityEvaluator = new VoiceExportEligibilityEvaluator();
 
         await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
             _catalog,
@@ -48,7 +49,6 @@ public sealed class VoiceScanService
             bypassCatalogDeepScan: _payloadHashResolver is not null,
             cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            resultSetFingerprint.Append(record);
             count++;
             if (record.DurationMs is > 0)
             {
@@ -61,10 +61,12 @@ public sealed class VoiceScanService
             shardCounts[shard] = shardCounts.TryGetValue(shard, out var shardCount) ? shardCount + 1 : 1;
             var stateName = record.PayloadState.ToString();
             payloadStates[stateName] = payloadStates.TryGetValue(stateName, out var stateCount) ? stateCount + 1 : 1;
-            if (record.PayloadState == VoicePayloadState.Linked && record.PayloadByteLength is > 0)
+            var eligibility = eligibilityEvaluator.Evaluate(record, _catalog.Context, query);
+            if (eligibility.IsEligible)
             {
+                resultSetFingerprint.Append(record);
                 exportable++;
-                totalPayloadBytes = checked(totalPayloadBytes + record.PayloadByteLength.Value);
+                totalPayloadBytes = checked(totalPayloadBytes + (record.PayloadByteLength ?? 0));
             }
             if (record.PayloadState == VoicePayloadState.Missing)
             {

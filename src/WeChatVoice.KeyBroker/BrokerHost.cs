@@ -141,6 +141,7 @@ internal static class BrokerHost
                 new MaterializationOptions(Path.GetFullPath(outputRoot)),
                 cancellationToken).ConfigureAwait(false);
             materializationLock = await MaterializationStateStore.AcquireLockAsync(outputRoot, cancellationToken).ConfigureAwait(false);
+            var materializationBinding = await MaterializationStateStore.ReadManifestBindingAsync(outputRoot, cancellationToken).ConfigureAwait(false);
             var sourceIdentity = SnapshotSourceIdentity.TryDerive(
                 verifiedSnapshot.Snapshot.Manifest.SourceDirectory,
                 verifiedSnapshot.Snapshot.Manifest.Files);
@@ -172,7 +173,8 @@ internal static class BrokerHost
                 operationId,
                 failureCode: null,
                 cancellationToken: cancellationToken,
-                heldLock: materializationLock!).ConfigureAwait(false);
+                heldLock: materializationLock!,
+                binding: materializationBinding).ConfigureAwait(false);
             await MaterializationStateStore.TransitionAsync(
                 outputRoot,
                 [MaterializationCommitStates.WorkspaceCommitted],
@@ -180,7 +182,8 @@ internal static class BrokerHost
                 operationId,
                 failureCode: null,
                 cancellationToken: cancellationToken,
-                heldLock: materializationLock!).ConfigureAwait(false);
+                heldLock: materializationLock!,
+                binding: materializationBinding).ConfigureAwait(false);
 
             BrokerProtocol.Write(output, new BrokerResponse(
                 "completed",

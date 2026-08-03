@@ -9,6 +9,61 @@ namespace WeChatVoice.Tests;
 public sealed class VoiceScanServiceTests
 {
     [Fact]
+    public void Guided_export_eligibility_requires_complete_provenance_and_stable_source_identity()
+    {
+        var context = new VoiceCatalogContext(
+            "dataset",
+            "adapter",
+            "v1",
+            "account",
+            ["db-fingerprint"],
+            "snapshot");
+        var query = new VoiceQuery(
+            ConversationId: "peer",
+            Direction: VoiceDirection.Incoming,
+            ContactUsername: "peer",
+            ContactId: "peer");
+        var record = CreateGuidedRecord();
+
+        var evaluator = new VoiceExportEligibilityEvaluator();
+        var accepted = evaluator.Evaluate(record, context, query);
+        Assert.True(accepted.IsEligible, accepted.Detail);
+
+        var incomplete = CreateGuidedRecord(dataSetId: null);
+        var rejected = evaluator.Evaluate(incomplete, context, query);
+        Assert.False(rejected.IsEligible);
+        Assert.Equal("provenance", rejected.ReasonCode);
+
+        var sourceUnbound = CreateGuidedRecord(adapterId: null);
+        rejected = evaluator.Evaluate(sourceUnbound, context, query);
+        Assert.False(rejected.IsEligible);
+        Assert.Equal("source-identity", rejected.ReasonCode);
+
+        static VoiceRecord CreateGuidedRecord(
+            string? dataSetId = "dataset",
+            string? adapterId = "adapter")
+            => new(
+                "message",
+                "peer",
+                DateTimeOffset.UtcNow,
+                VoiceDirection.Incoming,
+                new VoicePayloadLocator("media", 0, "blob"),
+                SourceDatabase: "media.db",
+                PayloadByteLength: 10,
+                SpeakerId: "peer",
+                SnapshotId: "snapshot",
+                AdapterId: adapterId,
+                AccountId: "account",
+                DataSetId: dataSetId,
+                AdapterVersion: "v1",
+                DatabaseFingerprints: ["db-fingerprint"],
+                AdapterFamily: adapterId,
+                AccountStableId: "account",
+                ConversationStableId: "peer",
+                PayloadState: VoicePayloadState.Linked);
+    }
+
+    [Fact]
     public async Task ScanAsync_reports_duration_shards_missing_media_empty_blobs_and_duplicates()
     {
         var records = new[]

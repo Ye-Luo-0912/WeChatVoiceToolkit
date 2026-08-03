@@ -33,7 +33,8 @@ public sealed class VoiceResultSetFingerprintBuilder : IDisposable
             TotalPayloadBytes = checked(TotalPayloadBytes + record.PayloadByteLength.Value);
         }
 
-        var stableKey = record.SourceStableKey ?? $"unbound:{record.MessageId}";
+        var stableKey = record.SourceStableKey
+            ?? throw new InvalidDataException("A result-set fingerprint requires a complete SourceStableKey.");
         var canonical = string.Join(
             '\n',
             stableKey,

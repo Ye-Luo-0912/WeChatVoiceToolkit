@@ -28,6 +28,40 @@ public sealed class DecoderVoiceDurationResolverTests
     }
 
     [Fact]
+    public async Task Jsonl_duration_cache_compacts_duplicate_and_expired_private_keys()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var path = temporary.GetPath(".wechatvoice", "duration-cache.jsonl");
+        var sourceKey = "adapter|account|private-contact|message|media";
+        var payloadHash = new string('c', 64);
+        var key = new VoiceDurationCacheKey(sourceKey, payloadHash, "decoder-v1");
+
+        // Simulate a pre-hash cache line from an older build. It must be
+        // dropped during the first read and must not remain as readable PII.
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(
+            path,
+            "{\"sourceStableKey\":\"" + sourceKey + "\",\"payloadSha256\":\"" + payloadHash
+            + "\",\"decoderVersion\":\"decoder-v1\",\"durationMs\":123,\"updatedAtUtc\":\"2000-01-01T00:00:00Z\"}\n");
+
+        await using var cache = new JsonlVoiceDurationCache(path, "decoder-v1");
+        Assert.Null(await cache.TryGetAsync(key, CancellationToken.None));
+        Assert.DoesNotContain(sourceKey, await File.ReadAllTextAsync(path), StringComparison.Ordinal);
+
+        for (var index = 1; index <= 320; index++)
+        {
+            await cache.StoreAsync(
+                new VoiceDurationCacheEntry(key, index, DateTimeOffset.UtcNow),
+                CancellationToken.None);
+        }
+
+        var lines = await File.ReadAllLinesAsync(path);
+        Assert.True(lines.Length < 100, $"duplicate cache lines were not compacted: {lines.Length}");
+        Assert.DoesNotContain(sourceKey, await File.ReadAllTextAsync(path), StringComparison.Ordinal);
+        Assert.Equal(320, await cache.TryGetAsync(key, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Cached_resolver_does_not_start_decoder_when_content_key_is_cached()
     {
         using var temporary = new TestTemporaryDirectory();

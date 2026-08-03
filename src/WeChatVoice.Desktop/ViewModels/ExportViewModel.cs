@@ -3,7 +3,6 @@ using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Desktop.Infrastructure;
-using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.ViewModels;
 
@@ -118,24 +117,8 @@ public sealed partial class ExportViewModel : PageViewModelBase
             }
 
             return await Workflows.VoiceExport.RunAsync(
-                new VoiceExportWorkflowRequest(
-                    workspacePath,
-                    outputDirectory,
-                    ContactUsername: plan.ContactUsername,
-                    ConversationId: null,
-                    Direction: plan.Direction,
-                    From: plan.FromUtc,
-                    To: plan.ToUtc,
-                    MaximumResults: plan.MaximumResults,
-                     ExpectedResultSetFingerprint: plan.ResultSetFingerprint,
-                     ExpectedResultCount: plan.ResultCount,
-                     ExpectedTotalPayloadBytes: plan.TotalPayloadBytes,
-                    ExpectedContactId: plan.ContactId,
-                    MinimumDurationMs: plan.MinimumDurationMs,
-                    MaximumDurationMs: plan.MaximumDurationMs,
-                    MinimumPayloadBytes: plan.MinimumPayloadBytes,
-                    MaximumPayloadBytes: plan.MaximumPayloadBytes,
-                    ResolveDurations: plan.ResolveDurations),
+                plan,
+                new ExportDestination(outputDirectory),
                 context,
                 cancellationToken).ConfigureAwait(false);
         },
@@ -276,7 +259,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
     private static string ShortFingerprint(string fingerprint)
         => fingerprint.Length <= 16 ? fingerprint : fingerprint[..16] + "…";
 
-    private bool IsCurrentExportSelection(VoiceSelectionPlan plan, ContactRecord contact, string? workspacePath)
+    private bool IsCurrentExportSelection(PreparedVoiceSelection plan, ContactRecord contact, string? workspacePath)
         => ReferenceEquals(Services.Project.SelectionPlan, plan)
             && ReferenceEquals(Services.Project.Scan?.Report, plan.ScanReport)
             && Services.Project.SelectedContact is { } current

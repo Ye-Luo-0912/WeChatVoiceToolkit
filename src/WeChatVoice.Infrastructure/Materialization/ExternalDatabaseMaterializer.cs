@@ -118,12 +118,10 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
         var staging = Path.Combine(parent, $".{Path.GetFileName(options.OutputDirectory)}.{Guid.NewGuid():N}.tmp");
         Directory.CreateDirectory(staging);
         var operationId = Guid.NewGuid().ToString("N");
-        await MaterializationStateStore.TransitionAsync(
+        await MaterializationStateStore.CreateStagingStateAsync(
             staging,
-            Array.Empty<string>(),
-            MaterializationCommitStates.Staging,
             operationId,
-            failureCode: null,
+            new MaterializationStateBinding(rawSnapshot.SnapshotId, Id),
             cancellationToken: cancellationToken).ConfigureAwait(false);
         Exception? primaryFailure = null;
         try
@@ -170,13 +168,16 @@ public sealed class ExternalDatabaseMaterializer : IDatabaseMaterializer
                 await manifestStream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            var manifestSha256 = await FileHashing.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
+
             await MaterializationStateStore.TransitionAsync(
                 staging,
                 [MaterializationCommitStates.Staging],
                 MaterializationCommitStates.DatabasesCommitted,
                 operationId,
                 failureCode: null,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: cancellationToken,
+                binding: new MaterializationStateBinding(rawSnapshot.SnapshotId, Id, manifestSha256, workspaceId)).ConfigureAwait(false);
             Directory.Move(staging, options.OutputDirectory);
             var movedManifestPath = Path.Combine(options.OutputDirectory, ".wechatvoice", "materialization-manifest.json");
             return new VerifiedMaterialization(new MaterializationResult(

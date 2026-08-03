@@ -89,12 +89,10 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
         }
 
         var operationId = Guid.NewGuid().ToString("N");
-        await MaterializationStateStore.TransitionAsync(
+        await MaterializationStateStore.CreateStagingStateAsync(
             staging,
-            Array.Empty<string>(),
-            MaterializationCommitStates.Staging,
             operationId,
-            failureCode: null,
+            new MaterializationStateBinding(snapshot.SnapshotId, BackendId),
             cancellationToken: cancellationToken).ConfigureAwait(false);
         checkpoint?.Invoke("materialization-staging-created");
         Exception? primaryFailure = null;
@@ -237,13 +235,16 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            var manifestSha256 = await FileHashing.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
+
             await MaterializationStateStore.TransitionAsync(
                 staging,
                 [MaterializationCommitStates.Staging],
                 MaterializationCommitStates.DatabasesCommitted,
                 operationId,
                 failureCode: null,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: cancellationToken,
+                binding: new MaterializationStateBinding(snapshot.SnapshotId, BackendId, manifestSha256, workspaceId)).ConfigureAwait(false);
             Directory.Move(staging, options.OutputDirectory);
             if (BrokerDirectorySecurity.IsElevated())
             {

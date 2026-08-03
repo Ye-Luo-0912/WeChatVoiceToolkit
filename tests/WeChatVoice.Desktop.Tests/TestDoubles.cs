@@ -167,13 +167,55 @@ public sealed class FakeScanWorkflow : IVoiceScanWorkflow
     public Task<VoiceScanWorkflowResult> RunAsync(VoiceScanWorkflowRequest request, WorkflowContext context, CancellationToken cancellationToken)
     {
         LastRequest = request;
-        return RunOverride is not null ? RunOverride(cancellationToken) : Task.FromResult(Result);
+        return CompleteResultAsync(request, cancellationToken);
+    }
+
+    private async Task<VoiceScanWorkflowResult> CompleteResultAsync(VoiceScanWorkflowRequest request, CancellationToken cancellationToken)
+    {
+        var result = RunOverride is not null ? await RunOverride(cancellationToken).ConfigureAwait(false) : Result;
+        if (result.Selection is not null)
+        {
+            return result;
+        }
+
+        var direction = request.Direction ?? VoiceDirection.Incoming;
+        var report = result.Report;
+        var selection = new PreparedVoiceSelection(
+            Path.GetFullPath(request.WorkspacePath),
+            result.Workspace.Workspace.WorkspaceId,
+            result.Workspace.DataSet.DataSetId,
+            result.Workspace.DataSet.AccountId ?? "wxid_owner",
+            result.Workspace.DataSet.SnapshotId,
+            result.Workspace.DataSet.AdapterId ?? "fake-adapter",
+            "fake-v1",
+            request.ExpectedContactId ?? "contact-b",
+            request.ContactUsername ?? "wxid_b",
+            direction,
+            request.From?.ToUniversalTime(),
+            request.To?.ToUniversalTime(),
+            request.MaximumResults,
+            request.DeepScan,
+            request.ResolveDurations,
+            request.MinimumDurationMs,
+            request.MaximumDurationMs,
+            request.MinimumPayloadBytes,
+            request.MaximumPayloadBytes,
+            "fake-query",
+            report.ResultSetFingerprint,
+            report.ExportableVoiceCount,
+            report.TotalPayloadBytes,
+            PreparedVoiceSelection.CurrentSelectionEngineVersion,
+            PreparedVoiceSelection.NoDurationResolverVersion,
+            report);
+        return result with { Selection = selection };
     }
 }
 
 public sealed class FakeExportWorkflow : IVoiceExportWorkflow
 {
     public VoiceExportWorkflowRequest? LastRequest { get; private set; }
+    public PreparedVoiceSelection? LastPlan { get; private set; }
+    public ExportDestination? LastDestination { get; private set; }
 
     public VoiceExportManifest Manifest { get; set; } = new(
         DateTimeOffset.UtcNow,
@@ -182,9 +224,27 @@ public sealed class FakeExportWorkflow : IVoiceExportWorkflow
         RunId: "run-1",
         RunStatus: ExportRunStatus.CompletedWithFailures);
 
-    public Task<VoiceExportWorkflowResult> RunAsync(VoiceExportWorkflowRequest request, WorkflowContext context, CancellationToken cancellationToken)
+    public Task<VoiceExportWorkflowResult> RunAsync(PreparedVoiceSelection plan, ExportDestination destination, WorkflowContext context, CancellationToken cancellationToken)
     {
-        LastRequest = request;
+        LastPlan = plan;
+        LastDestination = destination;
+        LastRequest = new VoiceExportWorkflowRequest(
+            plan.WorkspaceDocumentPath,
+            destination.OutputDirectory,
+            plan.ContactUsername,
+            Direction: plan.Direction,
+            From: plan.FromUtc,
+            To: plan.ToUtc,
+            MaximumResults: plan.MaximumResults,
+            ExpectedResultSetFingerprint: plan.ResultSetFingerprint,
+            ExpectedResultCount: plan.ResultCount,
+            ExpectedTotalPayloadBytes: plan.TotalPayloadBytes,
+            ExpectedContactId: plan.ContactId,
+            MinimumDurationMs: plan.MinimumDurationMs,
+            MaximumDurationMs: plan.MaximumDurationMs,
+            MinimumPayloadBytes: plan.MinimumPayloadBytes,
+            MaximumPayloadBytes: plan.MaximumPayloadBytes,
+            ResolveDurations: plan.ResolveDurations);
         return Task.FromResult(new VoiceExportWorkflowResult(Manifest, TestDoubles.Verified()));
     }
 

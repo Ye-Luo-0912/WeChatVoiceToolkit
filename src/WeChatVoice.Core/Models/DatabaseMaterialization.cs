@@ -157,11 +157,48 @@ public static class MaterializationCommitStates
         => state is Staging or DatabasesCommitted or WorkspaceCommitted or Completed or FailedRecoverable;
 }
 
+public sealed record MaterializationStateBinding
+{
+    public MaterializationStateBinding(
+        string SourceSnapshotId,
+        string BackendId,
+        string? ManifestSha256 = null,
+        string? WorkspaceId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(SourceSnapshotId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(BackendId);
+        if (ManifestSha256 is not null && (ManifestSha256.Length != 64 || !ManifestSha256.All(Uri.IsHexDigit)))
+        {
+            throw new ArgumentException("The materialization manifest binding must be a SHA-256 value.", nameof(ManifestSha256));
+        }
+
+        if (WorkspaceId is not null && string.IsNullOrWhiteSpace(WorkspaceId))
+        {
+            throw new ArgumentException("The materialization workspace binding cannot be empty.", nameof(WorkspaceId));
+        }
+
+        this.SourceSnapshotId = SourceSnapshotId;
+        this.BackendId = BackendId;
+        this.ManifestSha256 = ManifestSha256?.ToLowerInvariant();
+        this.WorkspaceId = WorkspaceId;
+    }
+
+    public string SourceSnapshotId { get; }
+    public string BackendId { get; }
+    public string? ManifestSha256 { get; }
+    public string? WorkspaceId { get; }
+
+    public bool IsComplete
+        => !string.IsNullOrWhiteSpace(ManifestSha256)
+            && !string.IsNullOrWhiteSpace(WorkspaceId);
+}
+
 public sealed record MaterializationStateDocument(
     string State,
     DateTimeOffset UpdatedAtUtc,
     string? FailureCode = null,
-    string? OperationId = null);
+    string? OperationId = null,
+    MaterializationStateBinding? Binding = null);
 
 /// <summary>
 /// Fixed output contract emitted by a materialization backend. The backend,

@@ -7,17 +7,18 @@ using WeChatVoice.Infrastructure.Serialization;
 namespace WeChatVoice.Infrastructure.Audio;
 
 /// <summary>
-/// Append-only deep-scan cache. The verified database group fingerprint is
-/// part of every key, so a cache entry never becomes evidence for a changed
-/// Workspace. A malformed or torn line is ignored as a non-authoritative
-/// optimization record.
+/// Durable deep-scan cache with hashed source identities, cross-process
+/// single-writer coordination, and bounded atomic compaction.
 /// </summary>
 public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
 {
     private const int MaxLineLength = 64 * 1024;
     private readonly string _path;
+    private readonly JsonlCacheFileStore _fileStore;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private Dictionary<VoicePayloadHashCacheKey, string>? _entries;
+    private Dictionary<PayloadLookupKey, PayloadCacheValue>? _entries;
+    private int _lineCount;
+    private bool _requiresCompaction;
     private long _loadedLength = -1;
     private long _loadedLastWriteTicks = -1;
     private int _disposed;
@@ -26,6 +27,7 @@ public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         _path = Path.GetFullPath(path);
+        _fileStore = new JsonlCacheFileStore(_path);
     }
 
     public async ValueTask<string?> TryGetAsync(
@@ -40,7 +42,17 @@ public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
         {
             EnsureNotDisposed();
             await EnsureLoadedAsync(cancellationToken).ConfigureAwait(false);
-            return _entries!.TryGetValue(key, out var hash) ? hash : null;
+            if (_requiresCompaction)
+            {
+                await using var writeLock = await _fileStore.AcquireWriteLockAsync(cancellationToken).ConfigureAwait(false);
+                await EnsureLoadedAsync(cancellationToken).ConfigureAwait(false);
+                if (_requiresCompaction)
+                {
+                    await CompactAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            return _entries!.TryGetValue(ToLookupKey(key), out var value) ? value.PayloadSha256 : null;
         }
         finally
         {
@@ -59,27 +71,37 @@ public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
         try
         {
             EnsureNotDisposed();
+            await using var writeLock = await _fileStore.AcquireWriteLockAsync(cancellationToken).ConfigureAwait(false);
             await EnsureLoadedAsync(cancellationToken).ConfigureAwait(false);
-            if (_entries!.TryGetValue(entry.Key, out var existing)
-                && string.Equals(existing, entry.PayloadSha256, StringComparison.OrdinalIgnoreCase))
+            var lookupKey = ToLookupKey(entry.Key);
+            if (_entries!.TryGetValue(lookupKey, out var existing)
+                && string.Equals(existing.PayloadSha256, entry.PayloadSha256, StringComparison.OrdinalIgnoreCase))
             {
+                if (_requiresCompaction)
+                {
+                    await CompactAsync(cancellationToken).ConfigureAwait(false);
+                }
+
                 return;
             }
 
-            var directory = Path.GetDirectoryName(_path)
-                ?? throw new InvalidDataException("The deep-scan cache path has no parent directory.");
-            Directory.CreateDirectory(directory);
             var line = JsonSerializer.Serialize(
                 new CacheLine(
-                    entry.Key.SourceStableKey,
+                    lookupKey.SourceStableKeyHash,
+                    null,
                     entry.Key.PayloadByteLength,
                     entry.Key.DatabaseFingerprint,
                     entry.PayloadSha256,
                     entry.UpdatedAtUtc),
-                InfrastructureJson.Compact) + Environment.NewLine;
-            await File.AppendAllTextAsync(_path, line, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
-            _entries[entry.Key] = entry.PayloadSha256;
+                InfrastructureJson.Compact);
+            await _fileStore.AppendLineAsync(line, cancellationToken).ConfigureAwait(false);
+            _entries[lookupKey] = new PayloadCacheValue(entry.PayloadSha256, entry.UpdatedAtUtc);
+            _lineCount++;
             UpdateLoadedStamp();
+            if (JsonlCacheFileStore.ShouldCompact(new FileInfo(_path).Length, _lineCount, _entries.Count, _requiresCompaction))
+            {
+                await CompactAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -102,7 +124,9 @@ public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
         var info = new FileInfo(_path);
         if (!info.Exists)
         {
-            _entries = new Dictionary<VoicePayloadHashCacheKey, string>();
+            _entries = new Dictionary<PayloadLookupKey, PayloadCacheValue>();
+            _lineCount = 0;
+            _requiresCompaction = false;
             _loadedLength = 0;
             _loadedLastWriteTicks = 0;
             return;
@@ -115,7 +139,10 @@ public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
             return;
         }
 
-        var entries = new Dictionary<VoicePayloadHashCacheKey, string>();
+        var entries = new Dictionary<PayloadLookupKey, PayloadCacheValue>();
+        var lineCount = 0;
+        var requiresCompaction = false;
+        var expiration = DateTimeOffset.UtcNow - JsonlCacheFileStore.EntryRetention;
         await using var stream = new FileStream(
             _path,
             FileMode.Open,
@@ -126,8 +153,10 @@ public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 64 * 1024);
         while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
         {
+            lineCount++;
             if (line.Length == 0 || line.Length > MaxLineLength)
             {
+                requiresCompaction = true;
                 continue;
             }
 
@@ -138,29 +167,92 @@ public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
             }
             catch (JsonException)
             {
+                requiresCompaction = true;
                 continue;
             }
 
             if (parsed is null
-                || string.IsNullOrWhiteSpace(parsed.SourceStableKey)
                 || parsed.PayloadByteLength <= 0
                 || string.IsNullOrWhiteSpace(parsed.DatabaseFingerprint)
                 || !IsSha256(parsed.PayloadSha256))
             {
+                requiresCompaction = true;
                 continue;
             }
 
-            var key = new VoicePayloadHashCacheKey(
-                parsed.SourceStableKey,
-                parsed.PayloadByteLength,
-                parsed.DatabaseFingerprint);
-            entries[key] = parsed.PayloadSha256.ToLowerInvariant();
+            if (parsed.UpdatedAtUtc < expiration)
+            {
+                requiresCompaction = true;
+                continue;
+            }
+
+            var sourceHash = parsed.SourceStableKeyHash;
+            if (!IsSha256(sourceHash))
+            {
+                sourceHash = string.IsNullOrWhiteSpace(parsed.SourceStableKey)
+                    ? null
+                    : JsonlCacheFileStore.HashSourceStableKey(parsed.SourceStableKey);
+                requiresCompaction = true;
+            }
+
+            if (sourceHash is null)
+            {
+                requiresCompaction = true;
+                continue;
+            }
+
+            var key = new PayloadLookupKey(sourceHash, parsed.PayloadByteLength, parsed.DatabaseFingerprint);
+            entries[key] = new PayloadCacheValue(parsed.PayloadSha256.ToLowerInvariant(), parsed.UpdatedAtUtc);
+        }
+
+        if (entries.Count > JsonlCacheFileStore.MaximumEntries)
+        {
+            entries = entries
+                .OrderByDescending(static pair => pair.Value.UpdatedAtUtc)
+                .Take(JsonlCacheFileStore.MaximumEntries)
+                .ToDictionary(static pair => pair.Key, static pair => pair.Value);
+            requiresCompaction = true;
         }
 
         _entries = entries;
+        _lineCount = lineCount;
+        _requiresCompaction = requiresCompaction;
         _loadedLength = info.Length;
         _loadedLastWriteTicks = info.LastWriteTimeUtc.Ticks;
     }
+
+    private async Task CompactAsync(CancellationToken cancellationToken)
+    {
+        var entries = _entries!;
+        if (entries.Count > JsonlCacheFileStore.MaximumEntries)
+        {
+            entries = entries
+                .OrderByDescending(static pair => pair.Value.UpdatedAtUtc)
+                .ThenBy(static pair => pair.Key.SourceStableKeyHash, StringComparer.Ordinal)
+                .ThenBy(static pair => pair.Key.PayloadByteLength)
+                .ThenBy(static pair => pair.Key.DatabaseFingerprint, StringComparer.Ordinal)
+                .Take(JsonlCacheFileStore.MaximumEntries)
+                .ToDictionary(static pair => pair.Key, static pair => pair.Value);
+            _entries = entries;
+        }
+
+        var lines = entries.Select(static pair => JsonSerializer.Serialize(
+            new CacheLine(
+                pair.Key.SourceStableKeyHash,
+                null,
+                pair.Key.PayloadByteLength,
+                pair.Key.DatabaseFingerprint,
+                pair.Value.PayloadSha256,
+                pair.Value.UpdatedAtUtc),
+            InfrastructureJson.Compact));
+        await _fileStore.ReplaceAsync(lines, cancellationToken).ConfigureAwait(false);
+        _lineCount = entries.Count;
+        _requiresCompaction = false;
+        UpdateLoadedStamp();
+    }
+
+    private static PayloadLookupKey ToLookupKey(VoicePayloadHashCacheKey key)
+        => new(JsonlCacheFileStore.HashSourceStableKey(key.SourceStableKey), key.PayloadByteLength, key.DatabaseFingerprint);
 
     private void UpdateLoadedStamp()
     {
@@ -175,8 +267,18 @@ public sealed class JsonlVoicePayloadHashCache : IVoicePayloadHashCache
     private static bool IsSha256(string? value)
         => value is not null && value.Length == 64 && value.All(Uri.IsHexDigit);
 
+    private readonly record struct PayloadLookupKey(
+        string SourceStableKeyHash,
+        long PayloadByteLength,
+        string DatabaseFingerprint);
+
+    private readonly record struct PayloadCacheValue(
+        string PayloadSha256,
+        DateTimeOffset UpdatedAtUtc);
+
     private sealed record CacheLine(
-        string SourceStableKey,
+        string? SourceStableKeyHash,
+        string? SourceStableKey,
         long PayloadByteLength,
         string DatabaseFingerprint,
         string PayloadSha256,

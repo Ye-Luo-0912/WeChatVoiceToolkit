@@ -205,18 +205,8 @@ public sealed partial class ScanViewModel : PageViewModelBase
             var contact = selected!;
             var parameters = parsedParameters
                 ?? throw new AppFailureException(ErrorCode.WorkflowFailed, "扫描请求参数未能固定。");
-            var dataSetId = result.Workspace.DataSet.DataSetId ?? "";
-            var accountId = result.Workspace.DataSet.AccountId ?? "";
-            var fingerprint = VoiceSelectionPlan.ComputeFingerprint(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
-                contact.ContactId, contact.Username!, parameters.Direction, parameters.From, parameters.To, parameters.MaximumResults,
-                parameters.MinimumDurationMs, parameters.MaximumDurationMs,
-                parameters.MinimumPayloadBytes, parameters.MaximumPayloadBytes,
-                resolveDurations);
-            Services.Project.SelectionPlan = new VoiceSelectionPlan(result.Workspace.Workspace.WorkspaceId, dataSetId, accountId,
-                contact.ContactId, contact.Username!, parameters.Direction, parameters.From, parameters.To, parameters.MaximumResults, fingerprint, report,
-                parameters.MinimumDurationMs, parameters.MaximumDurationMs,
-                parameters.MinimumPayloadBytes, parameters.MaximumPayloadBytes,
-                resolveDurations);
+            Services.Project.SelectionPlan = result.Selection
+                ?? throw new AppFailureException(ErrorCode.WorkflowFailed, "扫描未返回不可变的导出选择计划。");
             MatchedVoiceCount = report.MatchedVoiceCount;
             MissingCount = report.UnassociatedMediaCount;
             EmptyCount = report.EmptyBlobCount;

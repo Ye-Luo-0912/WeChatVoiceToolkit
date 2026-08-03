@@ -114,6 +114,7 @@ public sealed class ExternalMaterializationExecutor(
         try
         {
             stateLock = await MaterializationStateStore.AcquireLockAsync(outputRoot, cancellationToken).ConfigureAwait(false);
+            var binding = await MaterializationStateStore.ReadManifestBindingAsync(outputRoot, cancellationToken).ConfigureAwait(false);
             var localWorkspace = await workspaceCreator.CreateAsync(
                 materialization,
                 confirmedAccountId,
@@ -130,7 +131,8 @@ public sealed class ExternalMaterializationExecutor(
                 operationId,
                 failureCode: null,
                 cancellationToken: cancellationToken,
-                heldLock: stateLock!).ConfigureAwait(false);
+                heldLock: stateLock!,
+                binding: binding).ConfigureAwait(false);
             await MaterializationStateStore.TransitionAsync(
                 outputRoot,
                 [MaterializationCommitStates.WorkspaceCommitted],
@@ -138,7 +140,8 @@ public sealed class ExternalMaterializationExecutor(
                 operationId,
                 failureCode: null,
                 cancellationToken: cancellationToken,
-                heldLock: stateLock!).ConfigureAwait(false);
+                heldLock: stateLock!,
+                binding: binding).ConfigureAwait(false);
             return new ExecutedMaterialization(fullWorkspacePath, null, materialization.Result.WorkspaceId);
         }
         catch (AppFailureException)

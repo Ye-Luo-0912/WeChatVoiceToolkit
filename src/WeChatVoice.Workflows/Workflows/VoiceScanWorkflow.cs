@@ -37,7 +37,7 @@ public sealed class VoiceScanWorkflow(
             context.Report(OperationPhase.VoiceScan, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, request.ContactUsername, cancellationToken).ConfigureAwait(false);
             EnsureExpectedContact(request.ExpectedContactId, contact);
-            var query = VoiceQueryBuilder.Build(request.ConversationId, contact, request.Direction, request.From, request.To,
+            var query = VoiceQueryBuilder.Build(request.ConversationId, contact, request.Direction ?? VoiceDirection.Incoming, request.From, request.To,
                 request.MaximumResults, request.DeepScan, request.ResolveDurations,
                 request.MinimumDurationMs, request.MaximumDurationMs,
                 request.MinimumPayloadBytes, request.MaximumPayloadBytes);
@@ -46,9 +46,17 @@ public sealed class VoiceScanWorkflow(
                 ? new CachedVoiceDurationResolver(durationResolver, durationCache)
                 : durationResolver;
             var report = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache).ScanAsync(query, cancellationToken).ConfigureAwait(false);
+            var selection = PreparedVoiceSelection.Create(
+                request.WorkspacePath,
+                session.Workspace,
+                session.Catalog.Context,
+                contact,
+                query,
+                report,
+                SelectionIdentity.DurationResolverVersion(effectiveDurationResolver));
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceScan, OperationStageIds.Completing);
-            return new VoiceScanWorkflowResult(report, session.Workspace);
+            return new VoiceScanWorkflowResult(report, session.Workspace, selection);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

@@ -156,6 +156,10 @@ public sealed class FakeBackend
             DurationMs: length * 20,
             MediaLinked: true,
             SpeakerId: direction == VoiceDirection.Incoming ? ContactUsername : AccountId,
+            DataSetId: "dataset-fake",
+            AdapterVersion: "fake-v1",
+            DatabaseFingerprints: ["fingerprint-1"],
+            AdapterFamily: "fake-adapter",
             AccountStableId: AccountId,
             ConversationStableId: ContactUsername,
             PayloadState: VoicePayloadState.Linked);

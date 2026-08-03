@@ -179,7 +179,10 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
 
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = artifact.LocalPath,
+            // immutable=1 prevents SQLite from opening a newly-created WAL or
+            // SHM after the Workspace lease has verified the sidecar set. The
+            // lease still rechecks that set before every catalog operation.
+            DataSource = BuildImmutableDataSource(artifact.LocalPath),
             Mode = SqliteOpenMode.ReadOnly,
             Cache = SqliteCacheMode.Private,
             Pooling = false,
@@ -195,6 +198,9 @@ public sealed class WeixinWindows4Adapter : IWeChatDataSetAdapter
             throw;
         }
     }
+
+    private static string BuildImmutableDataSource(string path)
+        => $"file:{Path.GetFullPath(path).Replace('\\', '/')}?immutable=1";
 
     private static bool IsContactArtifact(DatabaseArtifact artifact)
         => RoleEquals(artifact, "contact") && Weixin41155SchemaSignature.MatchesContact(artifact.Schema);

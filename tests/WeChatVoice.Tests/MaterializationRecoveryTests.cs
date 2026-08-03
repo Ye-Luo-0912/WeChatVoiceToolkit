@@ -15,13 +15,20 @@ public sealed class MaterializationRecoveryTests
         using var temporary = new TestTemporaryDirectory();
         var outputRoot = temporary.CreateDirectory("state-machine");
         var operationId = "state-test";
+        await WriteManifestAsync(outputRoot, new MaterializationManifest(
+            "state-workspace",
+            "state-snapshot",
+            "state-backend",
+            "1",
+            new string('a', 64),
+            [],
+            []));
+        var binding = await MaterializationStateStore.ReadManifestBindingAsync(outputRoot, CancellationToken.None);
 
-        await MaterializationStateStore.TransitionAsync(
+        await MaterializationStateStore.CreateStagingStateAsync(
             outputRoot,
-            Array.Empty<string>(),
-            MaterializationCommitStates.Staging,
             operationId,
-            null,
+            new MaterializationStateBinding(binding.SourceSnapshotId, binding.BackendId),
             CancellationToken.None);
         await MaterializationStateStore.TransitionAsync(
             outputRoot,
@@ -29,21 +36,24 @@ public sealed class MaterializationRecoveryTests
             MaterializationCommitStates.DatabasesCommitted,
             operationId,
             null,
-            CancellationToken.None);
+            CancellationToken.None,
+            binding);
         await MaterializationStateStore.TransitionAsync(
             outputRoot,
             [MaterializationCommitStates.DatabasesCommitted],
             MaterializationCommitStates.WorkspaceCommitted,
             operationId,
             null,
-            CancellationToken.None);
+            CancellationToken.None,
+            binding);
         await MaterializationStateStore.TransitionAsync(
             outputRoot,
             [MaterializationCommitStates.WorkspaceCommitted],
             MaterializationCommitStates.Completed,
             operationId,
             null,
-            CancellationToken.None);
+            CancellationToken.None,
+            binding);
 
         Assert.False(await MaterializationStateStore.TryTransitionToFailedRecoverableAsync(
             outputRoot,
@@ -54,6 +64,51 @@ public sealed class MaterializationRecoveryTests
         var state = await MaterializationStateStore.ReadAsync(outputRoot, CancellationToken.None);
         Assert.Equal(MaterializationCommitStates.Completed, state.State);
         Assert.Equal(operationId, state.OperationId);
+    }
+
+    [Fact]
+    public async Task Missing_state_can_only_be_created_as_bound_staging_and_binding_is_immutable()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var outputRoot = temporary.CreateDirectory("state-binding");
+
+        await Assert.ThrowsAsync<MaterializationStateTransitionException>(() =>
+            MaterializationStateStore.TransitionAsync(
+                outputRoot,
+                [],
+                MaterializationCommitStates.Completed,
+                "invalid-create",
+                null,
+                CancellationToken.None));
+
+        await WriteManifestAsync(outputRoot, new MaterializationManifest(
+            "bound-workspace",
+            "bound-snapshot",
+            "bound-backend",
+            "1",
+            new string('d', 64),
+            [],
+            []));
+        var binding = await MaterializationStateStore.ReadManifestBindingAsync(outputRoot, CancellationToken.None);
+        await MaterializationStateStore.CreateStagingStateAsync(
+            outputRoot,
+            "bound-operation",
+            new MaterializationStateBinding(binding.SourceSnapshotId, binding.BackendId),
+            CancellationToken.None);
+
+        await Assert.ThrowsAsync<MaterializationStateTransitionException>(() =>
+            MaterializationStateStore.TransitionAsync(
+                outputRoot,
+                [MaterializationCommitStates.Staging],
+                MaterializationCommitStates.DatabasesCommitted,
+                "wrong-binding",
+                null,
+                CancellationToken.None,
+                new MaterializationStateBinding(
+                    "different-snapshot",
+                    binding.BackendId,
+                    binding.ManifestSha256,
+                    binding.WorkspaceId)));
     }
 
     [Fact]
@@ -95,7 +150,7 @@ public sealed class MaterializationRecoveryTests
                 new MaterializationFile("databases/message_0.db", hash, info.Length),
                 new MaterializationFile(".wechatvoice/materialization-output.json", backendOutputHash, backendOutputInfo.Length),
             ]));
-        await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.DatabasesCommitted, CancellationToken.None);
+        await CreateBoundDatabaseCommittedStateAsync(outputRoot);
 
         var workspacePath = temporary.GetPath("recovered.workspace.json");
         var verified = await new MaterializationRecoveryService().RecoverAsync(outputRoot, workspacePath, null, CancellationToken.None);
@@ -125,7 +180,7 @@ public sealed class MaterializationRecoveryTests
             new string('c', 64),
             [new MaterializedDatabase("message_0.db", "group-2", "databases/message_0.db", "message", 0, hash, info.Length, schema.SchemaFingerprint!)],
             [new MaterializationFile("databases/message_0.db", hash, info.Length)]));
-        await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.DatabasesCommitted, CancellationToken.None);
+        await CreateBoundDatabaseCommittedStateAsync(outputRoot);
         await File.AppendAllBytesAsync(databasePath, [0x7F]);
 
         await Assert.ThrowsAsync<InvalidDataException>(() => new MaterializationRecoveryService().RecoverAsync(
@@ -179,37 +234,27 @@ public sealed class MaterializationRecoveryTests
     public async Task RepairWorkspaceAsync_recreates_missing_document_without_downgrading_completed_state()
     {
         using var temporary = new TestTemporaryDirectory();
-        var fixture = await CreateCommittedWorkspaceAsync(temporary, "repair-completed");
-        var manifestPath = Path.Combine(fixture.OutputRoot, ".wechatvoice", "materialization-manifest.json");
-        MaterializationManifest manifest;
-        await using (var stream = File.OpenRead(manifestPath))
-        {
-            manifest = await JsonSerializer.DeserializeAsync<MaterializationManifest>(stream, InfrastructureJson.Compact)
-                ?? throw new InvalidDataException("The test manifest was empty.");
-        }
+        var fixture = await CreateCommittedWorkspaceAsync(
+            temporary,
+            "repair-completed",
+            accountId: "wxid_owner",
+            recover: false);
 
-        await WriteManifestAsync(fixture.OutputRoot, new MaterializationManifest(
-            manifest.WorkspaceId,
-            manifest.SourceSnapshotId,
-            manifest.BackendId,
-            manifest.BackendVersion,
-            manifest.BackendSha256,
-            manifest.Databases,
-            manifest.Files,
-            manifest.KeyExtractionProfileId,
-            manifest.ProcessVersion,
-            manifest.ProcessImageSha256,
-            manifest.WcdbModuleSha256,
-            manifest.AccountSidFingerprint,
-            AccountId: "wxid_owner",
-            AccountEvidenceState: AccountEvidenceState.DatabaseConfirmed));
+        var identity = new AccountIdentity(AccountIdentityState.Candidate, null, UserConfirmationState.Confirmed, "wxid_owner");
+        await new MaterializationRecoveryService().RecoverAsync(
+            fixture.OutputRoot,
+            fixture.WorkspacePath,
+            "wxid_owner",
+            CancellationToken.None,
+            identity);
 
         File.Delete(fixture.WorkspacePath);
         var repaired = await new MaterializationRecoveryService().RepairWorkspaceAsync(
             fixture.OutputRoot,
             fixture.WorkspacePath,
             "wxid_owner",
-            CancellationToken.None);
+            CancellationToken.None,
+            identity);
 
         Assert.True(File.Exists(fixture.WorkspacePath));
         Assert.Equal("wxid_owner", repaired.Workspace.AccountIdentity.ConfirmedAccountId);
@@ -309,7 +354,7 @@ public sealed class MaterializationRecoveryTests
                 new MaterializationFile(".wechatvoice/materialization-output.json", backendOutputHash, backendOutputInfo.Length),
             ],
             AccountId: accountId));
-        await MaterializationStateStore.WriteAsync(outputRoot, MaterializationCommitStates.DatabasesCommitted, CancellationToken.None);
+        await CreateBoundDatabaseCommittedStateAsync(outputRoot);
 
         var workspacePath = temporary.GetPath(Path.Combine(name, "workspace.json"));
         if (recover)
@@ -339,5 +384,23 @@ public sealed class MaterializationRecoveryTests
         Directory.CreateDirectory(metadata);
         await using var stream = File.Create(Path.Combine(metadata, "materialization-manifest.json"));
         await JsonSerializer.SerializeAsync(stream, manifest, InfrastructureJson.Indented);
+    }
+
+    private static async Task CreateBoundDatabaseCommittedStateAsync(string outputRoot)
+    {
+        var binding = await MaterializationStateStore.ReadManifestBindingAsync(outputRoot, CancellationToken.None);
+        await MaterializationStateStore.CreateStagingStateAsync(
+            outputRoot,
+            "test-operation-" + Guid.NewGuid().ToString("N"),
+            new MaterializationStateBinding(binding.SourceSnapshotId, binding.BackendId),
+            CancellationToken.None);
+        await MaterializationStateStore.TransitionAsync(
+            outputRoot,
+            [MaterializationCommitStates.Staging],
+            MaterializationCommitStates.DatabasesCommitted,
+            "test-operation",
+            null,
+            CancellationToken.None,
+            binding);
     }
 }

@@ -132,6 +132,128 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task Prepared_scan_selection_is_the_formal_export_input_and_retains_workspace_document_path()
+    {
+        _backend.Fill(
+            FakeBackend.Linked("m1", 1_700_000_000, VoiceDirection.Incoming),
+            FakeBackend.Linked("m2", 1_700_000_060, VoiceDirection.Incoming),
+            FakeBackend.Linked("m3", 1_700_000_120, VoiceDirection.Outgoing));
+
+        var contactContext = new WorkflowContext(new TestConfirmation());
+        var contact = await new ContactDiscoveryWorkflow(_opener).RunAsync(
+            new ContactDiscoveryRequest(_workspacePath),
+            contactContext,
+            CancellationToken.None);
+        var selectedContact = Assert.Single(contact.Contacts);
+
+        var scanContext = new WorkflowContext(new TestConfirmation());
+        var scan = await new VoiceScanWorkflow(_opener, new ContactResolver()).RunAsync(
+            new VoiceScanWorkflowRequest(
+                contact.WorkspaceDocumentPath,
+                selectedContact.Username,
+                ExpectedContactId: selectedContact.ContactId,
+                MaximumResults: 1),
+            scanContext,
+            CancellationToken.None);
+
+        Assert.NotNull(scan.Selection);
+        var plan = scan.Selection!;
+        Assert.Equal(Path.GetFullPath(_workspacePath), plan.WorkspaceDocumentPath);
+        Assert.NotEqual(Path.GetFullPath(scan.Workspace.Workspace.SourceRoot), plan.WorkspaceDocumentPath);
+        Assert.Equal(VoiceDirection.Incoming, plan.Direction);
+        Assert.Equal(1, plan.MaximumResults);
+        Assert.Equal(plan.ScanReport.ResultSetFingerprint, plan.ResultSetFingerprint);
+        Assert.Equal(plan.ScanReport.ExportableVoiceCount, plan.ResultCount);
+
+        var exportContext = new WorkflowContext(new TestConfirmation());
+        var exported = await new VoiceExportWorkflow(_opener, new ContactResolver()).RunAsync(
+            plan,
+            new ExportDestination(Path.Combine(_root, "formal-export")),
+            exportContext,
+            CancellationToken.None);
+
+        Assert.Single(exported.Manifest.Entries);
+        Assert.Equal(VoiceDirection.Incoming, Assert.Single(exported.Manifest.Entries).Direction);
+        Assert.Equal(1, _backend.LastVoiceQuery?.MaximumResults);
+        Assert.Equal(VoiceDirection.Incoming, _backend.LastVoiceQuery?.Direction);
+        Assert.Equal(WorkflowState.Completed, exportContext.StateMachine.State);
+    }
+
+    [Fact]
+    public async Task Formal_export_rejects_a_plan_bound_to_a_different_adapter_version()
+    {
+        _backend.Fill(FakeBackend.Linked("m1", 1_700_000_000, VoiceDirection.Incoming));
+        var scan = await new VoiceScanWorkflow(_opener, new ContactResolver()).RunAsync(
+            new VoiceScanWorkflowRequest(_workspacePath, FakeBackend.ContactUsername),
+            new WorkflowContext(new TestConfirmation()),
+            CancellationToken.None);
+        Assert.NotNull(scan.Selection);
+        var plan = scan.Selection!;
+        var mismatched = new PreparedVoiceSelection(
+            plan.WorkspaceDocumentPath,
+            plan.WorkspaceId,
+            plan.DatasetId,
+            plan.AccountId,
+            plan.SnapshotId,
+            plan.AdapterId,
+            "fake-v2",
+            plan.ContactId,
+            plan.ContactUsername,
+            plan.Direction,
+            plan.FromUtc,
+            plan.ToUtc,
+            plan.MaximumResults,
+            plan.DeepScan,
+            plan.ResolveDurations,
+            plan.MinimumDurationMs,
+            plan.MaximumDurationMs,
+            plan.MinimumPayloadBytes,
+            plan.MaximumPayloadBytes,
+            plan.QueryFingerprint,
+            plan.ResultSetFingerprint,
+            plan.ResultCount,
+            plan.TotalPayloadBytes,
+            plan.SelectionEngineVersion,
+            plan.DurationResolverVersion,
+            plan.ScanReport);
+
+        var context = new WorkflowContext(new TestConfirmation());
+        var exception = await Assert.ThrowsAsync<AppFailureException>(() =>
+            new VoiceExportWorkflow(_opener, new ContactResolver()).RunAsync(
+                mismatched,
+                new ExportDestination(Path.Combine(_root, "mismatched-export")),
+                context,
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCode.SelectionPlanMismatch, exception.Code);
+        Assert.Equal(WorkflowState.Failed, context.StateMachine.State);
+    }
+
+    [Fact]
+    public async Task Formal_export_rejects_when_the_verified_result_set_fingerprint_changes()
+    {
+        _backend.Fill(FakeBackend.Linked("planned", 1_700_000_000, VoiceDirection.Incoming));
+        var scan = await new VoiceScanWorkflow(_opener, new ContactResolver()).RunAsync(
+            new VoiceScanWorkflowRequest(_workspacePath, FakeBackend.ContactUsername),
+            new WorkflowContext(new TestConfirmation()),
+            CancellationToken.None);
+        Assert.NotNull(scan.Selection);
+
+        _backend.Fill(FakeBackend.Linked("changed", 1_700_000_001, VoiceDirection.Incoming));
+        var context = new WorkflowContext(new TestConfirmation());
+        var exception = await Assert.ThrowsAsync<AppFailureException>(() =>
+            new VoiceExportWorkflow(_opener, new ContactResolver()).RunAsync(
+                scan.Selection!,
+                new ExportDestination(Path.Combine(_root, "changed-export")),
+                context,
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCode.SelectionPlanMismatch, exception.Code);
+        Assert.Equal(WorkflowState.Failed, context.StateMachine.State);
+        Assert.False(Directory.Exists(Path.Combine(_root, "changed-export", "original")));
+    }
+
+    [Fact]
     public async Task Scan_rejects_a_contact_id_that_changed_after_selection()
     {
         var workflow = new VoiceScanWorkflow(_opener, new ContactResolver());

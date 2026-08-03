@@ -6,10 +6,9 @@ using WeChatVoice.Infrastructure.Serialization;
 namespace WeChatVoice.Infrastructure.Materialization;
 
 /// <summary>
-/// Persists materialization commit markers with a monotonic state machine. The
-/// lock file is an advisory cross-process lease held for the complete recovery
-/// or deletion operation, while each transition also takes the same lock for
-/// its read/validate/write sequence.
+/// Persists materialization commit markers with a monotonic state machine.
+/// Every marker is bound to its source Snapshot, backend, manifest bytes, and
+/// Workspace identity once the manifest exists.
 /// </summary>
 public static class MaterializationStateStore
 {
@@ -39,28 +38,29 @@ public static class MaterializationStateStore
         => string.Equals(relativePath?.Replace('\\', '/'), RelativeLockPath, StringComparison.OrdinalIgnoreCase);
 
     public static bool IsDurationCachePath(string? relativePath)
-        => string.Equals(relativePath?.Replace('\\', '/'), RelativeDurationCachePath, StringComparison.OrdinalIgnoreCase);
+        => IsCachePath(relativePath, RelativeDurationCachePath);
 
     public static bool IsDeepScanCachePath(string? relativePath)
-        => string.Equals(relativePath?.Replace('\\', '/'), RelativeDeepScanCachePath, StringComparison.OrdinalIgnoreCase);
+        => IsCachePath(relativePath, RelativeDeepScanCachePath);
 
-    /// <summary>
-    /// Compatibility helper for tests and migration tooling that creates the
-    /// initial marker in a new output root. Production code must use
-    /// <see cref="TransitionAsync"/> for every subsequent state change.
-    /// </summary>
-    public static Task WriteAsync(
+    public static Task<MaterializationStateDocument> CreateStagingStateAsync(
         string outputRoot,
-        string state,
-        CancellationToken cancellationToken,
-        string? failureCode = null)
-        => TransitionAsync(
+        string operationId,
+        MaterializationStateBinding binding,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        return TransitionCoreAsync(
             outputRoot,
             Array.Empty<string>(),
-            state,
-            operationId: "legacy-" + Guid.NewGuid().ToString("N"),
-            failureCode,
-            cancellationToken);
+            MaterializationCommitStates.Staging,
+            operationId,
+            failureCode: null,
+            cancellationToken,
+            binding,
+            heldLock: null,
+            allowCreateStaging: true);
+    }
 
     public static Task<MaterializationStateDocument> TransitionAsync(
         string outputRoot,
@@ -68,8 +68,9 @@ public static class MaterializationStateStore
         string nextState,
         string? operationId,
         string? failureCode,
-        CancellationToken cancellationToken)
-        => TransitionCoreAsync(outputRoot, expectedStates, nextState, operationId, failureCode, cancellationToken, heldLock: null);
+        CancellationToken cancellationToken,
+        MaterializationStateBinding? binding = null)
+        => TransitionCoreAsync(outputRoot, expectedStates, nextState, operationId, failureCode, cancellationToken, binding, heldLock: null, allowCreateStaging: false);
 
     public static async Task<bool> TryTransitionToFailedRecoverableAsync(
         string outputRoot,
@@ -90,10 +91,26 @@ public static class MaterializationStateStore
         }
         catch (MaterializationStateTransitionException)
         {
-            // A completed materialization is terminal and must never be
-            // downgraded merely because a later response/cleanup failed.
             return false;
         }
+    }
+
+    public static async Task<MaterializationStateBinding> ReadManifestBindingAsync(
+        string outputRoot,
+        CancellationToken cancellationToken)
+    {
+        var fullRoot = Path.GetFullPath(outputRoot);
+        var manifestPath = Path.Combine(fullRoot, ".wechatvoice", "materialization-manifest.json");
+        if (!File.Exists(manifestPath))
+        {
+            throw new InvalidDataException("The materialization manifest is missing.");
+        }
+
+        var hash = await FileHashing.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
+        await using var stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 32 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var manifest = await JsonSerializer.DeserializeAsync<MaterializationManifest>(stream, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The materialization manifest is empty.");
+        return new MaterializationStateBinding(manifest.SourceSnapshotId, manifest.BackendId, hash, manifest.WorkspaceId);
     }
 
     public static async Task<MaterializationStateLock> AcquireLockAsync(
@@ -141,9 +158,7 @@ public static class MaterializationStateStore
 
                 if (Stopwatch.GetTimestamp() >= deadline)
                 {
-                    throw new MaterializationStateTransitionException(
-                        "The materialization state is busy in another process.",
-                        exception);
+                    throw new MaterializationStateTransitionException("The materialization state is busy in another process.", exception);
                 }
 
                 await Task.Delay(50, cancellationToken).ConfigureAwait(false);
@@ -171,7 +186,9 @@ public static class MaterializationStateStore
         }
 
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return await ReadCoreAsync(stream, cancellationToken).ConfigureAwait(false);
+        var document = await ReadCoreAsync(stream, cancellationToken).ConfigureAwait(false);
+        await ValidateBindingAgainstManifestAsync(outputRoot, document.Binding!, cancellationToken).ConfigureAwait(false);
+        return document;
     }
 
     private static async Task<MaterializationStateDocument> TransitionCoreAsync(
@@ -181,7 +198,9 @@ public static class MaterializationStateStore
         string? operationId,
         string? failureCode,
         CancellationToken cancellationToken,
-        MaterializationStateLock? heldLock)
+        MaterializationStateBinding? requestedBinding,
+        MaterializationStateLock? heldLock,
+        bool allowCreateStaging)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputRoot);
         ArgumentNullException.ThrowIfNull(expectedStates);
@@ -204,9 +223,12 @@ public static class MaterializationStateStore
 
             if (current is null)
             {
-                if (expectedStates.Count != 0)
+                if (!allowCreateStaging
+                    || expectedStates.Count != 0
+                    || !string.Equals(nextState, MaterializationCommitStates.Staging, StringComparison.Ordinal)
+                    || requestedBinding is null)
                 {
-                    throw new MaterializationStateTransitionException("The materialization state is missing for the requested transition.");
+                    throw new MaterializationStateTransitionException("A missing materialization state can only be created as a bound Staging state.");
                 }
             }
             else
@@ -216,12 +238,12 @@ public static class MaterializationStateStore
                     throw new MaterializationStateTransitionException($"The materialization state '{current.State}' was not an expected predecessor of '{nextState}'.");
                 }
 
-                // Idempotent retries are allowed, but only when the caller
-                // explicitly accepts the current state as a predecessor.
-                // This keeps expectedStates meaningful even for repeated
-                // recovery/finalization calls.
+                requestedBinding = MergeBinding(
+                    current.Binding ?? throw new MaterializationStateTransitionException("The materialization state lacks its binding."),
+                    requestedBinding);
                 if (string.Equals(current.State, nextState, StringComparison.Ordinal))
                 {
+                    await ValidateBindingAgainstManifestAsync(outputRoot, requestedBinding, cancellationToken).ConfigureAwait(false);
                     return current;
                 }
 
@@ -231,11 +253,25 @@ public static class MaterializationStateStore
                 }
             }
 
+            requestedBinding ??= current?.Binding;
+            if (requestedBinding is null)
+            {
+                throw new MaterializationStateTransitionException("Every materialization state must be bound to its source Snapshot and backend.");
+            }
+
+            if (nextState is not (MaterializationCommitStates.Staging or MaterializationCommitStates.FailedRecoverable)
+                && !requestedBinding.IsComplete)
+            {
+                throw new MaterializationStateTransitionException("Committed materialization states require a manifest SHA-256 and WorkspaceId binding.");
+            }
+
+            await ValidateBindingAgainstManifestAsync(outputRoot, requestedBinding, cancellationToken).ConfigureAwait(false);
             var document = new MaterializationStateDocument(
                 nextState,
                 DateTimeOffset.UtcNow,
                 failureCode,
-                string.IsNullOrWhiteSpace(operationId) ? Guid.NewGuid().ToString("N") : operationId);
+                string.IsNullOrWhiteSpace(operationId) ? Guid.NewGuid().ToString("N") : operationId,
+                requestedBinding);
             await AtomicFileWriter.WriteJsonAsync(statePath, document, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false);
             return document;
         }
@@ -255,8 +291,9 @@ public static class MaterializationStateStore
         string? operationId,
         string? failureCode,
         CancellationToken cancellationToken,
-        MaterializationStateLock heldLock)
-        => TransitionCoreAsync(outputRoot, expectedStates, nextState, operationId, failureCode, cancellationToken, heldLock);
+        MaterializationStateLock heldLock,
+        MaterializationStateBinding? binding = null)
+        => TransitionCoreAsync(outputRoot, expectedStates, nextState, operationId, failureCode, cancellationToken, binding, heldLock, allowCreateStaging: false);
 
     public static async Task<bool> TryTransitionToFailedRecoverableAsync(
         string outputRoot,
@@ -295,6 +332,65 @@ public static class MaterializationStateStore
                 _ => false,
             };
 
+    private static MaterializationStateBinding MergeBinding(
+        MaterializationStateBinding current,
+        MaterializationStateBinding? requested)
+    {
+        if (requested is null)
+        {
+            return current;
+        }
+
+        if (!string.Equals(current.SourceSnapshotId, requested.SourceSnapshotId, StringComparison.Ordinal)
+            || !string.Equals(current.BackendId, requested.BackendId, StringComparison.Ordinal)
+            || current.ManifestSha256 is not null
+                && !string.Equals(current.ManifestSha256, requested.ManifestSha256, StringComparison.OrdinalIgnoreCase)
+            || current.WorkspaceId is not null
+                && !string.Equals(current.WorkspaceId, requested.WorkspaceId, StringComparison.Ordinal))
+        {
+            throw new MaterializationStateTransitionException("The materialization state binding changed between transitions.");
+        }
+
+        return new MaterializationStateBinding(
+            current.SourceSnapshotId,
+            current.BackendId,
+            requested.ManifestSha256 ?? current.ManifestSha256,
+            requested.WorkspaceId ?? current.WorkspaceId);
+    }
+
+    private static async Task ValidateBindingAgainstManifestAsync(
+        string outputRoot,
+        MaterializationStateBinding binding,
+        CancellationToken cancellationToken)
+    {
+        if (binding.ManifestSha256 is null && binding.WorkspaceId is null)
+        {
+            return;
+        }
+
+        var manifestPath = Path.Combine(Path.GetFullPath(outputRoot), ".wechatvoice", "materialization-manifest.json");
+        if (!File.Exists(manifestPath))
+        {
+            throw new MaterializationStateTransitionException("The materialization manifest is required by the state binding.");
+        }
+
+        var actualHash = await FileHashing.ComputeSha256Async(manifestPath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(actualHash, binding.ManifestSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MaterializationStateTransitionException("The materialization state is bound to a different manifest.");
+        }
+
+        await using var stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 32 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var manifest = await JsonSerializer.DeserializeAsync<MaterializationManifest>(stream, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false)
+            ?? throw new MaterializationStateTransitionException("The bound materialization manifest is empty.");
+        if (!string.Equals(manifest.WorkspaceId, binding.WorkspaceId, StringComparison.Ordinal)
+            || !string.Equals(manifest.SourceSnapshotId, binding.SourceSnapshotId, StringComparison.Ordinal)
+            || !string.Equals(manifest.BackendId, binding.BackendId, StringComparison.Ordinal))
+        {
+            throw new MaterializationStateTransitionException("The materialization state binding does not match its manifest.");
+        }
+    }
+
     private static async Task<MaterializationStateDocument> ReadCoreAsync(
         Stream stream,
         CancellationToken cancellationToken)
@@ -306,7 +402,19 @@ public static class MaterializationStateStore
             throw new InvalidDataException("The materialization commit state is unknown.");
         }
 
+        if (document.Binding is null)
+        {
+            throw new InvalidDataException("The materialization commit state lacks its source/manifest binding.");
+        }
+
         return document;
+    }
+
+    private static bool IsCachePath(string? relativePath, string cachePath)
+    {
+        var normalized = relativePath?.Replace('\\', '/');
+        return string.Equals(normalized, cachePath, StringComparison.OrdinalIgnoreCase)
+            || normalized?.StartsWith(cachePath + ".", StringComparison.OrdinalIgnoreCase) == true;
     }
 }
 
