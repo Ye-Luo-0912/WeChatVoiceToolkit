@@ -4,6 +4,8 @@ namespace WeChatVoice.Infrastructure.Export;
 
 internal static class WavFileValidator
 {
+    internal const string ContractVersion = "wav-validator-v1";
+
     internal static async Task<long?> TryReadDurationMsAsync(string path, CancellationToken cancellationToken)
     {
         try

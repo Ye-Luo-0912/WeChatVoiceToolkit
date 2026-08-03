@@ -55,16 +55,6 @@ public sealed class VoiceScanService
                 duration = checked(duration + record.DurationMs.Value);
                 durationKnown++;
             }
-            else if (query.ResolveDuration && _durationResolver is not null && record.PayloadState == VoicePayloadState.Linked)
-            {
-                var resolvedDuration = await _durationResolver.ResolveAsync(_catalog, record, cancellationToken).ConfigureAwait(false);
-                if (resolvedDuration is > 0)
-                {
-                    duration = checked(duration + resolvedDuration.Value);
-                    durationKnown++;
-                }
-            }
-
             earliest = earliest is null || record.OccurredAtUtc < earliest ? record.OccurredAtUtc : earliest;
             latest = latest is null || record.OccurredAtUtc > latest ? record.OccurredAtUtc : latest;
             var shard = record.ShardId ?? record.SourceDatabase ?? "unknown";

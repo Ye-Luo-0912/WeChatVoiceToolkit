@@ -39,6 +39,45 @@ jobs:
         env:
           WECHATVOICE_SIGNING_PFX_PASSWORD: ${{ secrets.WECHATVOICE_SIGNING_PFX_PASSWORD }}
         run: ./scripts/package-release.ps1 -PfxPath "$env:WECHATVOICE_SIGNING_PFX_PATH" -PfxPassword "$env:WECHATVOICE_SIGNING_PFX_PASSWORD" -RequireSignature -ReleaseTrustSmoke -OutputDirectory "$env:GITHUB_WORKSPACE\\artifacts\\package"
+      - name: Build and sign formal MSIX installer
+        shell: pwsh
+        env:
+          WECHATVOICE_SIGNING_PFX_PASSWORD: ${{ secrets.WECHATVOICE_SIGNING_PFX_PASSWORD }}
+        run: |
+          $versionText = $env:GITHUB_REF_NAME -replace '^v', '' -replace '-.*$', ''
+          $parts = @($versionText -split '\.' | Where-Object { $_ -match '^\d+$' })
+          if ($parts.Count -eq 0) { $parts = @('0', '0', $env:GITHUB_RUN_NUMBER) }
+          while ($parts.Count -lt 3) { $parts += '0' }
+          $version = "$($parts[0]).$($parts[1]).$($parts[2]).0"
+          ./scripts/package-msix.ps1 -PublishDirectory "$env:GITHUB_WORKSPACE\\artifacts\\package" -OutputPath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.msix" -PfxPath "$env:WECHATVOICE_SIGNING_PFX_PATH" -PfxPassword "$env:WECHATVOICE_SIGNING_PFX_PASSWORD" -Version $version
+      - name: Install formal MSIX and run ordinary-user trust smoke
+        shell: pwsh
+        env:
+          WECHATVOICE_SIGNING_PFX_PASSWORD: ${{ secrets.WECHATVOICE_SIGNING_PFX_PASSWORD }}
+        run: |
+          $packagePath = "$env:GITHUB_WORKSPACE\artifacts\WeChatVoiceToolkit-win-x64.msix"
+          $publicCertificatePath = Join-Path $env:RUNNER_TEMP 'wechatvoice-release-signing.cer'
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $env:WECHATVOICE_SIGNING_PFX_PATH,
+            $env:WECHATVOICE_SIGNING_PFX_PASSWORD,
+            [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+          [IO.File]::WriteAllBytes($publicCertificatePath, $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+          Import-Certificate -FilePath $publicCertificatePath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
+          $certificateThumbprint = $certificate.Thumbprint
+          try {
+            Add-AppxPackage -Path $packagePath
+            $package = Get-AppxPackage -Name WeChatVoiceToolkit | Select-Object -First 1
+            if ($null -eq $package) { throw 'The formal MSIX package was not installed.' }
+            $desktop = Join-Path $package.InstallLocation 'WeChatVoice.Desktop.exe'
+            $smoke = Start-Process -FilePath $desktop -ArgumentList '--smoke-check','--release-trust-smoke' -Wait -PassThru -WindowStyle Hidden
+            if ($smoke.ExitCode -ne 0) { throw "Installed MSIX Desktop trust smoke failed with exit code $($smoke.ExitCode)." }
+          }
+          finally {
+            Get-AppxPackage -Name WeChatVoiceToolkit | Remove-AppxPackage -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$certificateThumbprint" -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $publicCertificatePath -Force -ErrorAction SilentlyContinue
+            $certificate.Dispose()
+          }
       - name: Package release
         shell: pwsh
         run: |
@@ -47,6 +86,7 @@ jobs:
           Copy-Item artifacts/package/package-manifest.json artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json
           $releaseFiles = @(
             'artifacts/WeChatVoiceToolkit-win-x64.zip',
+            'artifacts/WeChatVoiceToolkit-win-x64.msix',
             'artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json',
             'artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json'
           )
@@ -60,6 +100,7 @@ jobs:
           name: WeChatVoiceToolkit-win-x64
           path: |
             artifacts/WeChatVoiceToolkit-win-x64.zip
+            artifacts/WeChatVoiceToolkit-win-x64.msix
             artifacts/WeChatVoiceToolkit-win-x64.SHA256SUMS.txt
             artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json
             artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json
@@ -70,6 +111,7 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/WeChatVoiceToolkit-win-x64.zip
+            artifacts/WeChatVoiceToolkit-win-x64.msix
             artifacts/WeChatVoiceToolkit-win-x64.SHA256SUMS.txt
             artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json
             artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json

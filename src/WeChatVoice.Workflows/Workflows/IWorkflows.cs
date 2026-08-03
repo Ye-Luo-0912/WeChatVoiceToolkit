@@ -53,6 +53,11 @@ public interface IWorkspaceWorkflow
         WorkflowContext context,
         CancellationToken cancellationToken);
 
+    Task<VerifiedLocalWorkspace> RepairMaterializationAsync(
+        MaterializationRecoveryRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
     Task<MaterializationRecoveryAssessment> AssessMaterializationRecoveryAsync(
         string outputDirectory,
         string? workspaceOutputPath,
@@ -134,7 +139,15 @@ public sealed record WorkspaceCreateRequest(string RootDirectory, string OutputP
 
 public sealed record WorkspaceCreateResult(LocalWorkspace Workspace, string OutputPath);
 public sealed record WorkspaceDeletionPreview(string WorkspaceId, string RootDirectory, int DatabaseCount, long TotalBytes);
-public sealed record WorkspaceDeletionResult(string WorkspaceId, string RootDirectory, int DatabaseCount, long TotalBytes);
+public sealed record WorkspaceDeletionResult(
+    string WorkspaceId,
+    string RootDirectory,
+    int DatabaseCount,
+    long TotalBytes,
+    string WorkspaceDocumentPath = "",
+    bool WorkspaceDocumentDeleted = false,
+    bool DurationCacheDeleted = true,
+    bool DeepScanCacheDeleted = true);
 public sealed record MaterializationRecoveryRequest(
     string OutputDirectory,
     string? WorkspaceOutputPath = null,

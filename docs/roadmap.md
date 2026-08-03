@@ -79,9 +79,10 @@
    cannot decode.
 3. Add a batch or resident decoder worker only after the raw SILK path is
    stable; keep strict RIFF/PCM validation and never overwrite SILK.
-4. Add a real installer only after an installer format, update channel, and
-   certificate distribution policy are selected. The complete ZIP package is
-   the current distribution artifact; no installer is implied.
+4. Add installer upgrade/rollback coverage and certificate rotation policy for
+   the MSIX distribution. The ZIP package remains a diagnostic-only artifact;
+   formal Broker distribution uses the signed MSIX installed to a protected
+   directory.
 
 New Weixin versions require a new exact process/module Profile and schema
 evidence. There is no unknown-version heuristic fallback.

@@ -29,6 +29,7 @@ public static class ErrorCatalog
         ErrorCode.InvalidRequest => new AppError(code, IsRetryable: false, "complete-request", "invalid-request"),
         ErrorCode.OperationBusy => new AppError(code, IsRetryable: true, "wait-for-active-operation", "operation-busy"),
         ErrorCode.SelectionPlanMismatch => new AppError(code, IsRetryable: true, "re-scan-before-export", "selection-plan-mismatch"),
+        ErrorCode.DurationResolverUnavailable => new AppError(code, IsRetryable: false, "install-decoder", "duration-resolver-unavailable"),
         _ => new AppError(code, IsRetryable: false, "retry", "unknown-error"),
     };
 }

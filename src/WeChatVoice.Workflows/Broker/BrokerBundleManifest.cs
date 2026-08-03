@@ -162,11 +162,16 @@ public static class BrokerBundleManifestLoader
     }
 
     private static bool IsPackageMetadata(string relativePath)
-        => Path.GetFileName(relativePath).Equals("WeChatVoice.KeyBroker.bundle.json", StringComparison.OrdinalIgnoreCase)
+        => relativePath.Replace('\\', '/').StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("WeChatVoice.KeyBroker.bundle.json", StringComparison.OrdinalIgnoreCase)
             || Path.GetFileName(relativePath).Equals("WeChatVoice.SqlCipherWorker.bundle.json", StringComparison.OrdinalIgnoreCase)
             || Path.GetFileName(relativePath).Equals("package-manifest.json", StringComparison.OrdinalIgnoreCase)
             || Path.GetFileName(relativePath).Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase)
-            || Path.GetFileName(relativePath).Equals("sbom.spdx.json", StringComparison.OrdinalIgnoreCase);
+            || Path.GetFileName(relativePath).Equals("sbom.spdx.json", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("AppxManifest.xml", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("AppxBlockMap.xml", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("AppxSignature.p7x", StringComparison.OrdinalIgnoreCase)
+            || Path.GetFileName(relativePath).Equals("[Content_Types].xml", StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeRelative(string path)
     {

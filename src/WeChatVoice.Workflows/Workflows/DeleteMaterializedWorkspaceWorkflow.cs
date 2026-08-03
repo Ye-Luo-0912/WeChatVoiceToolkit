@@ -54,12 +54,22 @@ public sealed class DeleteMaterializedWorkspaceWorkflow : IDeleteMaterializedWor
             stateLock = await MaterializationStateStore.AcquireLockAsync(candidate.RootDirectory, cancellationToken).ConfigureAwait(false);
             var inspection = await InspectAsync(candidate, cancellationToken).ConfigureAwait(false);
             Directory.Delete(candidate.RootDirectory, recursive: true);
+            var workspaceDocumentDeleted = false;
+            if (File.Exists(candidate.WorkspacePath))
+            {
+                File.Delete(candidate.WorkspacePath);
+                workspaceDocumentDeleted = true;
+            }
             context.StateMachine.TryComplete();
             return new WorkspaceDeletionResult(
                 inspection.Preview.WorkspaceId,
                 inspection.Preview.RootDirectory,
                 inspection.Preview.DatabaseCount,
-                inspection.Preview.TotalBytes);
+                inspection.Preview.TotalBytes,
+                candidate.WorkspacePath,
+                workspaceDocumentDeleted,
+                DurationCacheDeleted: true,
+                DeepScanCacheDeleted: true);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

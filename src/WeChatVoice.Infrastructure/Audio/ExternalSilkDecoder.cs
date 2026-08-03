@@ -1,6 +1,9 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Infrastructure.Export;
 
 namespace WeChatVoice.Infrastructure.Audio;
 
@@ -10,12 +13,15 @@ namespace WeChatVoice.Infrastructure.Audio;
 /// the caller's original SILK path, and its output is moved into place only after
 /// a successful exit.
 /// </summary>
-public sealed class ExternalSilkDecoder : IVoiceDecoder
+public sealed class ExternalSilkDecoder : IVoiceDecoder, IVoiceDecoderIdentity
 {
     private const int BufferSize = 128 * 1024;
+    private const int MaximumDiagnosticCharacters = 64 * 1024;
+    private const string ProtocolVersion = "silk-decoder-cli-v1";
     private readonly string _executablePath;
     private readonly int _sampleRate;
     private readonly string? _workingDirectory;
+    private readonly Lazy<string> _decoderIdentity;
 
     public ExternalSilkDecoder(string executablePath, int sampleRate = 24000, string? workingDirectory = null)
     {
@@ -27,7 +33,10 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder
         _workingDirectory = string.IsNullOrWhiteSpace(workingDirectory)
             ? null
             : Path.GetFullPath(workingDirectory);
+        _decoderIdentity = new Lazy<string>(ComputeDecoderIdentity, LazyThreadSafetyMode.ExecutionAndPublication);
     }
+
+    public string DecoderIdentity => _decoderIdentity.Value;
 
     public async Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken)
     {
@@ -189,8 +198,11 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder
             throw new ExternalSilkDecoderException(null, null, exception.Message, "The external SILK decoder could not be started.", exception);
         }
 
-        var standardOutputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var standardErrorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        // Both pipes are drained concurrently, but each retains only a fixed
+        // diagnostic prefix. An untrusted decoder cannot grow the host's heap
+        // by writing an unbounded amount of stdout/stderr.
+        var standardOutputTask = ReadBoundedTextAsync(process.StandardOutput, MaximumDiagnosticCharacters, cancellationToken);
+        var standardErrorTask = ReadBoundedTextAsync(process.StandardError, MaximumDiagnosticCharacters, cancellationToken);
         try
         {
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
@@ -203,7 +215,7 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder
             throw;
         }
 
-        return new DecoderProcessResult(process.ExitCode, standardOutputTask.Result, standardErrorTask.Result);
+        return new DecoderProcessResult(process.ExitCode, await standardOutputTask.ConfigureAwait(false), await standardErrorTask.ConfigureAwait(false));
     }
 
     private static async Task CopyInputAsync(string inputPath, string temporaryInputPath, CancellationToken cancellationToken)
@@ -266,6 +278,58 @@ public sealed class ExternalSilkDecoder : IVoiceDecoder
             // A terminated process can close its redirected stream abruptly.
             // The caller rethrows its cancellation after process teardown.
         }
+    }
+
+    private static async Task<string> ReadBoundedTextAsync(
+        StreamReader reader,
+        int maximumCharacters,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new char[4096];
+        var builder = new StringBuilder(Math.Min(maximumCharacters, 4096));
+        var truncated = false;
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            var remaining = maximumCharacters - builder.Length;
+            if (remaining > 0)
+            {
+                builder.Append(buffer, 0, Math.Min(remaining, read));
+            }
+
+            if (read > remaining)
+            {
+                truncated = true;
+            }
+        }
+
+        if (truncated)
+        {
+            builder.Append("…[truncated]");
+        }
+
+        return builder.ToString();
+    }
+
+    private string ComputeDecoderIdentity()
+    {
+        using var stream = new FileStream(_executablePath, FileMode.Open, FileAccess.Read, FileShare.Read, BufferSize, FileOptions.SequentialScan);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[BufferSize];
+        int read;
+        while ((read = stream.Read(buffer, 0, buffer.Length)) != 0)
+        {
+            hash.AppendData(buffer, 0, read);
+        }
+
+        var executableHash = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        var contract = string.Join("\n", executableHash, ProtocolVersion, _sampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture), WavFileValidator.ContractVersion);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(contract))).ToLowerInvariant();
     }
 
     private static void TryDelete(string path)

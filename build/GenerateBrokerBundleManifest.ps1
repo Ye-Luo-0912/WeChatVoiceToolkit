@@ -47,7 +47,11 @@ function Get-BundleFiles {
         'WeChatVoice.SqlCipherWorker.bundle.json',
         'package-manifest.json',
         'SHA256SUMS.txt',
-        'sbom.spdx.json'
+        'sbom.spdx.json',
+        'AppxManifest.xml',
+        'AppxBlockMap.xml',
+        'AppxSignature.p7x',
+        '[Content_Types].xml'
     )
     $files = @()
     foreach ($file in Get-ChildItem -LiteralPath $Directory -File -Recurse -Force) {

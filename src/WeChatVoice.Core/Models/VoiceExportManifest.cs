@@ -81,23 +81,19 @@ public sealed record VoiceExportManifest
     /// <summary>Duration of every successfully selected voice in this run.</summary>
     public long TotalDurationMs => SumDuration(Entries, trainingOnly: false);
 
-    /// <summary>
-    /// Duration represented by the current training selection. The first
-    /// dataset flow marks every successfully exported raw SILK item as
-    /// selected; later UI curation can toggle the per-entry flag.
-    /// </summary>
+    /// <summary>Duration represented by explicitly eligible and selected items.</summary>
     public long TotalTrainingDurationMs => SumDuration(Entries, trainingOnly: true);
 
     public long TotalPayloadBytes => SumBytes(Entries);
 
-    public int TrainingEntryCount => Entries.Count(static entry => entry.SelectedForTraining);
+    public int TrainingEntryCount => Entries.Count(static entry => entry.IsTrainingSelected);
 
     private static long SumDuration(IEnumerable<VoiceExportEntry> entries, bool trainingOnly)
     {
         long total = 0;
         foreach (var entry in entries)
         {
-            if ((!trainingOnly || entry.SelectedForTraining) && entry.DurationMs is > 0)
+            if ((!trainingOnly || entry.IsTrainingSelected) && entry.DurationMs is > 0)
             {
                 total = checked(total + entry.DurationMs.Value);
             }
@@ -127,6 +123,26 @@ public enum ExportRunStatus
     CompletedWithFailures,
     Cancelled,
     Failed,
+}
+
+public enum ExportState
+{
+    Exported,
+    VerifiedExisting,
+    Failed,
+}
+
+public enum TrainingEligibility
+{
+    Unknown,
+    Eligible,
+    Rejected,
+}
+
+public enum UserSelectionState
+{
+    NotSelected,
+    Selected,
 }
 
 public sealed record VoiceExportRunContext(
@@ -174,11 +190,22 @@ public sealed record VoiceExportEntry(
     string? SpeakerId = null,
     bool HasDecodeError = false,
     IReadOnlyList<string>? QualityFlags = null,
-    bool SelectedForTraining = false)
+    bool SelectedForTraining = false,
+    ExportState ExportState = ExportState.Exported,
+    TrainingEligibility TrainingEligibility = TrainingEligibility.Unknown,
+    UserSelectionState UserSelectionState = UserSelectionState.NotSelected)
 {
     public DateTimeOffset OccurredAtUtc { get; init; } = OccurredAtUtc.ToUniversalTime();
 
     public IReadOnlyList<string> QualityFlags { get; init; } = QualityFlags ?? Array.Empty<string>();
+
+    /// <summary>
+    /// Compatibility projection for consumers that used the old boolean.
+    /// New exports leave that field false and use the three explicit states.
+    /// </summary>
+    public bool IsTrainingSelected
+        => TrainingEligibility == Core.Models.TrainingEligibility.Eligible
+            && UserSelectionState == Core.Models.UserSelectionState.Selected;
 }
 
 /// <summary>

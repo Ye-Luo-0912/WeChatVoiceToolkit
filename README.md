@@ -110,13 +110,24 @@ never start the decoder.
 
 For a complete self-contained `win-x64` layout, use the single package entry
 point below. It publishes CLI, Desktop, Broker, Worker, native SQLCipher,
-post-signature bundle manifests, package manifest, SBOM, checksums, and Desktop
-smoke verification in one path:
+post-signature bundle manifests, package manifest, a pinned Microsoft SBOM Tool
+SPDX document, checksums, and Desktop smoke verification in one path:
 
 ```powershell
 dotnet restore WeChatVoice.slnx --locked-mode --runtime win-x64
 ./scripts/package-release.ps1
 ```
 
-Do not use a single-project `dotnet publish` as a release package. It can be a
-development build check, but it is not the complete product layout.
+For formal distribution, sign that layout into a protected MSIX installer:
+
+```powershell
+./scripts/package-msix.ps1 -PublishDirectory artifacts/package `
+  -OutputPath artifacts/WeChatVoiceToolkit-win-x64.msix `
+  -PfxPath $env:WECHATVOICE_SIGNING_PFX_PATH `
+  -PfxPassword $env:WECHATVOICE_SIGNING_PFX_PASSWORD
+```
+
+The ZIP layout is retained only as a portable diagnostic attachment. It is not
+a formal Broker distribution because an ordinary user can extract it into a
+writable directory. Do not use a single-project `dotnet publish` as a release
+package.

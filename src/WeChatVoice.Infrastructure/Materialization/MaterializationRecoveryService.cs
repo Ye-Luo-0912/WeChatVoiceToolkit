@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Serialization;
 using WeChatVoice.Infrastructure.Sqlite;
@@ -212,6 +213,85 @@ public sealed class MaterializationRecoveryService
                 await stateLock.DisposeAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// Repairs a missing workspace document after a materialization already
+    /// reached Completed. This is deliberately separate from recovery: the
+    /// terminal state is never downgraded, and only a complete, re-hashed
+    /// manifest plus database evidence or an explicit confirmation can
+    /// authorize regeneration.
+    /// </summary>
+    public async Task<VerifiedLocalWorkspace> RepairWorkspaceAsync(
+        string outputRoot,
+        string workspaceOutputPath,
+        string? accountId,
+        CancellationToken cancellationToken,
+        AccountIdentity? accountIdentity = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceOutputPath);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var fullRoot = Path.GetFullPath(outputRoot);
+        var fullWorkspacePath = Path.GetFullPath(workspaceOutputPath);
+        PathOverlapGuard.EnsureDisjoint(fullRoot, fullWorkspacePath);
+        WorkspacePathSafety.EnsureNoReparsePoints(fullRoot);
+
+        await using var stateLock = await MaterializationStateStore.AcquireLockAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+        var state = await MaterializationStateStore.ReadAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(state.State, MaterializationCommitStates.Completed, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Workspace repair requires a Completed materialization.");
+        }
+
+        if (File.Exists(fullWorkspacePath))
+        {
+            throw new InvalidDataException("The workspace document already exists; use workspace verify instead of repair.");
+        }
+
+        var manifest = await ReadAndVerifyManifestAsync(fullRoot, cancellationToken).ConfigureAwait(false);
+        var effectiveAccountId = ResolveAccountId(accountId ?? accountIdentity?.ConfirmedAccountId, manifest.AccountId);
+        if (effectiveAccountId is null)
+        {
+            throw new AppFailureException(WeChatVoice.Core.Errors.ErrorCode.AccountConfirmationRequired, "A confirmed account is required before workspace repair.");
+        }
+
+        var identity = accountIdentity;
+        if (manifest.AccountEvidenceState == AccountEvidenceState.DatabaseConfirmed)
+        {
+            identity ??= new AccountIdentity(AccountIdentityState.Confirmed, null, UserConfirmationState.NotConfirmed, effectiveAccountId);
+        }
+        else if (identity?.UserConfirmation != UserConfirmationState.Confirmed
+            || !string.Equals(identity.ConfirmedAccountId, effectiveAccountId, StringComparison.Ordinal))
+        {
+            throw new AppFailureException(WeChatVoice.Core.Errors.ErrorCode.AccountConfirmationRequired, "Explicit account confirmation is required before workspace repair.");
+        }
+
+        var result = new MaterializationResult(
+            manifest.WorkspaceId,
+            manifest.SourceSnapshotId,
+            manifest.BackendId,
+            manifest.BackendVersion,
+            manifest.BackendSha256,
+            fullRoot,
+            manifest.Databases,
+            manifest.Files,
+            Path.Combine(fullRoot, ".wechatvoice", "materialization-manifest.json"),
+            manifest.KeyExtractionProfileId,
+            manifest.ProcessVersion,
+            manifest.ProcessImageSha256,
+            manifest.WcdbModuleSha256,
+            manifest.AccountSidFingerprint);
+        var workspace = await new LocalWorkspaceCreator().CreateAsync(
+            new VerifiedMaterialization(result, DateTimeOffset.UtcNow),
+            effectiveAccountId,
+            sourceIdentity: null,
+            cancellationToken).ConfigureAwait(false);
+        workspace = workspace.WithAccountIdentity(identity!);
+        EnsureRecoveryIdentity(workspace.AccountIdentity, manifest, effectiveAccountId);
+        await LocalWorkspaceDocumentStore.WriteAsync(fullWorkspacePath, workspace, cancellationToken).ConfigureAwait(false);
+        return await ReadAndVerifyWorkspaceAsync(fullWorkspacePath, fullRoot, manifest, effectiveAccountId, cancellationToken).ConfigureAwait(false);
     }
 
     public static async Task<MaterializationManifest> ReadAndVerifyManifestAsync(

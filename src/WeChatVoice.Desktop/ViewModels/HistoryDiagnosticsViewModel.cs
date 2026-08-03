@@ -138,6 +138,34 @@ public sealed partial class HistoryDiagnosticsViewModel : PageViewModelBase
     }
 
     [RelayCommand]
+    private Task RepairSelectedWorkspaceAsync()
+    {
+        var outputRoot = MaterializedRootPath;
+        var workspacePath = SelectedWorkspace?.WorkspacePath;
+        if (string.IsNullOrWhiteSpace(outputRoot) || string.IsNullOrWhiteSpace(workspacePath))
+        {
+            WorkspaceDeleteSummary = "请先加载并验证需要修复的 Workspace，并确认明文数据库目录可用。";
+            return Task.CompletedTask;
+        }
+
+        return RunHost.RunAsync(
+            async (context, cancellationToken) => await Workflows.Workspace.RepairMaterializationAsync(
+                new MaterializationRecoveryRequest(outputRoot, workspacePath),
+                context,
+                cancellationToken).ConfigureAwait(false),
+            result =>
+            {
+                Services.Project.Workspace = result;
+                Services.Project.WorkspacePath = workspacePath;
+                Services.RecentWorkspaces.Add(result, workspacePath);
+                WorkspaceDeleteSummary = "Workspace JSON 已根据已验证的 Completed 物料化重新生成。";
+                MaterializedRootPath = result.Workspace.SourceRoot;
+                MaterializationManifestSummary = "物料化 Manifest、输出 Hash 与账号身份已重新验证。";
+                Refresh();
+            });
+    }
+
+    [RelayCommand]
     private void Refresh()
     {
         RecentWorkspaces = Services.RecentWorkspaces.Load();

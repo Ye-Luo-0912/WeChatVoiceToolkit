@@ -103,43 +103,6 @@ public sealed class VerifiedWorkspaceFileLease : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Performs only the inexpensive per-read identity check. The normal
-    /// <see cref="VerifyAsync"/> call has already verified the content through
-    /// the held read-only handle; this method prevents every BLOB open from
-    /// hashing the entire media database again.
-    /// </summary>
-    public async Task VerifyMetadataAsync(CancellationToken cancellationToken, string? logicalRole = null)
-    {
-        ObjectDisposedException.ThrowIf(_disposed != 0, this);
-        cancellationToken.ThrowIfCancellationRequested();
-        await _verificationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            foreach (var file in _files)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (logicalRole is not null && !string.Equals(logicalRole, file.LogicalRole, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (file.ExpectedPresent)
-                {
-                    _ = ReadCurrentStamp(file);
-                }
-                else if (File.Exists(file.Path))
-                {
-                    throw new WorkspaceVerificationException($"An unexpected SQLite sidecar appeared: '{file.Path}'.");
-                }
-            }
-        }
-        finally
-        {
-            _verificationGate.Release();
-        }
-    }
-
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

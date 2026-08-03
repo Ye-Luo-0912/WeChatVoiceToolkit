@@ -683,7 +683,76 @@ internal static partial class CliApplication
         });
         workspaceCommand.Subcommands.Add(materializeCommand);
         workspaceCommand.Subcommands.Add(CreateMaterializationRecoveryCommand("adopt", "Adopt a committed materialization whose workspace JSON was not committed."));
+        workspaceCommand.Subcommands.Add(CreateWorkspaceRepairCommand());
         return workspaceCommand;
+    }
+
+    static Command CreateWorkspaceRepairCommand()
+    {
+        var command = new Command("repair", "Recreate a missing Workspace JSON after a Completed materialization without re-decrypting databases.");
+        var outputOption = new Option<string>("--output")
+        {
+            Description = "Completed materialized database output root.",
+            Required = true,
+        };
+        var workspaceOutputOption = new Option<string?>("--workspace-output")
+        {
+            Description = "Workspace JSON path; defaults to <output>.workspace.json beside the output root.",
+        };
+        var accountOption = new Option<string?>("--account")
+        {
+            Description = "Exact stable account username when the manifest contains only a path candidate.",
+        };
+        command.Options.Add(outputOption);
+        command.Options.Add(workspaceOutputOption);
+        command.Options.Add(accountOption);
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var output = parseResult.GetValue(outputOption);
+            var workspaceOutput = parseResult.GetValue(workspaceOutputOption);
+            var account = parseResult.GetValue(accountOption);
+            if (output is null)
+            {
+                Console.Error.WriteLine("--output is required.");
+                return 2;
+            }
+
+            try
+            {
+                var root = CreateRoot();
+                var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                var verified = await root.Workspace.RepairMaterializationAsync(
+                    new MaterializationRecoveryRequest(output, workspaceOutput, account),
+                    context,
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(new WorkspaceRecoveryResult(
+                    Path.GetFullPath(output),
+                    Path.GetFullPath(workspaceOutput ?? Path.Combine(
+                        Path.GetDirectoryName(Path.GetFullPath(output))!,
+                        Path.GetFileName(Path.GetFullPath(output)) + ".workspace.json")),
+                    verified.Workspace.WorkspaceId,
+                    verified.DataSet.DataSetId,
+                    verified.DataSet.Databases.Count,
+                    verified.VerifiedAtUtc));
+                return 0;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Workspace repair was cancelled.");
+                return 130;
+            }
+            catch (ArgumentException exception)
+            {
+                WriteError(exception);
+                return 2;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+        return command;
     }
 
     static Command CreateMaterializationCommand()

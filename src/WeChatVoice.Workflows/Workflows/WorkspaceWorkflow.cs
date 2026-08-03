@@ -187,6 +187,71 @@ public sealed class WorkspaceWorkflow : IWorkspaceWorkflow
         }
     }
 
+    public async Task<VerifiedLocalWorkspace> RepairMaterializationAsync(
+        MaterializationRecoveryRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.Workspace, OperationStageIds.VerifyingWorkspace, "正在验证并修复 Workspace 文档");
+            var outputRoot = Path.GetFullPath(request.OutputDirectory);
+            var workspacePath = Path.GetFullPath(request.WorkspaceOutputPath ?? Path.Combine(
+                Path.GetDirectoryName(outputRoot) ?? throw new InvalidDataException("The materialization output has no parent directory."),
+                Path.GetFileName(outputRoot) + ".workspace.json"));
+            var manifest = await MaterializationRecoveryService.ReadAndVerifyManifestAsync(outputRoot, cancellationToken).ConfigureAwait(false);
+            var accountId = request.AccountId ?? manifest.AccountId;
+            AccountIdentity? identity = null;
+            if (manifest.AccountEvidenceState == AccountEvidenceState.DatabaseConfirmed)
+            {
+                identity = new AccountIdentity(AccountIdentityState.Confirmed, null, UserConfirmationState.NotConfirmed, accountId);
+            }
+            else if (!string.IsNullOrWhiteSpace(accountId))
+            {
+                context.StateMachine.TryEnterAwaitingUser();
+                context.Report(OperationPhase.Workspace, OperationStageIds.ConfirmingAccount, "修复前需要确认账号");
+                try
+                {
+                    var confirmation = await context.AccountConfirmation.ConfirmAsync(
+                        new AccountIdentityReport(accountId, AccountIdentityState.Candidate, null),
+                        cancellationToken).ConfigureAwait(false);
+                    if (!confirmation.Confirmed || !string.Equals(confirmation.ConfirmedAccountId, accountId, StringComparison.Ordinal))
+                    {
+                        throw new AppFailureException(ErrorCode.AccountConfirmationRequired, "Account confirmation was declined during workspace repair.");
+                    }
+
+                    identity = new AccountIdentity(AccountIdentityState.Candidate, null, UserConfirmationState.Confirmed, accountId);
+                }
+                finally
+                {
+                    context.StateMachine.TryResumeFromUser();
+                }
+            }
+
+            var verified = await _recovery.RepairWorkspaceAsync(outputRoot, workspacePath, accountId, cancellationToken, identity).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            context.Report(OperationPhase.Workspace, OperationStageIds.Completing, "Workspace 文档修复完成");
+            return verified;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
     public async Task<MaterializationRecoveryAssessment> AssessMaterializationRecoveryAsync(
         string outputDirectory,
         string? workspaceOutputPath,

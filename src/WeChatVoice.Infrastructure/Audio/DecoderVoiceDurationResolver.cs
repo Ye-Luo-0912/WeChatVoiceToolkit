@@ -10,7 +10,7 @@ namespace WeChatVoice.Infrastructure.Audio;
 /// A single resolver instance serializes decoder calls, avoiding unbounded
 /// process and temporary-file pressure during a scan.
 /// </summary>
-public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolver, IAsyncDisposable
+public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolver, IVoiceDecoderIdentity, IAsyncDisposable
 {
     public const string CurrentDecoderVersion = "silk-wav-decoder-v1";
 
@@ -20,7 +20,11 @@ public sealed class DecoderVoiceDurationResolver : IVersionedVoiceDurationResolv
     public DecoderVoiceDurationResolver(IVoiceDecoder decoder)
         => _decoder = decoder ?? throw new ArgumentNullException(nameof(decoder));
 
-    public string DecoderVersion => CurrentDecoderVersion;
+    public string DecoderVersion => _decoder is IVoiceDecoderIdentity identity
+        ? identity.DecoderIdentity
+        : CurrentDecoderVersion;
+
+    public string DecoderIdentity => DecoderVersion;
 
     public async Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
     {

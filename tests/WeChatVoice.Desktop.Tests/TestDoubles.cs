@@ -89,6 +89,9 @@ public sealed class FakeWorkspaceWorkflow : IWorkspaceWorkflow
         return Task.FromResult(RecoveryResult);
     }
 
+    public Task<VerifiedLocalWorkspace> RepairMaterializationAsync(MaterializationRecoveryRequest request, WorkflowContext context, CancellationToken cancellationToken)
+        => Task.FromResult(RecoveryResult);
+
     public Task<MaterializationRecoveryAssessment> AssessMaterializationRecoveryAsync(string outputDirectory, string? workspaceOutputPath, WorkflowContext context, CancellationToken cancellationToken)
         => Task.FromResult(Assessment with { OutputDirectory = Path.GetFullPath(outputDirectory) });
 

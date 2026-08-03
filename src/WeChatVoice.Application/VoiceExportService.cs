@@ -51,12 +51,13 @@ public sealed class VoiceExportService
         }
 
         // A guided export must not start writing artifacts until the catalog
-        // has independently re-enumerated the immutable selection. The final
-        // streaming pass below verifies the same fingerprint again, closing
-        // the smaller window between this preflight and export.
-        if (options.ExpectedResultSetFingerprint is not null)
+        // has produced and verified an immutable selection. The later export
+        // pass consumes that prepared list, so duration resolution and query
+        // ordering cannot drift between planning and artifact staging.
+        IReadOnlyList<VoiceRecord>? preparedSelection = null;
+        if (HasExpectedSelection(options))
         {
-            await EnsureExpectedResultSetAsync(query, options, cancellationToken).ConfigureAwait(false);
+            preparedSelection = await PrepareExpectedSelectionAsync(query, options, cancellationToken).ConfigureAwait(false);
         }
 
         var context = _voiceCatalog.Context;
@@ -67,6 +68,7 @@ public sealed class VoiceExportService
         await using var journal = await _exportStore.BeginRunAsync(
             new VoiceExportRunContext(runId, context, DateTimeOffset.UtcNow),
             cancellationToken).ConfigureAwait(false);
+        var transaction = (IExportRunTransaction)journal;
         await AppendAsync(journal, new VoiceExportJournalEvent("run-started", runId, DateTimeOffset.UtcNow, Context: context), cancellationToken).ConfigureAwait(false);
 
         var entries = new ConcurrentQueue<VoiceExportEntry>();
@@ -78,12 +80,15 @@ public sealed class VoiceExportService
 
         try
         {
-            await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
-                _voiceCatalog,
-                query,
-                _durationResolver,
-                bypassCatalogDeepScan: false,
-                cancellationToken: cancellationToken).ConfigureAwait(false))
+            var records = preparedSelection is null
+                ? VoiceSelectionEnumerator.EnumerateAsync(
+                    _voiceCatalog,
+                    query,
+                    _durationResolver,
+                    bypassCatalogDeepScan: false,
+                    cancellationToken: cancellationToken)
+                : EnumeratePreparedAsync(preparedSelection, cancellationToken);
+            await foreach (var record in records.ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 resultSetFingerprint.Append(record);
@@ -92,7 +97,7 @@ public sealed class VoiceExportService
                     await DrainOneAsync(activeExports, cancellationToken).ConfigureAwait(false);
                 }
 
-                activeExports.Add(ExportOneAsync(record, options, context, runId, journal, entries, failures, cancellationToken));
+                activeExports.Add(ExportOneAsync(record, options, context, runId, transaction, journal, entries, failures, cancellationToken));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -120,10 +125,11 @@ public sealed class VoiceExportService
 
         if (!cancellationObserved
             && !runFailed
-            && options.ExpectedResultSetFingerprint is not null)
+            && HasExpectedSelection(options))
         {
             var actualFingerprint = resultSetFingerprint.Complete();
-            if (!string.Equals(actualFingerprint, options.ExpectedResultSetFingerprint, StringComparison.OrdinalIgnoreCase)
+            if ((options.ExpectedResultSetFingerprint is not null
+                    && !string.Equals(actualFingerprint, options.ExpectedResultSetFingerprint, StringComparison.OrdinalIgnoreCase))
                 || (options.ExpectedResultCount is not null && resultSetFingerprint.Count != options.ExpectedResultCount.Value)
                 || (options.ExpectedTotalPayloadBytes is not null && resultSetFingerprint.TotalPayloadBytes != options.ExpectedTotalPayloadBytes.Value))
             {
@@ -132,8 +138,9 @@ public sealed class VoiceExportService
                     "selection-plan",
                     "The voice result set changed after the scan; export was not committed.",
                     nameof(ErrorCode.SelectionPlanMismatch));
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
                 await AppendAsync(journal, new VoiceExportJournalEvent(
-                    "run-failed",
+                    "selection-aborted",
                     runId,
                     DateTimeOffset.UtcNow,
                     Context: context,
@@ -142,6 +149,45 @@ public sealed class VoiceExportService
                 throw new AppFailureException(
                     ErrorCode.SelectionPlanMismatch,
                     "The voice result set changed after the scan; export was not committed.");
+            }
+        }
+
+        if (cancellationObserved || runFailed || cancellationToken.IsCancellationRequested)
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        else
+        {
+            try
+            {
+                await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+                foreach (var entry in entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal))
+                {
+                    await AppendAsync(
+                        journal,
+                        new VoiceExportJournalEvent(
+                            entry.WasSkipped ? "item-skipped" : "item-committed",
+                            runId,
+                            DateTimeOffset.UtcNow,
+                            entry.MessageId,
+                            entry),
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            catch (Exception exception)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                runFailed = true;
+                failures.Enqueue(CreateFailure(null, "commit", exception));
+                await AppendAsync(
+                    journal,
+                    new VoiceExportJournalEvent(
+                        "run-failed",
+                        runId,
+                        DateTimeOffset.UtcNow,
+                        Context: context,
+                        Failure: CreateFailure(null, "commit", exception)),
+                    CancellationToken.None).ConfigureAwait(false);
             }
         }
 
@@ -192,11 +238,12 @@ public sealed class VoiceExportService
         return manifest;
     }
 
-    private async Task EnsureExpectedResultSetAsync(
+    private async Task<IReadOnlyList<VoiceRecord>> PrepareExpectedSelectionAsync(
         VoiceQuery query,
         VoiceExportOptions options,
         CancellationToken cancellationToken)
     {
+        var prepared = new List<VoiceRecord>();
         using var fingerprint = new VoiceResultSetFingerprintBuilder();
         await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
             _voiceCatalog,
@@ -206,10 +253,12 @@ public sealed class VoiceExportService
             cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             fingerprint.Append(record);
+            prepared.Add(record);
         }
 
         var actual = fingerprint.Complete();
-        if (!string.Equals(actual, options.ExpectedResultSetFingerprint, StringComparison.OrdinalIgnoreCase)
+        if ((options.ExpectedResultSetFingerprint is not null
+                && !string.Equals(actual, options.ExpectedResultSetFingerprint, StringComparison.OrdinalIgnoreCase))
             || (options.ExpectedResultCount is not null && fingerprint.Count != options.ExpectedResultCount.Value)
             || (options.ExpectedTotalPayloadBytes is not null && fingerprint.TotalPayloadBytes != options.ExpectedTotalPayloadBytes.Value))
         {
@@ -217,6 +266,21 @@ public sealed class VoiceExportService
                 ErrorCode.SelectionPlanMismatch,
                 "The voice result set changed after the scan; export was not started.");
         }
+
+        return prepared;
+    }
+
+    private static async IAsyncEnumerable<VoiceRecord> EnumeratePreparedAsync(
+        IReadOnlyList<VoiceRecord> prepared,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        foreach (var record in prepared)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return record;
+        }
+
+        await Task.CompletedTask.ConfigureAwait(false);
     }
 
     private async Task DrainOneAsync(List<Task> activeExports, CancellationToken cancellationToken)
@@ -237,6 +301,7 @@ public sealed class VoiceExportService
         VoiceExportOptions options,
         VoiceCatalogContext context,
         string runId,
+        IExportRunTransaction transaction,
         IExportRunLease journal,
         ConcurrentQueue<VoiceExportEntry> entries,
         ConcurrentQueue<VoiceExportFailure> failures,
@@ -273,7 +338,7 @@ public sealed class VoiceExportService
                 return;
             }
 
-            lease = await _exportStore.BeginItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, cancellationToken).ConfigureAwait(false);
+            lease = await transaction.StageItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, cancellationToken).ConfigureAwait(false);
             if (lease.OriginalState == ExportArtifactState.Conflict)
             {
                 await RecordFailureAsync(record, "source-content-mismatch", "The existing original artifact conflicts with the source expectation.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
@@ -339,8 +404,6 @@ public sealed class VoiceExportService
 
             var entry = CreateEntry(record, originalArtifact, decodedArtifact, durationMs, hasDecodeError, qualityFlags, lease.OriginalState == ExportArtifactState.VerifiedExisting && (!options.DecodeToWav || lease.DecodedState == ExportArtifactState.VerifiedExisting));
             entries.Enqueue(entry);
-            var eventName = entry.WasSkipped ? "item-skipped" : "item-committed";
-            await AppendAsync(journal, new VoiceExportJournalEvent(eventName, runId, DateTimeOffset.UtcNow, record.MessageId, entry), cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -502,7 +565,10 @@ public sealed class VoiceExportService
             record.SpeakerId,
             hasDecodeError,
             qualityFlags.Count == 0 && durationMs is not null ? Array.Empty<string>() : qualityFlags.Concat(durationMs is null ? ["duration-unknown"] : Array.Empty<string>()).ToArray(),
-            true);
+            false,
+            wasSkipped ? ExportState.VerifiedExisting : ExportState.Exported,
+            TrainingEligibility.Unknown,
+            UserSelectionState.NotSelected);
 
     private async Task<long?> TryReadCachedDurationAsync(
         VoiceRecord record,
@@ -528,4 +594,9 @@ public sealed class VoiceExportService
 
     private static Task AppendAsync(IExportRunLease journal, VoiceExportJournalEvent journalEvent, CancellationToken cancellationToken)
         => journal.AppendAsync(journalEvent, cancellationToken);
+
+    private static bool HasExpectedSelection(VoiceExportOptions options)
+        => options.ExpectedResultSetFingerprint is not null
+            || options.ExpectedResultCount is not null
+            || options.ExpectedTotalPayloadBytes is not null;
 }

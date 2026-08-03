@@ -38,14 +38,20 @@ public sealed class VoiceExportServiceTests
 
         var entry = Assert.Single(manifest.Entries);
         Assert.Equal(4321, entry.DurationMs);
-        Assert.True(entry.SelectedForTraining);
-        Assert.Equal(4321, manifest.TotalTrainingDurationMs);
-        Assert.Equal(1, manifest.TrainingEntryCount);
+        Assert.False(entry.SelectedForTraining);
+        Assert.Equal(TrainingEligibility.Unknown, entry.TrainingEligibility);
+        Assert.Equal(UserSelectionState.NotSelected, entry.UserSelectionState);
+        Assert.Equal(0, manifest.TotalTrainingDurationMs);
+        Assert.Equal(0, manifest.TrainingEntryCount);
         var csvPath = Path.Combine(temporary.GetPath("export"), "manifest.csv");
         Assert.True(File.Exists(csvPath));
         var csv = await File.ReadAllTextAsync(csvPath);
         Assert.Contains("duration_ms", csv, StringComparison.Ordinal);
         Assert.Contains("4321", csv, StringComparison.Ordinal);
+        Assert.DoesNotContain("contact@example", csv, StringComparison.Ordinal);
+        Assert.DoesNotContain("source_stable_key", csv, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(temporary.GetPath("export"), "manifest.private.json")));
+        Assert.True(File.Exists(Path.Combine(temporary.GetPath("export"), "dataset.csv")));
     }
 
     [Fact]
@@ -235,6 +241,73 @@ public sealed class VoiceExportServiceTests
     }
 
     [Fact]
+    public async Task ExportAsync_reuses_the_prepared_selection_instead_of_requerying()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var plannedPayload = new byte[] { 1, 2, 3 };
+        var currentPayload = new byte[] { 4, 5, 6, 7 };
+        var planned = CreateRecord("voice-planned-after-preflight", Hash(plannedPayload), plannedPayload.Length);
+        var current = CreateRecord("voice-current-after-preflight", Hash(currentPayload), currentPayload.Length);
+        using var fingerprint = new VoiceResultSetFingerprintBuilder();
+        fingerprint.Append(planned);
+        var expectedFingerprint = fingerprint.Complete();
+        var exportRoot = temporary.GetPath("export");
+        var catalog = new SequencedVoiceCatalog(
+            [
+                (planned, () => new MemoryStream(plannedPayload, writable: false)),
+            ],
+            [
+                (current, () => new MemoryStream(currentPayload, writable: false)),
+            ]);
+        var service = new VoiceExportService(catalog, new FileSystemVoiceExportStore(exportRoot));
+
+        var manifest = await service.ExportAsync(
+            new VoiceQuery(),
+            new VoiceExportOptions
+            {
+                ExpectedResultSetFingerprint = expectedFingerprint,
+                ExpectedResultCount = 1,
+                ExpectedTotalPayloadBytes = plannedPayload.Length,
+                MaxDegreeOfParallelism = 1,
+            });
+
+        Assert.Equal(1, catalog.QueryCount);
+        var entry = Assert.Single(manifest.Entries);
+        Assert.Equal(planned.MessageId, entry.MessageId);
+        Assert.Equal(plannedPayload, await File.ReadAllBytesAsync(Path.Combine(exportRoot, entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar))));
+        Assert.Empty(manifest.Failures);
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(exportRoot, "runs"), "*.staging", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task ExportAsync_consumes_a_prepared_selection_without_resolving_duration_twice()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var payload = new byte[] { 0x41, 0x42, 0x43 };
+        var record = CreateRecord("voice-prepared-duration", Hash(payload), payload.Length);
+        using var fingerprint = new VoiceResultSetFingerprintBuilder();
+        fingerprint.Append(record);
+        var resolver = new CountingDurationResolver(3210);
+        var service = new VoiceExportService(
+            new TestVoiceCatalog([(record, () => new MemoryStream(payload, writable: false))]),
+            new FileSystemVoiceExportStore(temporary.GetPath("export")),
+            durationResolver: resolver);
+
+        var manifest = await service.ExportAsync(
+            new VoiceQuery(ResolveDuration: true),
+            new VoiceExportOptions
+            {
+                ExpectedResultSetFingerprint = fingerprint.Complete(),
+                ExpectedResultCount = 1,
+                ExpectedTotalPayloadBytes = payload.Length,
+                MaxDegreeOfParallelism = 1,
+            });
+
+        Assert.Equal(1, resolver.CallCount);
+        Assert.Equal(3210, Assert.Single(manifest.Entries).DurationMs);
+    }
+
+    [Fact]
     public async Task ExportAsync_skips_an_existing_item_when_the_source_hash_is_unknown()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -412,10 +485,73 @@ public sealed class VoiceExportServiceTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
+    private sealed class SequencedVoiceCatalog : IVoiceCatalog
+    {
+        private readonly IReadOnlyList<(VoiceRecord Record, Func<Stream> CreateStream)>[] _sequences;
+        private int _queryCount;
+
+        public SequencedVoiceCatalog(params IReadOnlyList<(VoiceRecord Record, Func<Stream> CreateStream)>[] sequences)
+        {
+            _sequences = sequences;
+            Context = new VoiceCatalogContext("dataset", "adapter", "1", "account", ["db-fingerprint"], "snapshot");
+        }
+
+        public VoiceCatalogContext Context { get; }
+
+        public int QueryCount => Volatile.Read(ref _queryCount);
+
+        public async IAsyncEnumerable<ContactRecord> QueryContactsAsync(ContactQuery query, [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public async IAsyncEnumerable<VoiceRecord> QueryVoicesAsync(VoiceQuery query, [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            var index = Math.Min(Interlocked.Increment(ref _queryCount) - 1, _sequences.Length - 1);
+            foreach (var (record, _) in _sequences[index])
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return record;
+                await Task.Yield();
+            }
+        }
+
+        public ValueTask<Stream> OpenPayloadAsync(VoicePayloadLocator locator, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var sequence in _sequences)
+            {
+                foreach (var item in sequence)
+                {
+                    if (item.Record.PayloadLocator?.BlobKey == locator.BlobKey)
+                    {
+                        return ValueTask.FromResult(item.CreateStream());
+                    }
+                }
+            }
+
+            throw new InvalidDataException("Test payload was not found.");
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     private sealed class FailingDecoder : IVoiceDecoder
     {
         public Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken) =>
             Task.FromException(new InvalidOperationException("The test decoder deliberately failed."));
+    }
+
+    private sealed class CountingDurationResolver(long duration) : IVoiceDurationResolver
+    {
+        public int CallCount { get; private set; }
+
+        public Task<long?> ResolveAsync(IVoiceCatalog catalog, VoiceRecord record, CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult<long?>(duration);
+        }
     }
 
     private sealed class CopyingDecoder : IVoiceDecoder

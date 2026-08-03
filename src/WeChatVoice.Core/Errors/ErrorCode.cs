@@ -68,4 +68,7 @@ public enum ErrorCode
 
     /// <summary>The voice set changed between the immutable scan and export.</summary>
     SelectionPlanMismatch,
+
+    /// <summary>The caller requested duration analysis but no resolver is configured.</summary>
+    DurationResolverUnavailable,
 }

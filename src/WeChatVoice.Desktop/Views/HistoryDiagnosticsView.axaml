@@ -14,6 +14,7 @@
           <Button Content="移除选中项" Command="{Binding RemoveSelectedWorkspaceCommand}" />
           <Button Content="删除 Workspace JSON" Command="{Binding DeleteSelectedWorkspaceFileCommand}" />
           <Button Content="加载并验证" Command="{Binding LoadSelectedWorkspaceCommand}" IsEnabled="{Binding CanStartOperation}" />
+          <Button Content="修复 Workspace JSON" Command="{Binding RepairSelectedWorkspaceCommand}" IsEnabled="{Binding CanStartOperation}" />
           <Button Content="删除明文 Workspace（再次点击确认）" Command="{Binding DeleteMaterializedWorkspaceCommand}" IsEnabled="{Binding CanStartOperation}" />
         </StackPanel>
         <TextBlock Text="{Binding WorkspaceDeleteSummary}" Foreground="#A33A00" TextWrapping="Wrap" />

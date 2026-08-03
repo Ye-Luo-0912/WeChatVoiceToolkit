@@ -146,7 +146,8 @@ try {
 
     $packageFiles = @(Get-PackageFiles $out @('package-manifest.json', 'SHA256SUMS.txt', 'sbom.spdx.json'))
     [IO.File]::WriteAllText((Join-Path $out 'package-manifest.json'), (@{ format = 'wechatvoice-package-v1'; files = $packageFiles } | ConvertTo-Json -Depth 5))
-    [IO.File]::WriteAllText((Join-Path $out 'sbom.spdx.json'), (@{ spdxVersion = 'SPDX-2.3'; name = 'WeChatVoiceToolkit'; creationInfo = @{ created = [DateTime]::UtcNow.ToString('O'); creators = @('Tool: publish-smoke.ps1') }; files = $packageFiles } | ConvertTo-Json -Depth 6))
+    & (Join-Path $repo 'scripts/generate-spdx.ps1') -Directory $out -OutputPath (Join-Path $out 'sbom.spdx.json')
+    if ($LASTEXITCODE -ne 0) { throw 'SPDX SBOM generation failed.' }
     $checksums = @(Get-PackageFiles $out @('SHA256SUMS.txt') | ForEach-Object { "$($_.sha256)  $($_.path)" })
     [IO.File]::WriteAllLines((Join-Path $out 'SHA256SUMS.txt'), $checksums)
 

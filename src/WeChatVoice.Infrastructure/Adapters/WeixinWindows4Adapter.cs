@@ -461,11 +461,13 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog
             throw new InvalidDataException("The payload locator is not valid for this verified media database.");
         }
 
-        // The catalog lease has already content-verified the media group. A
-        // per-payload metadata check detects replacement/length/time changes;
-        // the lease's read-only handle prevents ordinary in-place writers, so
-        // unchanged media is not rehashed for every voice row.
-        await _fileLease.VerifyMetadataAsync(cancellationToken, logicalRole: "media").ConfigureAwait(false);
+        // Reuse the catalog's content-verification cache while checking the
+        // media file immediately before opening a BLOB. If metadata changed,
+        // VerifyAsync re-hashes through the held read-only handle; otherwise it
+        // performs only the inexpensive identity/length/time check. The lease
+        // uses FileShare.Read, so ordinary writers/deleters cannot race the
+        // query-to-BLOB window.
+        await _fileLease.VerifyAsync(cancellationToken, logicalRole: "media").ConfigureAwait(false);
         var connection = await WeixinWindows4Adapter.OpenReadOnlyAsync(_media, cancellationToken).ConfigureAwait(false);
         var command = connection.CreateCommand();
         command.CommandText = "SELECT voice_data FROM VoiceInfo WHERE rowid = $rowid;";

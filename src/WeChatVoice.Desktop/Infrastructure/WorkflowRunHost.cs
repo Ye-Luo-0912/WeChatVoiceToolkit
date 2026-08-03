@@ -251,6 +251,7 @@ public sealed partial class WorkflowRunHost : ObservableObject
             var result = await Task.Run(
                 () => operation(context, session.Cancellation.Token),
                 session.Cancellation.Token).ConfigureAwait(false);
+            await session.DrainUiWorkAsync().ConfigureAwait(false);
             if (applyOnUiThread is not null)
             {
                 await InvokeIfCurrentAsync(session, () => applyOnUiThread(result)).ConfigureAwait(false);
@@ -261,11 +262,13 @@ public sealed partial class WorkflowRunHost : ObservableObject
         }
         catch (OperationCanceledException) when (session.Cancellation.IsCancellationRequested)
         {
+            await session.DrainUiWorkAsync().ConfigureAwait(false);
             await InvokeIfCurrentAsync(session, () => CompleteRun(session, new OperationCanceledException(session.Cancellation.Token))).ConfigureAwait(false);
             Log?.Info($"run {session.Version} cancelled");
         }
         catch (Exception exception)
         {
+            await session.DrainUiWorkAsync().ConfigureAwait(false);
             await InvokeIfCurrentAsync(session, () => CompleteRun(session, exception)).ConfigureAwait(false);
         }
         finally
@@ -282,10 +285,10 @@ public sealed partial class WorkflowRunHost : ObservableObject
     }
 
     private void QueueProgress(WorkflowRunSession session, OperationProgress progress)
-        => _ = InvokeIfCurrentAsync(session, () => OnProgress(session, progress));
+        => session.QueueUiWork(() => InvokeIfCurrentAsync(session, () => OnProgress(session, progress)));
 
     private void QueueStateChanged(WorkflowRunSession session)
-        => _ = InvokeIfCurrentAsync(session, () => OnStateChanged(session));
+        => session.QueueUiWork(() => InvokeIfCurrentAsync(session, () => OnStateChanged(session)));
 
     private async Task InvokeIfCurrentAsync(WorkflowRunSession session, Action action)
     {

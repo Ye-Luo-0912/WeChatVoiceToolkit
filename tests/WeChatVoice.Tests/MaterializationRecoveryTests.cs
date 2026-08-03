@@ -176,6 +176,48 @@ public sealed class MaterializationRecoveryTests
     }
 
     [Fact]
+    public async Task RepairWorkspaceAsync_recreates_missing_document_without_downgrading_completed_state()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var fixture = await CreateCommittedWorkspaceAsync(temporary, "repair-completed");
+        var manifestPath = Path.Combine(fixture.OutputRoot, ".wechatvoice", "materialization-manifest.json");
+        MaterializationManifest manifest;
+        await using (var stream = File.OpenRead(manifestPath))
+        {
+            manifest = await JsonSerializer.DeserializeAsync<MaterializationManifest>(stream, InfrastructureJson.Compact)
+                ?? throw new InvalidDataException("The test manifest was empty.");
+        }
+
+        await WriteManifestAsync(fixture.OutputRoot, new MaterializationManifest(
+            manifest.WorkspaceId,
+            manifest.SourceSnapshotId,
+            manifest.BackendId,
+            manifest.BackendVersion,
+            manifest.BackendSha256,
+            manifest.Databases,
+            manifest.Files,
+            manifest.KeyExtractionProfileId,
+            manifest.ProcessVersion,
+            manifest.ProcessImageSha256,
+            manifest.WcdbModuleSha256,
+            manifest.AccountSidFingerprint,
+            AccountId: "wxid_owner",
+            AccountEvidenceState: AccountEvidenceState.DatabaseConfirmed));
+
+        File.Delete(fixture.WorkspacePath);
+        var repaired = await new MaterializationRecoveryService().RepairWorkspaceAsync(
+            fixture.OutputRoot,
+            fixture.WorkspacePath,
+            "wxid_owner",
+            CancellationToken.None);
+
+        Assert.True(File.Exists(fixture.WorkspacePath));
+        Assert.Equal("wxid_owner", repaired.Workspace.AccountIdentity.ConfirmedAccountId);
+        var state = await MaterializationStateStore.ReadAsync(fixture.OutputRoot, CancellationToken.None);
+        Assert.Equal(MaterializationCommitStates.Completed, state.State);
+    }
+
+    [Fact]
     public async Task Delete_materialized_workspace_revalidates_and_preserves_external_data()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -194,6 +236,8 @@ public sealed class MaterializationRecoveryTests
         Assert.Equal(fixture.WorkspaceId, result.WorkspaceId);
         Assert.Equal(1, result.DatabaseCount);
         Assert.False(Directory.Exists(fixture.OutputRoot));
+        Assert.True(result.WorkspaceDocumentDeleted);
+        Assert.False(File.Exists(fixture.WorkspacePath));
         Assert.True(File.Exists(snapshotSentinel));
         Assert.True(File.Exists(exportSentinel));
         Assert.Equal(WorkflowState.Completed, context.StateMachine.State);

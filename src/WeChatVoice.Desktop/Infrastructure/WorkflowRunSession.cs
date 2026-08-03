@@ -31,7 +31,34 @@ public sealed class WorkflowRunSession : IDisposable
 
     public SemaphoreSlim RunGate { get; }
 
+    private readonly object _uiWorkGate = new();
+    private Task _pendingUiWork = Task.CompletedTask;
+
     internal EventHandler<WorkflowStateTransition>? TransitionHandler { get; set; }
+
+    internal void QueueUiWork(Func<Task> work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        lock (_uiWorkGate)
+        {
+            _pendingUiWork = _pendingUiWork
+                .ContinueWith(
+                    static (_, state) => ((Func<Task>)state!).Invoke(),
+                    work,
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default)
+                .Unwrap();
+        }
+    }
+
+    internal Task DrainUiWorkAsync()
+    {
+        lock (_uiWorkGate)
+        {
+            return _pendingUiWork;
+        }
+    }
 
     public void Dispose() => Cancellation.Dispose();
 }

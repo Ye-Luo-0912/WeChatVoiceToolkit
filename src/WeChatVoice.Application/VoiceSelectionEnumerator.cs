@@ -20,12 +20,19 @@ public static class VoiceSelectionEnumerator
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(query);
+        if (query.ResolveDuration && durationResolver is null)
+        {
+            throw new AppFailureException(
+                ErrorCode.DurationResolverUnavailable,
+                "Duration analysis requires an available duration resolver.");
+        }
+
         if ((query.MinimumDurationMs is not null || query.MaximumDurationMs is not null)
-            && (!query.ResolveDuration || durationResolver is null))
+            && !query.ResolveDuration)
         {
             throw new AppFailureException(
                 ErrorCode.InvalidRequest,
-                "Duration filters require an available duration resolver.");
+                "Duration filters require duration analysis to be enabled.");
         }
 
         var catalogQuery = query.RequiresPostQueryFiltering

@@ -70,6 +70,14 @@ unless the user explicitly opts into the development policy.
   the Broker bundle manifests; `scripts/sign-release.ps1` signs and verifies
   all four published executables when a certificate is supplied, and the
   publish smoke fails in CI when the output is unsigned.
+- `scripts/package-msix.ps1` is the formal distribution step. It packages the
+  signed layout, signs the MSIX with the same certificate, and installs the
+  Broker/Worker under a Windows protected directory. The ZIP produced for
+  diagnostics is not a formal Broker distribution.
+- `scripts/generate-spdx.ps1` invokes the repository-pinned Microsoft SBOM Tool
+  (`microsoft.sbom.dotnettool` 4.1.5); the checked-in `sbom.spdx.json` is an
+  official SPDX document generated from the final package drop, not a custom
+  file-list format.
 
 ## Private staging hardening
 

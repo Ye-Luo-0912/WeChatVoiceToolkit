@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Serialization;
@@ -6,30 +7,22 @@ using WeChatVoice.Infrastructure.Serialization;
 namespace WeChatVoice.Infrastructure.Export;
 
 /// <summary>
-/// Writes the portable per-item training manifest beside the JSON manifest.
-/// Only provenance and artifact metadata are included; contact usernames and
-/// database content never enter this file.
+/// Writes the portable dataset manifest beside the private JSON audit
+/// manifest. No contact username, source database, source stable key, or
+/// local path is emitted here.
 /// </summary>
 internal static class VoiceManifestCsvWriter
 {
     private static readonly string[] Header =
     [
-        "message_id",
-        "conversation_id",
-        "occurred_at_utc",
-        "direction",
-        "original_path",
-        "original_byte_length",
-        "original_sha256",
+        "item_id",
+        "relative_audio_path",
+        "sha256",
         "duration_ms",
-        "source_stable_key",
-        "source_database",
-        "shard_id",
-        "speaker_id",
-        "was_skipped",
-        "selected_for_training",
-        "has_decode_error",
-        "quality_flags"
+        "byte_length",
+        "quality_flags",
+        "training_eligibility",
+        "selected"
     ];
 
     public static Task WriteAsync(
@@ -45,22 +38,14 @@ internal static class VoiceManifestCsvWriter
         {
             AppendRow(builder,
             [
-                entry.MessageId,
-                entry.ConversationId,
-                entry.OccurredAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
-                entry.Direction.ToString(),
+                ComputeItemId(entry),
                 entry.OriginalPath,
-                entry.OriginalByteLength.ToString(CultureInfo.InvariantCulture),
                 entry.OriginalSha256,
                 entry.DurationMs?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
-                entry.SourceStableKey,
-                entry.SourceDatabase,
-                entry.ShardId,
-                entry.SpeakerId,
-                entry.WasSkipped.ToString(CultureInfo.InvariantCulture),
-                entry.SelectedForTraining.ToString(CultureInfo.InvariantCulture),
-                entry.HasDecodeError.ToString(CultureInfo.InvariantCulture),
+                entry.OriginalByteLength.ToString(CultureInfo.InvariantCulture),
                 string.Join('|', entry.QualityFlags),
+                entry.TrainingEligibility.ToString(),
+                (entry.UserSelectionState == UserSelectionState.Selected).ToString(CultureInfo.InvariantCulture),
             ]);
         }
 
@@ -76,7 +61,7 @@ internal static class VoiceManifestCsvWriter
                 builder.Append(',');
             }
 
-            var value = values[index] ?? string.Empty;
+            var value = SanitizeForSpreadsheet(values[index] ?? string.Empty);
             if (value.IndexOfAny([',', '"', '\r', '\n']) >= 0)
             {
                 builder.Append('"').Append(value.Replace("\"", "\"\"", StringComparison.Ordinal)).Append('"');
@@ -88,5 +73,21 @@ internal static class VoiceManifestCsvWriter
         }
 
         builder.AppendLine();
+    }
+
+    private static string ComputeItemId(VoiceExportEntry entry)
+    {
+        var sourceIdentity = entry.SourceStableKey ?? $"{entry.MessageId}\n{entry.OriginalSha256}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourceIdentity))).ToLowerInvariant();
+    }
+
+    private static string SanitizeForSpreadsheet(string value)
+    {
+        if (value.Length > 0 && value[0] is '=' or '+' or '-' or '@')
+        {
+            return "'" + value;
+        }
+
+        return value;
     }
 }
