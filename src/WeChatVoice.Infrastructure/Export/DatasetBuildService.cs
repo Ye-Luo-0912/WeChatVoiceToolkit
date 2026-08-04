@@ -15,6 +15,16 @@ namespace WeChatVoice.Infrastructure.Export;
 /// </summary>
 public sealed class DatasetBuildService
 {
+    private const string DatasetMetadataDescriptorFileName = "dataset-metadata-commit.json";
+    private const string DatasetMetadataTransactionFileName = "dataset-metadata.transaction.json";
+    private static readonly string[] DatasetMetadataFileNames =
+    [
+        "selection-profile.json",
+        "dataset.json",
+        "dataset.csv",
+        "build-manifest.json",
+    ];
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -39,6 +49,7 @@ public sealed class DatasetBuildService
             Guid.NewGuid().ToString("N"),
             runId: null,
             cancellationToken).ConfigureAwait(false);
+        await RecoverDatasetMetadataTransactionsUnderLockAsync(exportRoot, cancellationToken).ConfigureAwait(false);
         var inputs = await LoadInputsAsync(
             exportRoot,
             request.ManifestPath,
@@ -154,6 +165,21 @@ public sealed class DatasetBuildService
                     SemanticProfileHash: profile.SemanticProfileHash),
                 JsonOptions,
                 cancellationToken).ConfigureAwait(false);
+            var buildManifestSha256 = await FileHashing.ComputeSha256Async(buildManifestPath, cancellationToken).ConfigureAwait(false);
+            await AtomicFileWriter.WriteJsonAsync(
+                Path.Combine(stagingRoot, DatasetMetadataDescriptorFileName),
+                new DatasetMetadataCommitDescriptor(
+                    Guid.NewGuid().ToString("N"),
+                    profile.SelectionFingerprint,
+                    manifestSha256,
+                    profileOutputSha256,
+                    datasetManifestSha256,
+                    datasetCsvSha256,
+                    buildManifestSha256,
+                    request.LinkMode,
+                    DateTimeOffset.UtcNow),
+                JsonOptions,
+                cancellationToken).ConfigureAwait(false);
 
             Directory.Move(stagingRoot, outputRoot);
             if (request.LinkMode == DatasetLinkMode.LinkedView)
@@ -198,6 +224,7 @@ public sealed class DatasetBuildService
             Guid.NewGuid().ToString("N"),
             runId: null,
             cancellationToken).ConfigureAwait(false);
+        await RecoverDatasetMetadataTransactionsUnderLockAsync(exportRoot, cancellationToken).ConfigureAwait(false);
         return await ValidateDeleteAsync(request, exportRoot, outputRoot, cancellationToken).ConfigureAwait(false);
     }
 
@@ -220,6 +247,7 @@ public sealed class DatasetBuildService
             Guid.NewGuid().ToString("N"),
             runId: null,
             cancellationToken).ConfigureAwait(false);
+        await RecoverDatasetMetadataTransactionsUnderLockAsync(exportRoot, cancellationToken).ConfigureAwait(false);
         var preview = await ValidateDeleteAsync(request, exportRoot, outputRoot, cancellationToken).ConfigureAwait(false);
         if (!request.Confirmed)
         {
@@ -349,6 +377,7 @@ public sealed class DatasetBuildService
             return InvalidVerification(outputRoot, "export-missing", null, "The export directory does not exist.");
         }
 
+        await RecoverPendingMetadataTransactionsAsync(exportRoot, cancellationToken).ConfigureAwait(false);
         await using var rootLock = await ExportRootLock.AcquireAsync(
             exportRoot,
             ExportRootLockMode.Shared,
@@ -413,6 +442,14 @@ public sealed class DatasetBuildService
             runId: null,
             cancellationToken).ConfigureAwait(false))
         {
+            if ((File.GetAttributes(outputRoot) & FileAttributes.ReadOnly) != 0)
+            {
+                // Linked Views are intentionally read-only after a successful
+                // build. Recovery must be able to replace only derived
+                // metadata, never the audio files, before verification.
+                ClearReadOnlyAttributes(outputRoot);
+            }
+            await RecoverDatasetMetadataTransactionsUnderLockAsync(exportRoot, cancellationToken).ConfigureAwait(false);
             if ((File.GetAttributes(outputRoot) & FileAttributes.ReparsePoint) != 0)
             {
                 return InvalidVerification(outputRoot, "dataset-reparse-point", null, "The curated dataset directory cannot be a reparse point.");
@@ -476,43 +513,122 @@ public sealed class DatasetBuildService
                     Selected: true));
             }
 
-            var datasetManifest = new VoiceDatasetManifest(
-                DateTimeOffset.UtcNow,
-                inputs.Manifest.RunId,
-                datasetItems);
-            var profileOutputPath = Path.Combine(outputRoot, "selection-profile.json");
-            var datasetManifestPath = Path.Combine(outputRoot, "dataset.json");
-            var datasetCsvPath = Path.Combine(outputRoot, "dataset.csv");
-            var buildManifestPath = Path.Combine(outputRoot, "build-manifest.json");
-            await AtomicFileWriter.WriteJsonAsync(profileOutputPath, inputs.Profile, JsonOptions, cancellationToken).ConfigureAwait(false);
-            await AtomicFileWriter.WriteJsonAsync(datasetManifestPath, datasetManifest, JsonOptions, cancellationToken).ConfigureAwait(false);
-            await VoiceManifestCsvWriter.WritePortableAsync(datasetCsvPath, datasetManifest, cancellationToken).ConfigureAwait(false);
-            var buildItems = selected
-                .Zip(datasetItems, static (selectedItem, datasetItem) => new DatasetBuildItem(
-                    selectedItem.ItemId,
-                    selectedItem.RelativeAudioPath,
-                    datasetItem.Sha256,
-                    datasetItem.ByteLength,
-                    datasetItem.DurationMs))
-                .ToArray();
-            await AtomicFileWriter.WriteJsonAsync(
-                buildManifestPath,
-                new DatasetBuildManifest(
+            var transactionId = Guid.NewGuid().ToString("N");
+            var stagingRoot = Path.Combine(outputRoot, ".dataset-metadata.staging-" + transactionId);
+            var transactionPath = Path.Combine(outputRoot, DatasetMetadataTransactionFileName);
+            var transactionPersisted = false;
+            DatasetMetadataTransactionDocument? transaction = null;
+            try
+            {
+                Directory.CreateDirectory(stagingRoot);
+                var datasetManifest = new VoiceDatasetManifest(
+                    DateTimeOffset.UtcNow,
+                    inputs.Manifest.RunId,
+                    datasetItems);
+                var profileOutputPath = Path.Combine(stagingRoot, "selection-profile.json");
+                var datasetManifestPath = Path.Combine(stagingRoot, "dataset.json");
+                var datasetCsvPath = Path.Combine(stagingRoot, "dataset.csv");
+                var buildManifestPath = Path.Combine(stagingRoot, "build-manifest.json");
+                await AtomicFileWriter.WriteJsonAsync(profileOutputPath, inputs.Profile, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await AtomicFileWriter.WriteJsonAsync(datasetManifestPath, datasetManifest, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await VoiceManifestCsvWriter.WritePortableAsync(datasetCsvPath, datasetManifest, cancellationToken).ConfigureAwait(false);
+                var datasetManifestSha256 = await FileHashing.ComputeSha256Async(datasetManifestPath, cancellationToken).ConfigureAwait(false);
+                var datasetCsvSha256 = await FileHashing.ComputeSha256Async(datasetCsvPath, cancellationToken).ConfigureAwait(false);
+                var profileOutputSha256 = await FileHashing.ComputeSha256Async(profileOutputPath, cancellationToken).ConfigureAwait(false);
+                var buildItems = selected
+                    .Zip(datasetItems, static (selectedItem, datasetItem) => new DatasetBuildItem(
+                        selectedItem.ItemId,
+                        selectedItem.RelativeAudioPath,
+                        datasetItem.Sha256,
+                        datasetItem.ByteLength,
+                        datasetItem.DurationMs))
+                    .ToArray();
+                await AtomicFileWriter.WriteJsonAsync(
+                    buildManifestPath,
+                    new DatasetBuildManifest(
+                        inputs.Profile.SelectionFingerprint,
+                        inputs.ManifestSha256,
+                        inputs.ProfileSha256,
+                        DateTimeOffset.UtcNow,
+                        buildItems,
+                        datasetManifestSha256,
+                        datasetCsvSha256,
+                        profileOutputSha256,
+                        LinkMode: existingBuild?.LinkMode ?? DatasetLinkMode.VerifiedCopy,
+                        SemanticProfileHash: inputs.Profile.SemanticProfileHash),
+                    JsonOptions,
+                    cancellationToken).ConfigureAwait(false);
+                var buildManifestSha256 = await FileHashing.ComputeSha256Async(buildManifestPath, cancellationToken).ConfigureAwait(false);
+                var descriptor = new DatasetMetadataCommitDescriptor(
+                    transactionId,
                     inputs.Profile.SelectionFingerprint,
                     inputs.ManifestSha256,
-                    inputs.ProfileSha256,
+                    profileOutputSha256,
+                    datasetManifestSha256,
+                    datasetCsvSha256,
+                    buildManifestSha256,
+                    existingBuild?.LinkMode ?? DatasetLinkMode.VerifiedCopy,
+                    DateTimeOffset.UtcNow);
+                var stagedDescriptorPath = Path.Combine(stagingRoot, DatasetMetadataDescriptorFileName);
+                await AtomicFileWriter.WriteJsonAsync(stagedDescriptorPath, descriptor, JsonOptions, cancellationToken).ConfigureAwait(false);
+                var descriptorSha256 = await FileHashing.ComputeSha256Async(stagedDescriptorPath, cancellationToken).ConfigureAwait(false);
+                transaction = new DatasetMetadataTransactionDocument(
+                    transactionId,
+                    Path.GetFileName(stagingRoot),
+                    DatasetMetadataTransactionState.Prepared,
                     DateTimeOffset.UtcNow,
-                    buildItems,
-                    await FileHashing.ComputeSha256Async(datasetManifestPath, cancellationToken).ConfigureAwait(false),
-                    await FileHashing.ComputeSha256Async(datasetCsvPath, cancellationToken).ConfigureAwait(false),
-                    await FileHashing.ComputeSha256Async(profileOutputPath, cancellationToken).ConfigureAwait(false),
-                    LinkMode: existingBuild?.LinkMode ?? DatasetLinkMode.VerifiedCopy,
-                    SemanticProfileHash: inputs.Profile.SemanticProfileHash),
-                JsonOptions,
-                cancellationToken).ConfigureAwait(false);
-            if (existingBuild?.LinkMode == DatasetLinkMode.LinkedView)
+                    descriptor,
+                    descriptorSha256);
+                await AtomicFileWriter.WriteJsonAsync(transactionPath, transaction, JsonOptions, cancellationToken).ConfigureAwait(false);
+                transactionPersisted = true;
+                transaction = transaction with
+                {
+                    State = DatasetMetadataTransactionState.Publishing,
+                    UpdatedAtUtc = DateTimeOffset.UtcNow,
+                };
+                await AtomicFileWriter.WriteJsonAsync(transactionPath, transaction, JsonOptions, cancellationToken).ConfigureAwait(false);
+                await PublishDatasetMetadataAsync(outputRoot, stagingRoot, transaction.Descriptor, transaction.DescriptorSha256, cancellationToken).ConfigureAwait(false);
+                transaction = transaction with
+                {
+                    State = DatasetMetadataTransactionState.Completed,
+                    UpdatedAtUtc = DateTimeOffset.UtcNow,
+                };
+                await AtomicFileWriter.WriteJsonAsync(transactionPath, transaction, JsonOptions, cancellationToken).ConfigureAwait(false);
+                TryDeleteDirectory(stagingRoot);
+                TryDeleteFile(transactionPath);
+                if (existingBuild?.LinkMode == DatasetLinkMode.LinkedView)
+                {
+                    MarkLinkedViewDirectoryReadOnly(outputRoot);
+                }
+            }
+            catch
             {
-                MarkLinkedViewDirectoryReadOnly(outputRoot);
+                if (transactionPersisted && transaction is not null)
+                {
+                    try
+                    {
+                        await AtomicFileWriter.WriteJsonAsync(
+                            transactionPath,
+                            transaction with
+                            {
+                                State = DatasetMetadataTransactionState.FailedRecoverable,
+                                UpdatedAtUtc = DateTimeOffset.UtcNow,
+                            },
+                            JsonOptions,
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Preserve the staging directory for the next locked
+                        // recovery attempt even if this marker write failed.
+                    }
+                }
+                else
+                {
+                    TryDeleteDirectory(stagingRoot);
+                }
+
+                throw;
             }
         }
 
@@ -523,6 +639,214 @@ public sealed class DatasetBuildService
                 request.ManifestPath,
                 request.OutputDirectory),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task RecoverPendingMetadataTransactionsAsync(
+        string exportRoot,
+        CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(exportRoot))
+        {
+            return;
+        }
+
+        await using var rootLock = await ExportRootLock.AcquireAsync(
+            exportRoot,
+            ExportRootLockMode.Exclusive,
+            Guid.NewGuid().ToString("N"),
+            runId: null,
+            cancellationToken).ConfigureAwait(false);
+        await RecoverDatasetMetadataTransactionsUnderLockAsync(exportRoot, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task RecoverDatasetMetadataTransactionsUnderLockAsync(
+        string exportRoot,
+        CancellationToken cancellationToken)
+    {
+        var datasetsRoot = Path.Combine(exportRoot, "datasets");
+        if (!Directory.Exists(datasetsRoot))
+        {
+            return;
+        }
+
+        if ((File.GetAttributes(datasetsRoot) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The dataset root cannot be a reparse point.");
+        }
+
+        foreach (var outputRoot in Directory.EnumerateDirectories(datasetsRoot, "*", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if ((File.GetAttributes(outputRoot) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "A dataset output directory cannot be a reparse point.");
+            }
+
+            var transactionPath = Path.Combine(outputRoot, DatasetMetadataTransactionFileName);
+            if (File.Exists(transactionPath))
+            {
+                if ((File.GetAttributes(transactionPath) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new AppFailureException(ErrorCode.InvalidRequest, "The dataset metadata transaction cannot be a reparse point.");
+                }
+
+                EnsureNoReparsePoints(outputRoot);
+                await RecoverDatasetMetadataTransactionAsync(outputRoot, transactionPath, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async Task RecoverDatasetMetadataTransactionAsync(
+        string outputRoot,
+        string transactionPath,
+        CancellationToken cancellationToken)
+    {
+        var transaction = await ReadAsync<DatasetMetadataTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false);
+        if (transaction.Descriptor is null
+            || string.IsNullOrWhiteSpace(transaction.TransactionId)
+            || !string.Equals(transaction.TransactionId, transaction.Descriptor.TransactionId, StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(transaction.StagingDirectoryName)
+            || Path.IsPathRooted(transaction.StagingDirectoryName)
+            || !string.Equals(transaction.StagingDirectoryName, Path.GetFileName(transaction.StagingDirectoryName), StringComparison.Ordinal)
+            || transaction.StagingDirectoryName.Contains("..", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The dataset metadata transaction contains an unsafe staging path.");
+        }
+
+        var stagingRoot = Path.Combine(outputRoot, transaction.StagingDirectoryName);
+        if (Directory.Exists(stagingRoot)
+            && (File.GetAttributes(stagingRoot) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The dataset metadata staging directory cannot be a reparse point.");
+        }
+
+        ValidateSha256(transaction.DescriptorSha256, "dataset metadata descriptor");
+        ValidateSha256(transaction.Descriptor.SourceManifestSha256, "dataset source manifest");
+        ValidateSha256(transaction.Descriptor.SelectionProfileSha256, "dataset selection profile");
+        ValidateSha256(transaction.Descriptor.DatasetManifestSha256, "dataset manifest");
+        ValidateSha256(transaction.Descriptor.DatasetCsvSha256, "dataset CSV");
+        ValidateSha256(transaction.Descriptor.BuildManifestSha256, "dataset build manifest");
+
+        await PublishDatasetMetadataAsync(
+            outputRoot,
+            stagingRoot,
+            transaction.Descriptor,
+            transaction.DescriptorSha256,
+            cancellationToken).ConfigureAwait(false);
+
+        var completed = transaction with
+        {
+            State = DatasetMetadataTransactionState.Completed,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        };
+        await AtomicFileWriter.WriteJsonAsync(transactionPath, completed, JsonOptions, cancellationToken).ConfigureAwait(false);
+        TryDeleteDirectory(stagingRoot);
+        TryDeleteFile(transactionPath);
+    }
+
+    private static async Task PublishDatasetMetadataAsync(
+        string outputRoot,
+        string stagingRoot,
+        DatasetMetadataCommitDescriptor descriptor,
+        string descriptorSha256,
+        CancellationToken cancellationToken)
+    {
+        foreach (var fileName in DatasetMetadataFileNames)
+        {
+            await PublishDatasetMetadataFileAsync(
+                stagingRoot,
+                outputRoot,
+                fileName,
+                GetDatasetMetadataHash(descriptor, fileName),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await PublishDatasetMetadataFileAsync(
+            stagingRoot,
+            outputRoot,
+            DatasetMetadataDescriptorFileName,
+            descriptorSha256,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task PublishDatasetMetadataFileAsync(
+        string stagingRoot,
+        string outputRoot,
+        string fileName,
+        string expectedSha256,
+        CancellationToken cancellationToken)
+    {
+        var stagedPath = ExportPathSafety.CombineUnderRoot(stagingRoot, fileName);
+        var destinationPath = ExportPathSafety.CombineUnderRoot(outputRoot, fileName);
+        if (File.Exists(stagedPath)
+            && (File.GetAttributes(stagedPath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "A staged dataset metadata file cannot be a reparse point.");
+        }
+        if (File.Exists(destinationPath)
+            && (File.GetAttributes(destinationPath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "A dataset metadata file cannot be a reparse point.");
+        }
+
+        if (File.Exists(destinationPath)
+            && string.Equals(
+                await FileHashing.ComputeSha256Async(destinationPath, cancellationToken).ConfigureAwait(false),
+                expectedSha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (!File.Exists(stagedPath))
+        {
+            throw new InvalidDataException("A dataset metadata transaction is missing a staged file required for recovery.");
+        }
+
+        var stagedHash = await FileHashing.ComputeSha256Async(stagedPath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(stagedHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("A staged dataset metadata file failed its durable hash binding.");
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        if (!File.Exists(destinationPath))
+        {
+            File.Move(stagedPath, destinationPath);
+        }
+        else
+        {
+            var backupPath = destinationPath + ".backup-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.Replace(stagedPath, destinationPath, backupPath, ignoreMetadataErrors: true);
+            }
+            finally
+            {
+                TryDeleteFile(backupPath);
+            }
+        }
+    }
+
+    private static string GetDatasetMetadataHash(
+        DatasetMetadataCommitDescriptor descriptor,
+        string fileName)
+        => fileName switch
+        {
+            "selection-profile.json" => descriptor.SelectionProfileSha256,
+            "dataset.json" => descriptor.DatasetManifestSha256,
+            "dataset.csv" => descriptor.DatasetCsvSha256,
+            "build-manifest.json" => descriptor.BuildManifestSha256,
+            "dataset-metadata-commit.json" => throw new InvalidOperationException("The metadata descriptor hash is stored separately."),
+            _ => throw new InvalidDataException("The dataset metadata transaction contains an unknown file.")
+        };
+
+    private static void ValidateSha256(string? value, string description)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 64 || !value.All(Uri.IsHexDigit))
+        {
+            throw new InvalidDataException($"The {description} binding is not a SHA-256 value.");
+        }
     }
 
     private static async Task<BuildInputs> LoadInputsAsync(
@@ -698,6 +1022,18 @@ public sealed class DatasetBuildService
             return null;
         }
 
+        if (Directory.Exists(outputRoot))
+        {
+            try
+            {
+                EnsureNoReparsePoints(outputRoot);
+            }
+            catch (AppFailureException)
+            {
+                return null;
+            }
+        }
+
         var buildManifestPath = Path.Combine(outputRoot, "build-manifest.json");
         if (!Directory.Exists(outputRoot) || !File.Exists(buildManifestPath))
         {
@@ -711,6 +1047,25 @@ public sealed class DatasetBuildService
             || linkMode is not null && build.LinkMode != linkMode.Value)
         {
             return null;
+        }
+
+        var metadataDescriptorPath = Path.Combine(outputRoot, DatasetMetadataDescriptorFileName);
+        if (File.Exists(metadataDescriptorPath))
+        {
+            var descriptor = await ReadAsync<DatasetMetadataCommitDescriptor>(metadataDescriptorPath, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(descriptor.SelectionFingerprint, profile.SelectionFingerprint, StringComparison.Ordinal)
+                || !string.Equals(descriptor.SourceManifestSha256, manifestSha256, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(descriptor.SelectionProfileSha256, build.ProfileOutputSha256, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(descriptor.DatasetManifestSha256, build.DatasetManifestSha256, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(descriptor.DatasetCsvSha256, build.DatasetCsvSha256, StringComparison.OrdinalIgnoreCase)
+                || descriptor.LinkMode != build.LinkMode
+                || !string.Equals(
+                    descriptor.BuildManifestSha256,
+                    await FileHashing.ComputeSha256Async(buildManifestPath, cancellationToken).ConfigureAwait(false),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
         }
 
         var datasetManifestPath = Path.Combine(outputRoot, "dataset.json");

@@ -89,6 +89,9 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         try
         {
             context.Report(OperationPhase.VoiceExport, OperationStageIds.LoadingWorkspace);
+            await _datasetBuildService.RecoverPendingMetadataTransactionsAsync(
+                Path.GetFullPath(request.ExportDirectory),
+                cancellationToken).ConfigureAwait(false);
             var result = await BuildAsync(request, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing);

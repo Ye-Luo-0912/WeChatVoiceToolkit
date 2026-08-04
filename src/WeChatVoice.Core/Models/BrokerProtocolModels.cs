@@ -48,7 +48,8 @@ public sealed record BrokerStageEvent(
 
 /// <summary>
 /// Result of the no-data Broker self-test. It proves the elevated pipe and
-/// Worker bundle path without reading Weixin memory or opening a database.
+/// starts the verified Worker's native SQLCipher self-test without reading
+/// Weixin memory, accepting a key, or opening a database file.
 /// </summary>
 public sealed record BrokerSelfTestResponse(
     string Status,
@@ -57,4 +58,5 @@ public sealed record BrokerSelfTestResponse(
     string WorkerBundleStatus,
     string? NonSensitiveReason = null,
     int? ClientProcessId = null,
-    string? ClientSid = null);
+    string? ClientSid = null,
+    string? WorkerSelfTestStatus = null);

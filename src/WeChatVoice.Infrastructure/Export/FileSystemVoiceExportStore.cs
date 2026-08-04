@@ -298,7 +298,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             "manifest-committed",
             runId,
             DateTimeOffset.UtcNow,
-            ManifestSha256: descriptor.PrivateManifestSha256,
+            MetadataCommitDescriptorSha256: metadata.DescriptorSha256,
             ManifestGeneratedAtUtc: recovered.GeneratedAtUtc);
         await AppendJournalEventDurablyAsync(fullJournalPath, commitEvent, cancellationToken).ConfigureAwait(false);
         if (File.Exists(transactionPath))
@@ -491,7 +491,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         return Convert.ToHexString(derived).ToLowerInvariant();
     }
 
-    private async Task<(VoiceExportManifest Manifest, ExportMetadataCommitDescriptor Descriptor)> CommitMetadataAsync(
+    private async Task<(VoiceExportManifest Manifest, ExportMetadataCommitDescriptor Descriptor, string DescriptorSha256)> CommitMetadataAsync(
         VoiceExportManifest manifest,
         string runId,
         CancellationToken cancellationToken,
@@ -532,6 +532,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             await FileHashing.ComputeSha256Async(stagedCsv, cancellationToken).ConfigureAwait(false),
             indexHash);
         await AtomicFileWriter.WriteJsonAsync(stagedDescriptor, descriptor, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+        var descriptorSha256 = await FileHashing.ComputeSha256Async(stagedDescriptor, cancellationToken).ConfigureAwait(false);
 
         var runPrivate = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(runId));
         var runPortable = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", ExportManifestLayout.RunPortableManifestFileName(runId));
@@ -579,7 +580,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         DeleteFileIfExists(Path.Combine(_exportRoot, "runs", runId + ".manifest.json"));
         DeleteFileIfExists(Path.Combine(_exportRoot, "runs", runId + ".manifest.csv"));
         TryDeleteDirectory(stagingRoot);
-        return (manifest, descriptor);
+        return (manifest, descriptor, descriptorSha256);
     }
 
     /// <summary>
@@ -2663,7 +2664,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     _runId,
                     DateTimeOffset.UtcNow,
                     Context: null,
-                    ManifestSha256: metadata.Descriptor.PrivateManifestSha256,
+                    MetadataCommitDescriptorSha256: metadata.DescriptorSha256,
                     ManifestGeneratedAtUtc: journalManifest.GeneratedAtUtc), cancellationToken).ConfigureAwait(false);
                 _store.ThrowIfFaultRequested(
                     ExportTransactionFaultPoint.AfterManifestCommit,

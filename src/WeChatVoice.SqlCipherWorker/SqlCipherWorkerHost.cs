@@ -19,6 +19,11 @@ public static class SqlCipherWorkerHost
 
     public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
     {
+        if (args is ["--self-test"])
+        {
+            return await RunSelfTestAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         try
         {
             var (inputPath, outputPath, encryptionProfileId) = ParseArguments(args);
@@ -56,6 +61,57 @@ public static class SqlCipherWorkerHost
             return 1;
         }
     }
+
+    /// <summary>
+    /// Verifies only the deployed SQLCipher runtime. This path deliberately
+    /// does not read stdin, accept a key, open a file database, or create any
+    /// persistent output.
+    /// </summary>
+    private static async Task<int> RunSelfTestAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_e_sqlcipher());
+            SQLitePCL.raw.FreezeProvider();
+            await using var connection = new SqliteConnection(
+                "Data Source=:memory:;Mode=Memory;Cache=Private;Pooling=false");
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT sqlite_version();";
+            var version = Convert.ToString(
+                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                throw new InvalidDataException("The SQLCipher provider returned no runtime version.");
+            }
+
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return 130;
+        }
+        catch (Exception exception) when (exception is DllNotFoundException
+            or EntryPointNotFoundException
+            or InvalidOperationException
+            or InvalidDataException
+            or SqliteException)
+        {
+            await Console.Error.WriteLineAsync($"sqlcipher_worker_self_test_failed:{GetSelfTestErrorCode(exception)}").ConfigureAwait(false);
+            return 1;
+        }
+    }
+
+    private static string GetSelfTestErrorCode(Exception exception)
+        => exception switch
+        {
+            DllNotFoundException => "native-unavailable",
+            EntryPointNotFoundException => "native-entrypoint-unavailable",
+            SqliteException => "provider-open-failed",
+            InvalidDataException => "runtime-invalid",
+            _ => "provider-unavailable",
+        };
 
     private static async Task MaterializeAsync(
         string inputPath,

@@ -135,6 +135,12 @@ For formal distribution, sign that layout into a protected MSIX installer:
   -OutputPath artifacts/WeChatVoiceToolkit-win-x64.msix `
   -PfxPath $env:WECHATVOICE_SIGNING_PFX_PATH `
   -PfxPassword $env:WECHATVOICE_SIGNING_PFX_PASSWORD
+
+./scripts/generate-appinstaller.ps1 `
+  -PackagePath artifacts/WeChatVoiceToolkit-win-x64.msix `
+  -OutputPath artifacts/WeChatVoiceToolkit.appinstaller `
+  -PackageUri https://example.invalid/releases/latest/download/WeChatVoiceToolkit-win-x64.msix `
+  -AppInstallerUri https://example.invalid/releases/latest/download/WeChatVoiceToolkit.appinstaller
 ```
 
 The ZIP layout is retained only as a portable diagnostic attachment. It is not
@@ -152,6 +158,11 @@ automation:
 ./scripts/rollback-msix.ps1 -PackagePath artifacts/rollback/WeChatVoiceToolkit-win-x64.msix -RunTrustSmoke
 ./scripts/uninstall-msix.ps1
 ```
+
+终端用户更新使用发布附件中的 `WeChatVoiceToolkit.appinstaller`。它通过
+HTTPS 固定 AppX Name、Publisher、x64 Version、Desktop executable 和 MSIX
+地址，由 Windows App Installer 按同一 Package Identity 执行升级；终端用户
+不需要配置 Publisher 环境变量或运行安装脚本。
 
 Upgrade and rollback never remove Snapshot, Workspace, or Export data. The
 update manifest binds the package filename, identity name/publisher,

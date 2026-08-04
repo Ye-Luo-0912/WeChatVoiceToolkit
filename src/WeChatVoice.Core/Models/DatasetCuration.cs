@@ -340,3 +340,41 @@ public sealed record DatasetBuildItem(
     string Sha256,
     long ByteLength,
     long? DurationMs);
+
+public enum DatasetMetadataTransactionState
+{
+    Prepared,
+    Publishing,
+    Completed,
+    FailedRecoverable,
+}
+
+/// <summary>
+/// The durable commit boundary for the four derived dataset metadata files.
+/// Audio files are intentionally not part of this descriptor: repair may
+/// verify them, but it never replaces or deletes them.
+/// </summary>
+public sealed record DatasetMetadataCommitDescriptor(
+    string TransactionId,
+    string SelectionFingerprint,
+    string SourceManifestSha256,
+    string SelectionProfileSha256,
+    string DatasetManifestSha256,
+    string DatasetCsvSha256,
+    string BuildManifestSha256,
+    DatasetLinkMode LinkMode,
+    DateTimeOffset PreparedAtUtc,
+    string Format = "wechatvoice-dataset-metadata-commit-v1");
+
+/// <summary>
+/// Crash-recovery document for Dataset Repair. The staging directory and all
+/// expected hashes are persisted before the first metadata file is published.
+/// </summary>
+public sealed record DatasetMetadataTransactionDocument(
+    string TransactionId,
+    string StagingDirectoryName,
+    DatasetMetadataTransactionState State,
+    DateTimeOffset UpdatedAtUtc,
+    DatasetMetadataCommitDescriptor Descriptor,
+    string DescriptorSha256,
+    string Format = "wechatvoice-dataset-metadata-transaction-v1");

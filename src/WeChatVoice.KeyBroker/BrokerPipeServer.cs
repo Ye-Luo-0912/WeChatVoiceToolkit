@@ -125,17 +125,94 @@ internal static class BrokerPipeServer
             ?? throw new InvalidDataException("The Broker self-test request was empty.");
         var request = ParseSelfTestRequest(line);
         var worker = await WorkerBundleTrustEvaluator.VerifyAsync(workerDirectory, cancellationToken).ConfigureAwait(false);
+        var workerSelfTest = worker.Verified
+            ? await RunWorkerSelfTestAsync(workerDirectory, cancellationToken).ConfigureAwait(false)
+            : WorkerSelfTestResult.Failed("bundle-untrusted");
+        var completed = worker.Verified && workerSelfTest.Completed;
         var response = new BrokerSelfTestResponse(
-            worker.Verified ? "completed" : "failed",
+            completed ? "completed" : "failed",
             request.RequestId,
             Environment.ProcessId,
             worker.Verified ? "verified" : "untrusted",
-            worker.NonSensitiveReason,
+            workerSelfTest.NonSensitiveReason ?? worker.NonSensitiveReason,
             caller.ProcessId,
-            caller.Sid);
+            caller.Sid,
+            workerSelfTest.Status);
         await writer.WriteLineAsync(JsonSerializer.Serialize(response)).ConfigureAwait(false);
         await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
-        return worker.Verified ? 0 : 3;
+        return completed ? 0 : 3;
+    }
+
+    private static async Task<WorkerSelfTestResult> RunWorkerSelfTestAsync(
+        string workerDirectory,
+        CancellationToken cancellationToken)
+    {
+        var workerPath = Path.Combine(workerDirectory, "WeChatVoice.SqlCipherWorker.exe");
+        if (!File.Exists(workerPath)
+            || (File.GetAttributes(workerPath) & FileAttributes.ReparsePoint) != 0)
+        {
+            return WorkerSelfTestResult.Failed("worker-unavailable");
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        using var process = new System.Diagnostics.Process
+        {
+            StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = workerPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = workerDirectory,
+            },
+        };
+        process.StartInfo.ArgumentList.Add("--self-test");
+        try
+        {
+            if (!process.Start())
+            {
+                return WorkerSelfTestResult.Failed("worker-start-failed");
+            }
+
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            return process.ExitCode == 0
+                ? WorkerSelfTestResult.CompletedResult()
+                : WorkerSelfTestResult.Failed("worker-self-test-failed");
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            TryKill(process);
+            return WorkerSelfTestResult.Failed("worker-self-test-timeout");
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+            or InvalidOperationException
+            or UnauthorizedAccessException)
+        {
+            TryKill(process);
+            return WorkerSelfTestResult.Failed("worker-self-test-unavailable");
+        }
+    }
+
+    private static void TryKill(System.Diagnostics.Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or System.ComponentModel.Win32Exception
+            or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private sealed record WorkerSelfTestResult(bool Completed, string Status, string? NonSensitiveReason)
+    {
+        public static WorkerSelfTestResult CompletedResult() => new(true, "completed", null);
+        public static WorkerSelfTestResult Failed(string reason) => new(false, "failed", reason);
     }
 
     /// <summary>

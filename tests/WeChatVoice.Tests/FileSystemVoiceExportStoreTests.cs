@@ -11,6 +11,42 @@ namespace WeChatVoice.Tests;
 public sealed class FileSystemVoiceExportStoreTests
 {
     [Fact]
+    public async Task Manifest_commit_journal_binds_the_metadata_descriptor_bytes()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.GetPath("export");
+        var store = new FileSystemVoiceExportStore(root);
+        var context = new VoiceCatalogContext("dataset", "adapter", "1", "account", ["db"]);
+        const string runId = "descriptor-bound";
+
+        await using (var journal = await store.BeginRunAsync(
+            new VoiceExportRunContext(runId, context, DateTimeOffset.UtcNow),
+            CancellationToken.None))
+        {
+            await journal.AppendAsync(
+                new VoiceExportJournalEvent("run-started", runId, DateTimeOffset.UtcNow, Context: context),
+                CancellationToken.None);
+            await journal.FinalizeAsync(
+                new VoiceExportManifest(DateTimeOffset.UtcNow, RunId: runId),
+                CancellationToken.None);
+        }
+
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        };
+        var journalPath = Path.Combine(root, "runs", runId + ".jsonl");
+        var commit = (await File.ReadAllLinesAsync(journalPath))
+            .Select(line => JsonSerializer.Deserialize<VoiceExportJournalEvent>(line, options))
+            .Single(item => item?.Event == "manifest-committed");
+        var descriptorPath = Path.Combine(root, "runs", runId + ".metadata-commit.json");
+        var descriptorHash = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(descriptorPath))).ToLowerInvariant();
+
+        Assert.Null(commit!.ManifestSha256);
+        Assert.Equal(descriptorHash, commit.MetadataCommitDescriptorSha256);
+    }
+
+    [Fact]
     public async Task BeginRunAsync_uses_a_cross_process_export_root_lock()
     {
         using var temporary = new TestTemporaryDirectory();

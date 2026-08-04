@@ -8,6 +8,22 @@ public sealed class SqlCipherWorkerTests
     private const string FixtureEncryptionProfileId = "weixin-windows-4.sqlcipher4-page4096-hmac-sha512-v1";
 
     [Fact]
+    public async Task Worker_self_test_loads_sqlcipher_without_reading_a_key_or_database()
+    {
+        var worker = Path.Combine(AppContext.BaseDirectory, "WeChatVoice.SqlCipherWorker.dll");
+        Assert.True(File.Exists(worker), worker);
+
+        var result = await RunDotnetAsync(
+            worker,
+            ["--self-test"],
+            ReadOnlyMemory<byte>.Empty,
+            throwOnFailure: false);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("WCV1", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Worker_materializes_a_synthetic_cipher_database_without_persisting_the_key()
     {
         using var temporary = new TestTemporaryDirectory();

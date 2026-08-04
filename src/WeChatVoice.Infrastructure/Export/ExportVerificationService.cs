@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Serialization;
 
@@ -52,15 +53,39 @@ public sealed class ExportVerificationService
         }
         catch (ExportRootBusyException)
         {
-            issues.Add(Issue("export-busy", ".wechatvoice/export.lock", "The export root is busy with another operation."));
-            return Result(exportRoot, runId, null, issues, 0, false, false, false);
+            throw new AppFailureException(ErrorCode.OperationBusy, "The export root is busy with another operation.");
         }
-        await using var verificationLock = await ExportRootLock.AcquireAsync(
-            exportRoot,
-            ExportRootLockMode.Shared,
-            Guid.NewGuid().ToString("N"),
-            runId,
-            cancellationToken).ConfigureAwait(false);
+        ExportRootLock verificationLock;
+        try
+        {
+            verificationLock = await ExportRootLock.AcquireAsync(
+                exportRoot,
+                ExportRootLockMode.Shared,
+                Guid.NewGuid().ToString("N"),
+                runId,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (ExportRootBusyException)
+        {
+            throw new AppFailureException(ErrorCode.OperationBusy, "The export root is busy with another operation.");
+        }
+
+        await using (verificationLock)
+        {
+            return await VerifyCommittedExportUnderLockAsync(
+                exportRoot,
+                runId,
+                issues,
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<ExportVerificationResult> VerifyCommittedExportUnderLockAsync(
+        string exportRoot,
+        string? runId,
+        List<ExportVerificationIssue> issues,
+        CancellationToken cancellationToken)
+    {
 
         var selectedRunId = runId;
         var manifestPath = ResolveManifestPath(exportRoot, runId);
@@ -104,9 +129,25 @@ public sealed class ExportVerificationService
             {
                 issues.Add(Issue("journal-not-committed", RelativePath(exportRoot, journalPath), "The Journal has no flushed manifest-committed event."));
             }
+            else if (!string.IsNullOrWhiteSpace(commit.MetadataCommitDescriptorSha256))
+            {
+                var descriptorPath = Path.Combine(exportRoot, "runs", manifest.RunId + ".metadata-commit.json");
+                if (!File.Exists(descriptorPath))
+                {
+                    issues.Add(Issue("metadata-descriptor-missing", RelativePath(exportRoot, descriptorPath), "The Journal commit descriptor is missing."));
+                }
+                else
+                {
+                    var descriptorHash = await FileHashing.ComputeSha256Async(descriptorPath, cancellationToken).ConfigureAwait(false);
+                    if (!string.Equals(commit.MetadataCommitDescriptorSha256, descriptorHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        issues.Add(Issue("metadata-descriptor-hash-mismatch", RelativePath(exportRoot, descriptorPath), "The Journal commit descriptor hash does not match the descriptor bytes."));
+                    }
+                }
+            }
             else if (!string.Equals(commit.ManifestSha256, manifestHash, StringComparison.OrdinalIgnoreCase))
             {
-                issues.Add(Issue("manifest-hash-mismatch", RelativePath(exportRoot, manifestPath!), "The Journal commit hash does not match the manifest bytes."));
+                issues.Add(Issue("manifest-hash-mismatch", RelativePath(exportRoot, manifestPath!), "The legacy Journal commit hash does not match the private manifest bytes."));
             }
 
             if (journalPath is not null && File.Exists(journalPath))
@@ -168,9 +209,8 @@ public sealed class ExportVerificationService
         var store = new FileSystemVoiceExportStore(exportRoot);
         string journalPath;
         VoiceExportManifest manifest;
-        await using (var exportLock = await ExportRootLock.AcquireAsync(
+        await using (var exportLock = await AcquireExclusiveLockAsync(
             exportRoot,
-            ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
             runId,
             cancellationToken).ConfigureAwait(false))
@@ -214,6 +254,27 @@ public sealed class ExportVerificationService
             string.IsNullOrWhiteSpace(runId) ? null : manifest.RunId,
             cancellationToken).ConfigureAwait(false);
         return new ExportRepairResult(verification, journalPath, OriginalArtifactsChanged: false);
+    }
+
+    private static async ValueTask<ExportRootLock> AcquireExclusiveLockAsync(
+        string exportRoot,
+        string operationId,
+        string? runId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ExportRootLock.AcquireAsync(
+                exportRoot,
+                ExportRootLockMode.Exclusive,
+                operationId,
+                runId,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (ExportRootBusyException exception)
+        {
+            throw new AppFailureException(ErrorCode.OperationBusy, "The export root is busy with another operation.", exception);
+        }
     }
 
     private static async Task<VoiceExportManifest> ReadManifestAsync(string path, CancellationToken cancellationToken)

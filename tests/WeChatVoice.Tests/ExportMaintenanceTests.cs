@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Export;
 using WeChatVoice.Workflows.Workflows;
@@ -9,6 +10,25 @@ namespace WeChatVoice.Tests;
 
 public sealed class ExportMaintenanceTests
 {
+    [Fact]
+    public async Task Verify_maps_a_cross_process_lock_conflict_to_operation_busy()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var exportRoot = temporary.GetPath("export");
+        Directory.CreateDirectory(exportRoot);
+        await using var held = await ExportRootLock.AcquireAsync(
+            exportRoot,
+            ExportRootLockMode.Exclusive,
+            "held-operation",
+            runId: null,
+            CancellationToken.None);
+
+        var exception = await Assert.ThrowsAsync<WeChatVoice.Core.Errors.AppFailureException>(() =>
+            new ExportVerificationService().VerifyAsync(exportRoot, null, CancellationToken.None));
+
+        Assert.Equal(ErrorCode.OperationBusy, exception.Code);
+    }
+
     [Fact]
     public async Task VerifyAsync_accepts_a_committed_export_and_validates_the_artifact_index()
     {
@@ -304,6 +324,60 @@ public sealed class ExportMaintenanceTests
             CancellationToken.None);
         Assert.True(repaired.IsValid, string.Join(Environment.NewLine, repaired.Issues.Select(issue => issue.Code)));
         Assert.Equal(silkBytes, await File.ReadAllBytesAsync(silkPath));
+    }
+
+    [Fact]
+    public async Task Dataset_metadata_transaction_recovers_after_a_partial_publish()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow();
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+        var built = await curation.BuildDatasetAsync(new DatasetBuildRequest(export.Root), NewContext(), CancellationToken.None);
+
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        };
+        var descriptorPath = Path.Combine(built.OutputDirectory, "dataset-metadata-commit.json");
+        var descriptor = JsonSerializer.Deserialize<DatasetMetadataCommitDescriptor>(
+            await File.ReadAllTextAsync(descriptorPath),
+            jsonOptions);
+        Assert.NotNull(descriptor);
+        var stagingName = ".dataset-metadata.staging-recovery";
+        var stagingRoot = Path.Combine(built.OutputDirectory, stagingName);
+        Directory.CreateDirectory(stagingRoot);
+        foreach (var fileName in new[] { "selection-profile.json", "dataset.json", "dataset.csv", "build-manifest.json", "dataset-metadata-commit.json" })
+        {
+            File.Copy(Path.Combine(built.OutputDirectory, fileName), Path.Combine(stagingRoot, fileName));
+        }
+
+        await File.WriteAllTextAsync(Path.Combine(built.OutputDirectory, "dataset.csv"), "partial\n");
+        var transaction = new DatasetMetadataTransactionDocument(
+            descriptor!.TransactionId,
+            stagingName,
+            DatasetMetadataTransactionState.Publishing,
+            DateTimeOffset.UtcNow,
+            descriptor,
+            Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(Path.Combine(stagingRoot, "dataset-metadata-commit.json")))).ToLowerInvariant());
+        await File.WriteAllTextAsync(
+            Path.Combine(built.OutputDirectory, "dataset-metadata.transaction.json"),
+            JsonSerializer.Serialize(transaction, jsonOptions));
+
+        var verified = await curation.VerifyDatasetAsync(
+            new DatasetBuildRequest(export.Root, OutputDirectory: built.OutputDirectory),
+            NewContext(),
+            CancellationToken.None);
+
+        Assert.True(verified.IsValid, string.Join(Environment.NewLine, verified.Issues.Select(issue => issue.Code)));
+        Assert.False(File.Exists(Path.Combine(built.OutputDirectory, "dataset-metadata.transaction.json")));
+        Assert.False(Directory.Exists(stagingRoot));
     }
 
     private static async Task<(string Root, VoiceExportEntry Entry)> CreateCommittedExportAsync(TestTemporaryDirectory temporary)

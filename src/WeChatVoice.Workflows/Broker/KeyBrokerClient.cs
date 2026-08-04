@@ -232,7 +232,10 @@ public sealed class KeyBrokerClient : IBrokerClient
                     throw new UnauthorizedAccessException("The Key Broker self-test did not bind the client user identity.");
                 }
 
-                if (process.ExitCode != 0 || !string.Equals(response.Status, "completed", StringComparison.Ordinal))
+                if (process.ExitCode != 0
+                    || !string.Equals(response.Status, "completed", StringComparison.Ordinal)
+                    || !string.Equals(response.WorkerBundleStatus, "verified", StringComparison.Ordinal)
+                    || !string.Equals(response.WorkerSelfTestStatus, "completed", StringComparison.Ordinal))
                 {
                     throw new InvalidDataException("The Key Broker self-test did not complete successfully.");
                 }

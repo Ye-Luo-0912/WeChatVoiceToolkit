@@ -43,6 +43,7 @@ public static class SmokeCheckRunner
                 var selfTest = brokerClient.SelfTestAsync(CancellationToken.None).GetAwaiter().GetResult();
                 Assert(string.Equals(selfTest.Status, "completed", StringComparison.Ordinal), "Broker self-test did not complete");
                 Assert(string.Equals(selfTest.WorkerBundleStatus, "verified", StringComparison.Ordinal), "Broker self-test did not verify the Worker bundle");
+                Assert(string.Equals(selfTest.WorkerSelfTestStatus, "completed", StringComparison.Ordinal), "Broker self-test did not start the SQLCipher Worker self-test");
             }
 
             // 2. State machine transitions: run -> complete.

@@ -64,15 +64,24 @@ jobs:
           try {
             . "$env:GITHUB_WORKSPACE\scripts\publisher-fingerprint.ps1"
             $publisherFingerprint = Get-CertificateSha256Fingerprint -Certificate $certificate
-            $packageUri = if ($env:GITHUB_REF_NAME -like 'v*') {
-              "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/WeChatVoiceToolkit-win-x64.msix"
-            } else { '' }
+            $releaseBase = if ($env:GITHUB_REF_NAME -like 'v*') {
+              "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME"
+            } else {
+              "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
+            }
+            $packageUri = "$releaseBase/WeChatVoiceToolkit-win-x64.msix"
+            $appInstallerUri = "$releaseBase/WeChatVoiceToolkit.appinstaller"
             ./scripts/generate-update-manifest.ps1 `
               -PackagePath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.msix" `
               -OutputPath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.update-manifest.json" `
               -Version $version `
               -PublisherThumbprint $publisherFingerprint `
               -PackageUri $packageUri
+            ./scripts/generate-appinstaller.ps1 `
+              -PackagePath "$env:GITHUB_WORKSPACE\artifacts\WeChatVoiceToolkit-win-x64.msix" `
+              -OutputPath "$env:GITHUB_WORKSPACE\artifacts\WeChatVoiceToolkit.appinstaller" `
+              -PackageUri $packageUri `
+              -AppInstallerUri $appInstallerUri
             $updateMetadata = Get-Content -LiteralPath "$env:GITHUB_WORKSPACE\\artifacts\\WeChatVoiceToolkit-win-x64.update-manifest.json" -Raw -Encoding UTF8 | ConvertFrom-Json
             . "$env:GITHUB_WORKSPACE\scripts\release-publisher-policy.ps1"
             $publisherPolicy = Get-WeChatVoicePublisherPolicy
@@ -151,7 +160,8 @@ jobs:
             'artifacts/WeChatVoiceToolkit-win-x64.msix',
             'artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json',
             'artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json',
-            'artifacts/WeChatVoiceToolkit-win-x64.update-manifest.json'
+            'artifacts/WeChatVoiceToolkit-win-x64.update-manifest.json',
+            'artifacts/WeChatVoiceToolkit.appinstaller'
           )
           $releaseFiles | ForEach-Object {
             $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -168,6 +178,7 @@ jobs:
             artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json
             artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json
             artifacts/WeChatVoiceToolkit-win-x64.update-manifest.json
+            artifacts/WeChatVoiceToolkit.appinstaller
       - name: Publish GitHub Release attachments
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -180,3 +191,4 @@ jobs:
             artifacts/WeChatVoiceToolkit-win-x64.sbom.spdx.json
             artifacts/WeChatVoiceToolkit-win-x64.package-manifest.json
             artifacts/WeChatVoiceToolkit-win-x64.update-manifest.json
+            artifacts/WeChatVoiceToolkit.appinstaller
