@@ -133,6 +133,48 @@ public sealed class VoiceScanServiceTests
     }
 
     [Fact]
+    public async Task ScanAsync_applies_maximum_results_after_export_eligibility()
+    {
+        var rejected = new VoiceRecord(
+            "missing-provenance",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "rejected"),
+            PayloadByteLength: 10,
+            AdapterId: null,
+            AccountId: "account");
+        var eligible = new VoiceRecord(
+            "eligible",
+            "conversation",
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            VoiceDirection.Incoming,
+            new VoicePayloadLocator("media", 0, "eligible"),
+            SourceDatabase: "media.db",
+            PayloadByteLength: 20,
+            AdapterId: "adapter",
+            AccountId: "account",
+            DataSetId: "dataset",
+            AdapterVersion: "1",
+            DatabaseFingerprints: ["db-fingerprint"],
+            AdapterFamily: "adapter",
+            AccountStableId: "account",
+            ConversationStableId: "conversation",
+            MessagePrimaryKey: "eligible",
+            MediaPrimaryKey: "media:0:eligible");
+
+        var result = await new VoiceScanService(new FakeCatalog([rejected, eligible])).ScanWithRecordsAsync(
+            new VoiceQuery(Direction: VoiceDirection.Incoming, MaximumResults: 1),
+            CancellationToken.None);
+
+        Assert.Equal(2, result.Report.MatchedVoiceCount);
+        Assert.Equal(1, result.Report.ExportableVoiceCount);
+        Assert.Equal(20, result.Report.TotalPayloadBytes);
+        Assert.Single(result.Records);
+        Assert.Equal("eligible", result.Records[0].MessageId);
+    }
+
+    [Fact]
     public async Task Deep_scan_reuses_payload_hash_cache_without_reading_payload_again()
     {
         using var temporary = new TestTemporaryDirectory();

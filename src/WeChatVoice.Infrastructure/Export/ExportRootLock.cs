@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using WeChatVoice.Core.Errors;
 
 namespace WeChatVoice.Infrastructure.Export;
 
@@ -123,6 +124,38 @@ public sealed class ExportRootLock : IAsyncDisposable
         }
 
         return lease;
+    }
+
+    /// <summary>
+    /// Acquires a lock for an application operation and exposes contention as
+    /// the shared typed OperationBusy failure.  Low-level callers can keep
+    /// using AcquireAsync when they need the diagnostic IOException subtype.
+    /// </summary>
+    public static async ValueTask<ExportRootLock> AcquireForOperationAsync(
+        string exportRoot,
+        ExportRootLockMode mode,
+        string operationId,
+        string? runId,
+        CancellationToken cancellationToken,
+        bool waitForAvailability = false)
+    {
+        try
+        {
+            return await AcquireAsync(
+                exportRoot,
+                mode,
+                operationId,
+                runId,
+                cancellationToken,
+                waitForAvailability).ConfigureAwait(false);
+        }
+        catch (ExportRootBusyException exception)
+        {
+            throw new AppFailureException(
+                ErrorCode.OperationBusy,
+                "The export root is busy with another operation.",
+                exception);
+        }
     }
 
     public ValueTask DisposeAsync()

@@ -58,11 +58,18 @@ public sealed class VoiceScanService
         var spoolHandedOff = false;
         using var resultSetFingerprint = new VoiceResultSetFingerprintBuilder();
         var eligibilityEvaluator = new VoiceExportEligibilityEvaluator();
+        // A catalog may apply MaximumResults before this layer can evaluate
+        // stable provenance.  Remove that limit from the catalog request and
+        // apply it only after eligibility so the prepared selection contains
+        // exactly N exportable records, not merely the first N candidates.
+        var enumerationQuery = query.MaximumResults is not null
+            ? query.WithMaximumResults(null)
+            : query;
         try
         {
             await foreach (var record in VoiceSelectionEnumerator.EnumerateAsync(
                 _catalog,
-                query,
+                enumerationQuery,
                 _durationResolver,
                 bypassCatalogDeepScan: _payloadHashResolver is not null,
                 cancellationToken: cancellationToken).ConfigureAwait(false))
@@ -80,6 +87,7 @@ public sealed class VoiceScanService
                 var stateName = record.PayloadState.ToString();
                 payloadStates[stateName] = payloadStates.TryGetValue(stateName, out var stateCount) ? stateCount + 1 : 1;
                 var eligibility = eligibilityEvaluator.Evaluate(record, _catalog.Context, query);
+                var reachedMaximumEligible = false;
                 if (eligibility.IsEligible)
                 {
                     // Prepared Selection is the exact export input. Keep
@@ -108,6 +116,8 @@ public sealed class VoiceScanService
                     resultSetFingerprint.Append(record);
                     exportable++;
                     totalPayloadBytes = checked(totalPayloadBytes + (record.PayloadByteLength ?? 0));
+                    reachedMaximumEligible = query.MaximumResults is { } maximumResults
+                        && exportable >= maximumResults;
                 }
                 if (record.PayloadState == VoicePayloadState.Missing)
                 {
@@ -140,6 +150,11 @@ public sealed class VoiceScanService
                 if (query.DeepScan && !string.IsNullOrWhiteSpace(payloadHash))
                 {
                     payloadHashes[payloadHash] = payloadHashes.TryGetValue(payloadHash, out var hashCount) ? hashCount + 1 : 1;
+                }
+
+                if (reachedMaximumEligible)
+                {
+                    break;
                 }
             }
 

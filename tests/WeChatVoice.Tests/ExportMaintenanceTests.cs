@@ -86,9 +86,9 @@ public sealed class ExportMaintenanceTests
         using var temporary = new TestTemporaryDirectory();
         var entries = new[]
         {
-            CreateEntry("one", "original/one.silk", "same-hash", 100, 3, VoiceDirection.Incoming),
-            CreateEntry("two", "original/two.silk", "same-hash", null, 4, VoiceDirection.Incoming),
-            CreateEntry("three", "original/three.silk", "other-hash", 200, 5, VoiceDirection.Outgoing),
+            CreateEntry("one", "original/one.silk", new string('a', 64), 100, 3, VoiceDirection.Incoming),
+            CreateEntry("two", "original/two.silk", new string('a', 64), null, 4, VoiceDirection.Incoming),
+            CreateEntry("three", "original/three.silk", new string('b', 64), 200, 5, VoiceDirection.Outgoing),
         };
         var manifestPath = Path.Combine(temporary.RootPath, "export", "manifest.private.json");
         Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);

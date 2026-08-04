@@ -47,7 +47,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var runsDirectory = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs");
         Directory.CreateDirectory(runsDirectory);
         var operationId = Guid.NewGuid().ToString("N");
-        var rootLock = await ExportRootLock.AcquireAsync(
+        var rootLock = await ExportRootLock.AcquireForOperationAsync(
             _exportRoot,
             ExportRootLockMode.Exclusive,
             operationId,
@@ -187,7 +187,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
 
         var runId = Path.GetFileNameWithoutExtension(fullJournalPath);
-        await using var rootLock = await ExportRootLock.AcquireAsync(
+        await using var rootLock = await ExportRootLock.AcquireForOperationAsync(
             _exportRoot,
             ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
@@ -591,7 +591,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
     public async Task RecoverPendingTransactionsAsync(CancellationToken cancellationToken)
     {
         var operationId = Guid.NewGuid().ToString("N");
-        await using var rootLock = await ExportRootLock.AcquireAsync(
+        await using var rootLock = await ExportRootLock.AcquireForOperationAsync(
             _exportRoot,
             ExportRootLockMode.Exclusive,
             operationId,
@@ -784,7 +784,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
 
         return document.Items.All(static item =>
-            (item.OriginalPublishState is ExportPublishState.NotStarted or ExportPublishState.Existing)
+            (item.ItemState is ExportTransactionItemState.Created
+                or ExportTransactionItemState.PayloadCommitted
+                or ExportTransactionItemState.EntryBound)
+            && (item.OriginalPublishState is ExportPublishState.NotStarted or ExportPublishState.Existing)
             && (item.DecodedPublishState is ExportPublishState.NotStarted or ExportPublishState.Existing));
     }
 
@@ -894,7 +897,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 document.RunId,
                 DateTimeOffset.UtcNow,
                 item.MessageId,
-                Entry: item.Entry))
+                Entry: item.Entry,
+                TransactionKey: item.TransactionKey))
             .ToArray();
         if (pending.Length == 0)
         {
@@ -913,14 +917,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             cancellationToken).ConfigureAwait(false);
 
         static string GetJournalTransactionKey(VoiceExportJournalEvent journalEvent)
-            => ExportItemTransactionKey.TryCompute(journalEvent.Entry?.SourceStableKey)
-                ?? journalEvent.MessageId
-                ?? string.Empty;
+            => journalEvent.TransactionKey
+                ?? ExportItemTransactionKey.TryCompute(journalEvent.Entry?.SourceStableKey)
+                ?? throw new InvalidDataException("An item Journal event lacks its stable transaction identity.");
 
         static string GetTransactionKey(ExportTransactionItem item)
             => item.TransactionKey
                 ?? ExportItemTransactionKey.TryCompute(item.SourceStableKey)
-                ?? item.MessageId;
+                ?? throw new InvalidDataException("An export transaction item lacks its stable transaction identity.");
 
     }
 
@@ -2542,6 +2546,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 _commitAttempted = true;
                 _transactionState = ExportTransactionState.Prepared;
                 await PersistTransactionAsync(cancellationToken, eventName: "state-changed").ConfigureAwait(false);
+                var incompleteItem = items
+                    .Select(item => item.CreateTransactionItem(_store.ExportRoot))
+                    .FirstOrDefault(static item => !IsRecoverableReadyItem(item));
+                if (incompleteItem is not null)
+                {
+                    throw new InvalidDataException("An export transaction item is not durably ReadyToPublish.");
+                }
+
                 _transactionState = ExportTransactionState.Publishing;
                 await PersistTransactionAsync(cancellationToken, eventName: "state-changed").ConfigureAwait(false);
                 foreach (var item in items.OrderBy(static item => item.OriginalManifestPath, StringComparer.Ordinal))
@@ -2787,7 +2799,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                         _runId,
                         DateTimeOffset.UtcNow,
                         entry.MessageId,
-                        Entry: entry),
+                        Entry: entry,
+                        TransactionKey: ExportItemTransactionKey.Compute(entry.SourceStableKey!)),
                     cancellationToken).ConfigureAwait(false);
             }
             finally

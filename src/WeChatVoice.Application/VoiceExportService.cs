@@ -562,19 +562,50 @@ public sealed class VoiceExportService
         {
             if (lease is not null)
             {
+                Exception? cleanupFailure = null;
                 try
                 {
                     await lease.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception exception)
                 {
-                    await RecordFailureAsync(record, "rollback", exception.Message, runId, journal, failures, CancellationToken.None).ConfigureAwait(false);
+                    cleanupFailure = exception;
                 }
 
-                await lease.DisposeAsync().ConfigureAwait(false);
+                try
+                {
+                    await lease.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    cleanupFailure ??= exception;
+                }
+
+                if (cleanupFailure is not null)
+                {
+                    try
+                    {
+                        await RecordFailureAsync(
+                            record,
+                            "rollback",
+                            cleanupFailure.Message,
+                            runId,
+                            journal,
+                            failures,
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Preserve the cleanup failure as the task result; a
+                        // failed lease cleanup leaves the transaction
+                        // ambiguous and must never be committed as successful.
+                    }
+
+                    throw new IOException("The export item lease could not be cleaned up safely.", cleanupFailure);
+                }
             }
 
-            if (!entryRecorded)
+            if (!entryRecorded && !string.IsNullOrWhiteSpace(record.SourceStableKey))
             {
                 try
                 {

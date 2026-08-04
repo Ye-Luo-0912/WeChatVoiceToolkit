@@ -206,7 +206,32 @@ public sealed class FakeScanWorkflow : IVoiceScanWorkflow
             report.TotalPayloadBytes,
             PreparedVoiceSelection.CurrentSelectionEngineVersion,
             PreparedVoiceSelection.NoDurationResolverVersion,
-            report);
+            report,
+            Records:
+            [
+                new VoiceRecord(
+                    "fake-message",
+                    "contact-b",
+                    DateTimeOffset.UnixEpoch,
+                    direction,
+                    new VoicePayloadLocator("media", 0, "fake-message"),
+                    SourceDatabase: "messages.db",
+                    ShardNumber: 0,
+                    SnapshotId: "snapshot-fake",
+                    AdapterId: "fake-adapter",
+                    AccountId: "wxid_owner",
+                    PayloadByteLength: 10,
+                    DurationMs: 100,
+                    SpeakerId: direction == VoiceDirection.Incoming ? "wxid_b" : "wxid_owner",
+                    DataSetId: "dataset-fake",
+                    AdapterVersion: "fake-v1",
+                    AdapterFamily: "fake-adapter",
+                    AccountStableId: "wxid_owner",
+                    ConversationStableId: "contact-b",
+                    MessagePrimaryKey: "fake-message",
+                    MediaPrimaryKey: "media:fake-message",
+                    PayloadState: VoicePayloadState.Linked),
+            ]);
         return result with { Selection = selection };
     }
 }

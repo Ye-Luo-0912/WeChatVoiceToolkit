@@ -23,7 +23,7 @@ public sealed class DatasetSelectionProfileStore
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(exportDirectory);
         ArgumentNullException.ThrowIfNull(profile);
-        await using var exportLock = await ExportRootLock.AcquireAsync(
+        await using var exportLock = await ExportRootLock.AcquireForOperationAsync(
             Path.GetFullPath(exportDirectory),
             ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
@@ -39,7 +39,7 @@ public sealed class DatasetSelectionProfileStore
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(exportDirectory);
-        await using var exportLock = await ExportRootLock.AcquireAsync(
+        await using var exportLock = await ExportRootLock.AcquireForOperationAsync(
             Path.GetFullPath(exportDirectory),
             ExportRootLockMode.Shared,
             Guid.NewGuid().ToString("N"),

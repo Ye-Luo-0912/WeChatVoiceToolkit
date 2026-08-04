@@ -44,13 +44,14 @@ public sealed class DatasetBuildService
             throw new AppFailureException(ErrorCode.InvalidRequest, "The export directory does not exist.");
         }
 
-        await new FileSystemVoiceExportStore(exportRoot).RecoverPendingTransactionsAsync(cancellationToken).ConfigureAwait(false);
-        await using var rootLock = await ExportRootLock.AcquireAsync(
+        await using var rootLock = await ExportRootLock.AcquireForOperationAsync(
             exportRoot,
             ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
             runId: null,
             cancellationToken).ConfigureAwait(false);
+        var exportStore = new FileSystemVoiceExportStore(exportRoot);
+        await exportStore.RecoverPendingTransactionsUnderLockAsync(cancellationToken, rootLock).ConfigureAwait(false);
         await RecoverDatasetMetadataTransactionsUnderLockAsync(exportRoot, cancellationToken).ConfigureAwait(false);
         var inputs = await LoadInputsAsync(
             exportRoot,
@@ -230,7 +231,7 @@ public sealed class DatasetBuildService
             throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset directory does not exist.");
         }
 
-        await using var rootLock = await ExportRootLock.AcquireAsync(
+        await using var rootLock = await ExportRootLock.AcquireForOperationAsync(
             exportRoot,
             ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
@@ -253,7 +254,7 @@ public sealed class DatasetBuildService
             throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset directory does not exist.");
         }
 
-        await using var rootLock = await ExportRootLock.AcquireAsync(
+        await using var rootLock = await ExportRootLock.AcquireForOperationAsync(
             exportRoot,
             ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
@@ -389,15 +390,17 @@ public sealed class DatasetBuildService
             return InvalidVerification(outputRoot, "export-missing", null, "The export directory does not exist.");
         }
 
-        await RecoverPendingMetadataTransactionsAsync(exportRoot, cancellationToken).ConfigureAwait(false);
-        await using var rootLock = await ExportRootLock.AcquireAsync(
+        await using var rootLock = await ExportRootLock.AcquireForOperationAsync(
             exportRoot,
-            ExportRootLockMode.Shared,
+            ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
             runId: null,
             cancellationToken).ConfigureAwait(false);
         try
         {
+            var exportStore = new FileSystemVoiceExportStore(exportRoot);
+            await exportStore.RecoverPendingTransactionsUnderLockAsync(cancellationToken, rootLock).ConfigureAwait(false);
+            await RecoverDatasetMetadataTransactionsUnderLockAsync(exportRoot, cancellationToken).ConfigureAwait(false);
             var inputs = await LoadInputsAsync(
                 exportRoot,
                 request.ManifestPath,
@@ -447,7 +450,7 @@ public sealed class DatasetBuildService
             return InvalidVerification(outputRoot, "dataset-missing", null, "The curated dataset directory does not exist.");
         }
 
-        await using (var rootLock = await ExportRootLock.AcquireAsync(
+        await using (var rootLock = await ExportRootLock.AcquireForOperationAsync(
             exportRoot,
             ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
@@ -662,7 +665,7 @@ public sealed class DatasetBuildService
             return;
         }
 
-        await using var rootLock = await ExportRootLock.AcquireAsync(
+        await using var rootLock = await ExportRootLock.AcquireForOperationAsync(
             exportRoot,
             ExportRootLockMode.Exclusive,
             Guid.NewGuid().ToString("N"),
@@ -885,6 +888,16 @@ public sealed class DatasetBuildService
             throw new AppFailureException(ErrorCode.InvalidRequest, "The selection profile is not bound to the current private export manifest.");
         }
 
+        if (!string.Equals(profile.RunId, manifest.RunId, StringComparison.Ordinal))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The selection profile RunId is not bound to the private export manifest.");
+        }
+
+        if (profile.DuplicateRepresentativeItemIds.Any(itemId => !profile.SelectedItemIds.Contains(itemId, StringComparer.OrdinalIgnoreCase)))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The selection profile contains a duplicate representative that is not selected.");
+        }
+
         EnsureDatasetNamespace(manifest);
         var entries = manifest.Entries.ToDictionary(
             entry => ExportItemIdentity.ComputeItemId(entry, manifest.DatasetNamespaceKey),
@@ -894,9 +907,9 @@ public sealed class DatasetBuildService
             throw new AppFailureException(ErrorCode.InvalidRequest, "The selection profile references an item outside the export manifest.");
         }
 
-        if (manifest.Entries.Any(static entry => string.IsNullOrWhiteSpace(entry.SourceStableKey)))
+        if (manifest.Entries.Any(static entry => !VoiceExportEntryValidation.HasValidOriginalArtifact(entry)))
         {
-            throw new AppFailureException(ErrorCode.InvalidRequest, "The private export manifest contains an item without a stable source identity.");
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The private export manifest contains an item without a valid stable artifact identity.");
         }
 
         return new BuildInputs(exportRoot, manifestPath, profilePath, manifestSha256, profileSha256, manifest, profile, entries);
@@ -1062,22 +1075,24 @@ public sealed class DatasetBuildService
         }
 
         var metadataDescriptorPath = Path.Combine(outputRoot, DatasetMetadataDescriptorFileName);
-        if (File.Exists(metadataDescriptorPath))
+        if (!File.Exists(metadataDescriptorPath))
         {
-            var descriptor = await ReadAsync<DatasetMetadataCommitDescriptor>(metadataDescriptorPath, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(descriptor.SelectionFingerprint, profile.SelectionFingerprint, StringComparison.Ordinal)
-                || !string.Equals(descriptor.SourceManifestSha256, manifestSha256, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(descriptor.SelectionProfileSha256, build.ProfileOutputSha256, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(descriptor.DatasetManifestSha256, build.DatasetManifestSha256, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(descriptor.DatasetCsvSha256, build.DatasetCsvSha256, StringComparison.OrdinalIgnoreCase)
-                || descriptor.LinkMode != build.LinkMode
-                || !string.Equals(
-                    descriptor.BuildManifestSha256,
-                    await FileHashing.ComputeSha256Async(buildManifestPath, cancellationToken).ConfigureAwait(false),
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
+            return null;
+        }
+
+        var descriptor = await ReadAsync<DatasetMetadataCommitDescriptor>(metadataDescriptorPath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(descriptor.SelectionFingerprint, profile.SelectionFingerprint, StringComparison.Ordinal)
+            || !string.Equals(descriptor.SourceManifestSha256, manifestSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(descriptor.SelectionProfileSha256, build.ProfileOutputSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(descriptor.DatasetManifestSha256, build.DatasetManifestSha256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(descriptor.DatasetCsvSha256, build.DatasetCsvSha256, StringComparison.OrdinalIgnoreCase)
+            || descriptor.LinkMode != build.LinkMode
+            || !string.Equals(
+                descriptor.BuildManifestSha256,
+                await FileHashing.ComputeSha256Async(buildManifestPath, cancellationToken).ConfigureAwait(false),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
         }
 
         var datasetManifestPath = Path.Combine(outputRoot, "dataset.json");
@@ -1182,6 +1197,7 @@ public sealed class DatasetBuildService
         if (entry.ExportState == ExportState.Failed
             || entry.HasDecodeError
             || entry.DurationMs is null
+            || !VoiceExportEntryValidation.HasValidOriginalArtifact(entry)
             || filters.IncomingOnly && entry.Direction != VoiceDirection.Incoming
             || filters.MinimumDurationMs is { } minimumDuration && entry.DurationMs < minimumDuration
             || filters.MaximumDurationMs is { } maximumDuration && entry.DurationMs > maximumDuration

@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using WeChatVoice.Application;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
@@ -179,6 +180,78 @@ public sealed class VoiceExportServiceTests
         Assert.Contains(manifest.Failures, failure => failure.MessageId == broken.MessageId);
         Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.silk", SearchOption.AllDirectories));
         Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.tmp", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task ExactAllOrNothing_never_commits_a_partial_hundred_item_selection()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var records = Enumerable.Range(0, 100)
+            .Select(index => CreateRecord($"exact-100-{index:D3}", Hash([1, 2, 3]), 3))
+            .ToArray();
+        var exportRoot = temporary.GetPath("exact-100-export");
+        var catalogRecords = records
+            .Select(record =>
+            {
+                Func<Stream> createStream = record.MessageId == "exact-100-037"
+                    ? static () => new FaultingReadStream()
+                    : static () => new MemoryStream([1, 2, 3], writable: false);
+                return (record, createStream);
+            })
+            .ToArray();
+        var service = new VoiceExportService(
+            new TestVoiceCatalog(catalogRecords),
+            new FileSystemVoiceExportStore(exportRoot));
+
+        var manifest = await service.ExportAsync(
+            new VoiceQuery(Direction: VoiceDirection.Incoming, MaximumResults: 100),
+            new VoiceExportOptions
+            {
+                CompletionPolicy = ExportCompletionPolicy.ExactAllOrNothing,
+                MaxDegreeOfParallelism = 4,
+            });
+
+        Assert.Equal(ExportRunStatus.Failed, manifest.RunStatus);
+        Assert.Empty(manifest.Entries);
+        Assert.Contains(manifest.Failures, failure => failure.MessageId == "exact-100-037");
+        Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.silk", SearchOption.AllDirectories));
+        Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.tmp", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task Export_transaction_identity_uses_source_stable_key_when_message_ids_repeat()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var first = CreateRecord("same-message", Hash([1, 2, 3]), 3, payloadBlobKey: "blob-a");
+        var second = CreateRecord("same-message", Hash([4, 5, 6]), 3, payloadBlobKey: "blob-b");
+        var exportRoot = temporary.GetPath("duplicate-message-export");
+        var service = new VoiceExportService(
+            new TestVoiceCatalog(
+            [
+                (first, static () => new MemoryStream([1, 2, 3], writable: false)),
+                (second, static () => new MemoryStream([4, 5, 6], writable: false)),
+            ]),
+            new FileSystemVoiceExportStore(exportRoot));
+
+        var manifest = await service.ExportAsync(
+            new VoiceQuery(Direction: VoiceDirection.Incoming),
+            new VoiceExportOptions
+            {
+                CompletionPolicy = ExportCompletionPolicy.ExactAllOrNothing,
+                MaxDegreeOfParallelism = 1,
+            });
+
+        Assert.Equal(ExportRunStatus.Completed, manifest.RunStatus);
+        Assert.Equal(2, manifest.Entries.Count);
+        Assert.All(manifest.Entries, entry => Assert.Equal("same-message", entry.MessageId));
+        Assert.Equal(2, manifest.Entries.Select(entry => entry.SourceStableKey).Distinct(StringComparer.Ordinal).Count());
+        var transaction = JsonSerializer.Deserialize<ExportTransactionDocument>(
+            await File.ReadAllTextAsync(Path.Combine(exportRoot, "runs", manifest.RunId + ".transaction.json")),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+            });
+        Assert.Equal(2, transaction!.Items.Select(item => item.TransactionKey).Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
@@ -443,12 +516,12 @@ public sealed class VoiceExportServiceTests
         Assert.Null(manifest.AccountIdentity.ConfirmedBy);
     }
 
-    private static VoiceRecord CreateRecord(string messageId, string? payloadSha256 = null, long? payloadByteLength = null) => new(
+    private static VoiceRecord CreateRecord(string messageId, string? payloadSha256 = null, long? payloadByteLength = null, string? payloadBlobKey = null) => new(
         messageId,
         "contact@example",
         new DateTimeOffset(2026, 7, 31, 6, 0, 0, TimeSpan.Zero),
         VoiceDirection.Incoming,
-        new VoicePayloadLocator("media", 0, messageId),
+        new VoicePayloadLocator("media", 0, payloadBlobKey ?? messageId),
         SnapshotId: "snapshot",
         AdapterId: "adapter",
         AccountId: "account",

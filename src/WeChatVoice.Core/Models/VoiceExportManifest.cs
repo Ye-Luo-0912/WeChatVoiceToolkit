@@ -232,7 +232,8 @@ public sealed record VoiceExportJournalEvent(
     bool Cancelled = false,
     string? ManifestSha256 = null,
     DateTimeOffset? ManifestGeneratedAtUtc = null,
-    string? MetadataCommitDescriptorSha256 = null)
+    string? MetadataCommitDescriptorSha256 = null,
+    string? TransactionKey = null)
 {
     public DateTimeOffset OccurredAtUtc { get; init; } = OccurredAtUtc.ToUniversalTime();
 }

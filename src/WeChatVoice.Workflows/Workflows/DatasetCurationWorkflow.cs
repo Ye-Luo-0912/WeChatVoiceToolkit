@@ -356,7 +356,7 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
             throw new AppFailureException(ErrorCode.InvalidRequest, "The export directory does not exist.");
         }
 
-        await using var exportLock = await ExportRootLock.AcquireAsync(
+        await using var exportLock = await ExportRootLock.AcquireForOperationAsync(
             exportRoot,
             ExportRootLockMode.Shared,
             Guid.NewGuid().ToString("N"),
@@ -500,6 +500,7 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
     {
         if (entry.ExportState is ExportState.Failed
             || entry.HasDecodeError
+            || !VoiceExportEntryValidation.HasValidOriginalArtifact(entry)
             || filters.IncomingOnly && entry.Direction != VoiceDirection.Incoming)
         {
             return false;

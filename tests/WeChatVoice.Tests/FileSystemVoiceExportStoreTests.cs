@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Export;
@@ -59,10 +60,11 @@ public sealed class FileSystemVoiceExportStoreTests
             new VoiceExportRunContext("first", context, DateTimeOffset.UtcNow),
             CancellationToken.None);
 
-        await Assert.ThrowsAsync<ExportRootBusyException>(async () =>
+        var exception = await Assert.ThrowsAsync<AppFailureException>(async () =>
             await secondStore.BeginRunAsync(
                 new VoiceExportRunContext("second", context, DateTimeOffset.UtcNow),
             CancellationToken.None));
+        Assert.Equal(ErrorCode.OperationBusy, exception.Code);
     }
 
     [Fact]
@@ -335,6 +337,196 @@ public sealed class FileSystemVoiceExportStoreTests
             options);
         Assert.Equal(ExportTransactionState.RolledBack, recovered!.State);
         Assert.Empty(recovered.Items);
+    }
+
+    [Fact]
+    public async Task Recovery_reconciles_a_ready_prepared_item_after_a_truncated_journal_tail()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.GetPath("export");
+        var runs = temporary.GetPath("export", "runs");
+        var runId = "prepared-ready-crash";
+        var stagedRelative = $"runs/.{runId}.staging/original/aa/bb/item.silk";
+        var finalRelative = "original/aa/bb/item.silk";
+        var bytes = new byte[] { 4, 5, 6 };
+        var stagedPath = temporary.GetPath("export", stagedRelative.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(stagedPath)!);
+        await File.WriteAllBytesAsync(stagedPath, bytes);
+
+        var sourceStableKey = "adapter|account|conversation|message|media:message";
+        var entry = new VoiceExportEntry(
+            "message",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            finalRelative,
+            bytes.Length,
+            Hash(bytes),
+            null,
+            sourceStableKey);
+        var item = new ExportTransactionItem(
+            entry.MessageId,
+            sourceStableKey,
+            stagedRelative,
+            finalRelative,
+            null,
+            null,
+            bytes.Length,
+            Hash(bytes),
+            null,
+            null,
+            ExportPublishState.NotStarted,
+            ExportPublishState.NotStarted,
+            ExportArtifactState.Missing,
+            ExportArtifactState.Missing,
+            entry,
+            ExportItemTransactionKey.Compute(sourceStableKey),
+            ExportTransactionItemState.ReadyToPublish);
+        var transaction = new ExportTransactionDocument(
+            runId,
+            "operation-prepared-ready",
+            "selection",
+            ExportTransactionState.Prepared,
+            DateTimeOffset.UtcNow,
+            [item]);
+        var context = new VoiceCatalogContext("dataset", "adapter", "1", "account", ["db"]);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        };
+        Directory.CreateDirectory(runs);
+        await File.WriteAllTextAsync(
+            Path.Combine(runs, runId + ".transaction.json"),
+            JsonSerializer.Serialize(transaction, options));
+        var journalPath = Path.Combine(runs, runId + ".jsonl");
+        await File.WriteAllTextAsync(
+            journalPath,
+            JsonSerializer.Serialize(new VoiceExportJournalEvent("run-started", runId, DateTimeOffset.UtcNow, Context: context), options)
+                + Environment.NewLine
+                + "{\"event\":\"item-committed\"",
+            Encoding.UTF8);
+
+        await new FileSystemVoiceExportStore(root).RecoverPendingTransactionsAsync(CancellationToken.None);
+
+        var finalPath = temporary.GetPath("export", finalRelative.Replace('/', Path.DirectorySeparatorChar));
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(finalPath));
+        Assert.Contains(
+            await File.ReadAllLinesAsync(journalPath),
+            line => line.Contains("item-committed", StringComparison.Ordinal));
+        Assert.True(File.Exists(Path.Combine(runs, runId + ".metadata-commit.json")));
+    }
+
+    [Fact]
+    public async Task Recovery_never_publishes_a_ready_item_without_a_durable_hash()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.GetPath("export");
+        var runs = Path.Combine(root, "runs");
+        var runId = "incomplete-ready-hash";
+        var stagedRelative = $"runs/.{runId}.staging/original/aa/bb/item.silk";
+        var finalRelative = "original/aa/bb/item.silk";
+        var stagedPath = temporary.GetPath("export", stagedRelative.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(stagedPath)!);
+        await File.WriteAllBytesAsync(stagedPath, [1, 2, 3]);
+
+        var sourceStableKey = "adapter|account|conversation|message|media:message";
+        var entry = new VoiceExportEntry(
+            "message",
+            "conversation",
+            DateTimeOffset.UtcNow,
+            VoiceDirection.Incoming,
+            finalRelative,
+            3,
+            Hash([1, 2, 3]),
+            null,
+            sourceStableKey);
+        var transaction = new ExportTransactionDocument(
+            runId,
+            "operation-incomplete-ready",
+            "selection",
+            ExportTransactionState.Publishing,
+            DateTimeOffset.UtcNow,
+            [new ExportTransactionItem(
+                entry.MessageId,
+                sourceStableKey,
+                stagedRelative,
+                finalRelative,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                ExportPublishState.NotStarted,
+                ExportPublishState.NotStarted,
+                ExportArtifactState.Missing,
+                ExportArtifactState.Missing,
+                entry,
+                ExportItemTransactionKey.Compute(sourceStableKey),
+                ExportTransactionItemState.ReadyToPublish)]);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        };
+        Directory.CreateDirectory(runs);
+        await File.WriteAllTextAsync(
+            Path.Combine(runs, runId + ".transaction.json"),
+            JsonSerializer.Serialize(transaction, options));
+        await File.WriteAllTextAsync(Path.Combine(runs, runId + ".jsonl"), string.Empty);
+
+        await Assert.ThrowsAsync<IOException>(() => new FileSystemVoiceExportStore(root).RecoverPendingTransactionsAsync(CancellationToken.None));
+
+        Assert.False(File.Exists(temporary.GetPath("export", finalRelative.Replace('/', Path.DirectorySeparatorChar))));
+        var recovered = JsonSerializer.Deserialize<ExportTransactionDocument>(
+            await File.ReadAllTextAsync(Path.Combine(runs, runId + ".transaction.json")),
+            options);
+        Assert.Equal(ExportTransactionState.FailedRecoverable, recovered!.State);
+        Assert.Equal(ExportPublishState.Failed, Assert.Single(recovered.Items).OriginalPublishState);
+    }
+
+    [Fact]
+    public async Task Commit_refuses_an_item_without_a_durable_entry_before_publishing()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.GetPath("export");
+        var store = new FileSystemVoiceExportStore(root);
+        var context = new VoiceCatalogContext("dataset", "adapter", "1", "account", ["db"]);
+        var record = CreateRecord("entry-required", Hash([1, 2, 3]), 3);
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+        {
+            await using var journal = await store.BeginRunAsync(
+                new VoiceExportRunContext("entry-required-run", context, DateTimeOffset.UtcNow),
+                CancellationToken.None);
+            await using var item = await journal.StageItemAsync(
+                record,
+                ExistingArtifactPolicy.SkipIfHashMatches,
+                CancellationToken.None);
+            await using (var output = await item.OpenOriginalWriteAsync(CancellationToken.None))
+            {
+                await output.WriteAsync(new byte[] { 1, 2, 3 });
+            }
+
+            await item.CommitOriginalAsync(CancellationToken.None);
+            // No RecordEntryAsync call: the transaction must fail closed and
+            // may not publish an artifact that has no manifest identity.
+            await journal.CommitAsync(CancellationToken.None);
+        });
+
+        var originalRoot = Path.Combine(root, "original");
+        Assert.True(!Directory.Exists(originalRoot)
+            || !Directory.EnumerateFiles(originalRoot, "*.silk", SearchOption.AllDirectories).Any());
+        await Assert.ThrowsAsync<IOException>(() =>
+            new FileSystemVoiceExportStore(root).RecoverPendingTransactionsAsync(CancellationToken.None));
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        };
+        var transaction = JsonSerializer.Deserialize<ExportTransactionDocument>(
+            await File.ReadAllTextAsync(Path.Combine(root, "runs", "entry-required-run.transaction.json")),
+            options);
+        Assert.Equal(ExportTransactionState.FailedRecoverable, transaction!.State);
+        Assert.Null(Assert.Single(transaction.Items).Entry);
     }
 
     [Fact]
@@ -720,6 +912,14 @@ public sealed class FileSystemVoiceExportStoreTests
         Assert.Single(recovered.Entries);
         Assert.Equal(ExportRunStatus.Failed, recovered.RunStatus);
         Assert.True(File.Exists(Path.Combine(store.ExportRoot, "runs", "recover-run.dataset.manifest.json")));
+        foreach (var line in await File.ReadAllLinesAsync(journalPath))
+        {
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                using var document = JsonDocument.Parse(line);
+                Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+            }
+        }
     }
 
     [Fact]

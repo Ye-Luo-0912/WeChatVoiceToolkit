@@ -108,7 +108,7 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
     }
 
     [Fact]
-    public async Task Export_forwards_the_global_maximum_results_to_the_catalog_query()
+    public async Task Export_applies_the_global_maximum_after_eligibility()
     {
         _backend.Fill(
             FakeBackend.Linked("m1", 1_700_000_000, VoiceDirection.Incoming),
@@ -126,7 +126,10 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
             CancellationToken.None);
 
         Assert.Single(result.Manifest.Entries);
-        Assert.Equal(1, _backend.LastVoiceQuery?.MaximumResults);
+        // The catalog query deliberately has no SQL-level result limit here:
+        // the verified scan must skip ineligible candidates before counting
+        // MaximumResults. The immutable plan still carries the requested 1.
+        Assert.Null(_backend.LastVoiceQuery?.MaximumResults);
     }
 
     [Fact]
@@ -172,7 +175,9 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
 
         Assert.Single(exported.Manifest.Entries);
         Assert.Equal(VoiceDirection.Incoming, Assert.Single(exported.Manifest.Entries).Direction);
-        Assert.Equal(1, _backend.LastVoiceQuery?.MaximumResults);
+        // Formal export consumes the prepared records and does not issue a
+        // second catalog query.
+        Assert.Null(_backend.LastVoiceQuery?.MaximumResults);
         Assert.Equal(VoiceDirection.Incoming, _backend.LastVoiceQuery?.Direction);
         Assert.Equal(WorkflowState.Completed, exportContext.StateMachine.State);
     }

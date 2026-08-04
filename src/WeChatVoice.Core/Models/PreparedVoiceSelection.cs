@@ -62,9 +62,34 @@ public sealed record PreparedVoiceSelection
             throw new ArgumentException("A prepared selection cannot use both in-memory records and a disk spool.", nameof(Spool));
         }
 
-        if (Spool is not null && Spool.RecordCount < ResultCount)
+        if (Spool is not null && Spool.RecordCount != ResultCount)
         {
-            throw new ArgumentException("The prepared-selection spool contains fewer records than the exportable scan result.", nameof(Spool));
+            throw new ArgumentException("The prepared-selection spool must contain exactly the exportable scan result.", nameof(Spool));
+        }
+
+        if (Records is not null && Records.Count != ResultCount)
+        {
+            throw new ArgumentException("The prepared-selection records must contain exactly the exportable scan result.", nameof(Records));
+        }
+
+        if (Records is not null)
+        {
+            var transactionKeys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var record in Records)
+            {
+                if (record.PayloadState != VoicePayloadState.Linked
+                    || record.PayloadByteLength is not > 0
+                    || record.PayloadLocator is null
+                    || string.IsNullOrWhiteSpace(record.SourceStableKey))
+                {
+                    throw new ArgumentException("A prepared-selection record must be an export-eligible linked payload with a stable identity.", nameof(Records));
+                }
+
+                if (!transactionKeys.Add(ExportItemTransactionKey.Compute(record.SourceStableKey)))
+                {
+                    throw new ArgumentException("A prepared-selection record identity must be unique.", nameof(Records));
+                }
+            }
         }
 
         if (!Path.IsPathFullyQualified(WorkspaceDocumentPath))

@@ -44,6 +44,7 @@ public sealed class VoiceExportWorkflow(
                 ? new CachedVoiceDurationResolver(durationResolver, durationCache, cleanupQueue)
                 : durationResolver;
             ValidatePlanIdentity(plan, session, effectiveDurationResolver);
+            EnsurePreparedSelection(plan);
             context.Report(OperationPhase.VoiceExport, OperationStageIds.ResolvingContact);
             var contact = await resolver.ResolveExactAsync(session.Catalog, plan.ContactUsername, cancellationToken).ConfigureAwait(false);
             EnsurePlanContact(plan, contact);
@@ -309,6 +310,21 @@ public sealed class VoiceExportWorkflow(
             throw new Core.Errors.AppFailureException(
                 Core.Errors.ErrorCode.SelectionPlanMismatch,
                 "The prepared voice selection no longer matches the verified Workspace or selection engine.");
+        }
+    }
+
+    private static void EnsurePreparedSelection(PreparedVoiceSelection plan)
+    {
+        if (plan.ResultCount == 0)
+        {
+            return;
+        }
+
+        if (!plan.HasPreparedRecords || plan.PreparedRecordCount != plan.ResultCount)
+        {
+            throw new Core.Errors.AppFailureException(
+                Core.Errors.ErrorCode.SelectionPlanMismatch,
+                "The prepared voice selection does not contain the exact eligible record set.");
         }
     }
 

@@ -17,13 +17,14 @@ public static class SmokeCheckRunner
 {
     public static int Run(bool releaseTrustSmoke = false)
     {
+        DesktopServices? services = null;
         try
         {
             var directory = Path.Combine(Path.GetTempPath(), "WeChatVoiceToolkit.Smoke", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
 
             // 1. Composition root constructs every workflow with a silent port.
-            var services = DesktopServices.Create(appDataDirectory: directory);
+            services = DesktopServices.Create(appDataDirectory: directory);
             Assert(services.Workflows.EnvironmentAssessment is not null, "EnvironmentAssessment workflow missing");
             Assert(services.Workflows.Snapshot is not null, "Snapshot workflow missing");
             Assert(services.Workflows.Materialization is not null, "Materialization workflow missing");
@@ -124,6 +125,13 @@ public static class SmokeCheckRunner
         {
             Console.Error.WriteLine($"smoke-check failed: {exception}");
             return 1;
+        }
+        finally
+        {
+            // The composition root may own a resident Decoder Worker. A
+            // published smoke process must exercise the same shutdown path as
+            // Desktop so the trust smoke cannot leave helper processes behind.
+            services?.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
     }
 

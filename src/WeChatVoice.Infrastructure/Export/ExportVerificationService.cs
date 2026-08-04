@@ -45,39 +45,27 @@ public sealed class ExportVerificationService
             return Result(exportRoot, runId, null, issues, 0, false, false, false);
         }
 
-        try
-        {
-            var recoveryStore = new FileSystemVoiceExportStore(exportRoot);
-            await recoveryStore.RecoverPendingTransactionsAsync(cancellationToken).ConfigureAwait(false);
-            await RecoverCommittedTransactionsAsync(recoveryStore, exportRoot, runId, cancellationToken).ConfigureAwait(false);
-        }
-        catch (ExportRootBusyException)
-        {
-            throw new AppFailureException(ErrorCode.OperationBusy, "The export root is busy with another operation.");
-        }
-        ExportRootLock verificationLock;
-        try
-        {
-            verificationLock = await ExportRootLock.AcquireAsync(
-                exportRoot,
-                ExportRootLockMode.Shared,
-                Guid.NewGuid().ToString("N"),
-                runId,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (ExportRootBusyException)
-        {
-            throw new AppFailureException(ErrorCode.OperationBusy, "The export root is busy with another operation.");
-        }
-
-        await using (verificationLock)
-        {
-            return await VerifyCommittedExportUnderLockAsync(
-                exportRoot,
-                runId,
-                issues,
-                cancellationToken).ConfigureAwait(false);
-        }
+        await using var verificationLock = await ExportRootLock.AcquireForOperationAsync(
+            exportRoot,
+            ExportRootLockMode.Exclusive,
+            Guid.NewGuid().ToString("N"),
+            runId,
+            cancellationToken).ConfigureAwait(false);
+        var recoveryStore = new FileSystemVoiceExportStore(exportRoot);
+        await recoveryStore.RecoverPendingTransactionsUnderLockAsync(
+            cancellationToken,
+            verificationLock).ConfigureAwait(false);
+        await RecoverCommittedTransactionsUnderLockAsync(
+            recoveryStore,
+            exportRoot,
+            runId,
+            verificationLock,
+            cancellationToken).ConfigureAwait(false);
+        return await VerifyCommittedExportUnderLockAsync(
+            exportRoot,
+            runId,
+            issues,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<ExportVerificationResult> VerifyCommittedExportUnderLockAsync(
@@ -714,12 +702,14 @@ public sealed class ExportVerificationService
         }
     }
 
-    private static async Task RecoverCommittedTransactionsAsync(
+    private static async Task RecoverCommittedTransactionsUnderLockAsync(
         FileSystemVoiceExportStore store,
         string exportRoot,
         string? requestedRunId,
+        ExportRootLock heldLock,
         CancellationToken cancellationToken)
     {
+        _ = heldLock;
         var runs = Path.Combine(exportRoot, "runs");
         if (!Directory.Exists(runs)) return;
         var candidates = new List<(string Path, ExportTransactionDocument Document)>();
@@ -745,7 +735,10 @@ public sealed class ExportVerificationService
             var journal = Path.Combine(runs, candidate.Document.RunId + ".jsonl");
             if (File.Exists(journal))
             {
-                await store.RecoverRunAsync(journal, cancellationToken).ConfigureAwait(false);
+                await store.RecoverRunUnderLockAsync(
+                    journal,
+                    candidate.Document.RunId,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             if (!string.IsNullOrWhiteSpace(requestedRunId)) break;
