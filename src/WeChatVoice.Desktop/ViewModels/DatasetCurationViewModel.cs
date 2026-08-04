@@ -37,7 +37,9 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     [ObservableProperty] private string? _minimumByteLengthText;
     [ObservableProperty] private string? _maximumByteLengthText;
     [ObservableProperty] private string? _excludedQualityFlagsText;
-    [ObservableProperty] private bool _includeUnknownDuration;
+    [ObservableProperty] private bool _showUnknownDuration;
+    [ObservableProperty] private bool _selectionDirty;
+    [ObservableProperty] private string? _deleteConfirmationText;
     [ObservableProperty] private string? _curationSummary;
     [ObservableProperty] private string? _profileSummary;
     [ObservableProperty] private string? _buildSummary;
@@ -85,19 +87,18 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             return Task.CompletedTask;
         }
 
-        var profile = new DatasetSelectionProfile(
-            result.ManifestSha256,
-            result.RunId,
-            BuildFilters(),
-            Items.Where(static item => item.IsSelected).Select(static item => item.ItemId).ToArray(),
-            Items.Where(static item => item.IsDuplicateRepresentative).Select(static item => item.ItemId).ToArray());
+        var profile = CreateCurrentProfile(result);
         return RunHost.RunAsync(
             async (context, cancellationToken) =>
             {
                 await Workflows.DatasetCuration.SaveProfileAsync(exportDirectory, profile, context, cancellationToken).ConfigureAwait(false);
                 return profile;
             },
-            saved => ProfileSummary = $"Selection Profile 已保存：{saved.SelectedItemIds.Count} 条，Fingerprint {Short(saved.SelectionFingerprint)}");
+            saved =>
+            {
+                SelectionDirty = false;
+                ProfileSummary = $"Selection Profile 已保存：{saved.SelectedItemIds.Count} 条，Fingerprint {Short(saved.SelectionFingerprint)}";
+            });
     }
 
     [RelayCommand]
@@ -107,17 +108,62 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             ? Services.Project.ExportDirectory
             : ExportDirectory;
         var outputDirectory = DatasetOutputDirectory;
+        var result = _result;
+        if (result is null)
+        {
+            BuildSummary = "请先加载导出目录并完成筛选。";
+            return Task.CompletedTask;
+        }
+
+        // Capture the current UI selection on the UI thread. The workflow
+        // persists this exact profile before it reads any build inputs.
+        var profile = CreateCurrentProfile(result);
         return RunHost.RunAsync<DatasetBuildResult>(
             async (context, cancellationToken) => await Workflows.DatasetCuration.BuildDatasetAsync(
                 new DatasetBuildRequest(
                     exportDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required."),
-                    OutputDirectory: string.IsNullOrWhiteSpace(outputDirectory) ? null : outputDirectory),
+                    OutputDirectory: string.IsNullOrWhiteSpace(outputDirectory) ? null : outputDirectory,
+                    Profile: profile),
                 context,
                 cancellationToken).ConfigureAwait(false),
             result =>
             {
                 DatasetOutputDirectory = result.OutputDirectory;
-                BuildSummary = $"训练数据集已构建：{result.ItemCount} 条，{result.TotalDurationMs} ms，{result.TotalByteLength} bytes。";
+                SelectionDirty = false;
+                BuildSummary = result.LinkMode == DatasetLinkMode.LinkedView
+                    ? $"训练数据集已构建：{result.ItemCount} 条，{result.TotalDurationMs} ms，{result.TotalByteLength} bytes。警告：这是非独立硬链接视图，不是便携副本。"
+                    : $"训练数据集已构建：{result.ItemCount} 条，{result.TotalDurationMs} ms，{result.TotalByteLength} bytes。";
+            });
+    }
+
+    [RelayCommand]
+    private Task DeleteDatasetAsync()
+    {
+        var exportDirectory = string.IsNullOrWhiteSpace(ExportDirectory)
+            ? Services.Project.ExportDirectory
+            : ExportDirectory;
+        var outputDirectory = DatasetOutputDirectory;
+        var result = _result;
+        if (string.IsNullOrWhiteSpace(exportDirectory)
+            || string.IsNullOrWhiteSpace(outputDirectory)
+            || result is null)
+        {
+            BuildSummary = "请先加载并构建训练数据集。";
+            return Task.CompletedTask;
+        }
+
+        var request = new DatasetDeleteRequest(
+            exportDirectory,
+            outputDirectory,
+            result.SelectionFingerprint,
+            string.Equals(DeleteConfirmationText?.Trim(), "DELETE", StringComparison.Ordinal));
+        return RunHost.RunAsync<DatasetDeleteResult>(
+            async (context, cancellationToken) => await Workflows.DatasetCuration.DeleteDatasetAsync(request, context, cancellationToken).ConfigureAwait(false),
+            deleted =>
+            {
+                DatasetOutputDirectory = null;
+                DeleteConfirmationText = null;
+                BuildSummary = $"已删除派生训练数据集：{deleted.ItemCount} 条，{deleted.TotalByteLength} bytes；原始 Export 未修改。";
             });
     }
 
@@ -181,7 +227,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         MaximumDurationMsText = Format(profile.Filters.MaximumDurationMs);
         MinimumByteLengthText = Format(profile.Filters.MinimumByteLength);
         MaximumByteLengthText = Format(profile.Filters.MaximumByteLength);
-        IncludeUnknownDuration = profile.Filters.IncludeUnknownDuration;
+        ShowUnknownDuration = profile.Filters.ShowUnknownDuration;
         ExcludedQualityFlagsText = string.Join(',', profile.Filters.ExcludedQualityFlags);
         _profileToApply = profile;
         ProfileSummary = $"已加载 Profile：{profile.SelectedItemIds.Count} 条；重新加载以验证 Manifest 绑定。";
@@ -193,6 +239,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     {
         foreach (var item in Items) item.IsSelected = false;
         UpdateTotals();
+        SelectionDirty = true;
         ProfileSummary = "已清除训练集选择；导出文件未修改。";
     }
 
@@ -205,6 +252,13 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             Items.Clear();
         }
     }
+
+    partial void OnMinimumDurationMsTextChanged(string? value) => SelectionDirty = true;
+    partial void OnMaximumDurationMsTextChanged(string? value) => SelectionDirty = true;
+    partial void OnMinimumByteLengthTextChanged(string? value) => SelectionDirty = true;
+    partial void OnMaximumByteLengthTextChanged(string? value) => SelectionDirty = true;
+    partial void OnExcludedQualityFlagsTextChanged(string? value) => SelectionDirty = true;
+    partial void OnShowUnknownDurationChanged(bool value) => SelectionDirty = true;
 
     protected override void OnProjectPropertyChanged(string? propertyName)
     {
@@ -221,7 +275,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             ParseNonNegative(MaximumDurationMsText, "maximum duration"),
             ParseNonNegative(MinimumByteLengthText, "minimum byte length"),
             ParseNonNegative(MaximumByteLengthText, "maximum byte length"),
-            IncludeUnknownDuration,
+            ShowUnknownDuration,
             IncomingOnly: true,
             (ExcludedQualityFlagsText ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
@@ -240,10 +294,12 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         CurationSummary = $"候选 {result.Items.Count(static item => item.PassesFilters)} 条；重复组 {result.DuplicateGroups.Count}；当前训练集 {SelectedCount} 条。成功导出不会自动进入训练集。";
         ProfileSummary = $"Manifest 已绑定：{Short(result.ManifestSha256)}；Selection Fingerprint：{Short(result.SelectionFingerprint)}。";
         _profileToApply = null;
+        SelectionDirty = false;
     }
 
     private void OnItemChanged(DatasetCurationItemViewModel changed)
     {
+        SelectionDirty = true;
         if (!changed.IsSelected)
         {
             changed.IsDuplicateRepresentative = false;
@@ -290,6 +346,14 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     private static string? Format(long? value) => value?.ToString();
 
     private static string Short(string value) => value.Length <= 16 ? value : value[..16] + "…";
+
+    private DatasetSelectionProfile CreateCurrentProfile(DatasetCurationResult result)
+        => new(
+            result.ManifestSha256,
+            result.RunId,
+            BuildFilters(),
+            Items.Where(static item => item.IsSelected).Select(static item => item.ItemId).ToArray(),
+            Items.Where(static item => item.IsDuplicateRepresentative).Select(static item => item.ItemId).ToArray());
 }
 
 public sealed partial class DatasetCurationItemViewModel : ObservableObject
@@ -325,7 +389,7 @@ public sealed partial class DatasetCurationItemViewModel : ObservableObject
     public string? DuplicateGroupId { get; }
     public int DuplicateGroupSize { get; }
     public bool PassesFilters { get; }
-    public bool CanSelect => PassesFilters;
+    public bool CanSelect => PassesFilters && DurationMs is not null && TrainingEligibility == nameof(WeChatVoice.Core.Models.TrainingEligibility.Eligible);
     public string TrainingEligibility { get; }
 
     [ObservableProperty] private bool _isSelected;

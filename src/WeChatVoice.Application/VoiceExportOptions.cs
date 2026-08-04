@@ -1,3 +1,5 @@
+using WeChatVoice.Core.Models;
+
 namespace WeChatVoice.Application;
 
 /// <summary>
@@ -5,6 +7,14 @@ namespace WeChatVoice.Application;
 /// </summary>
 public sealed record VoiceExportOptions
 {
+    /// <summary>
+    /// Controls whether a prepared selection is committed as one exact set or
+    /// whether successful items may be committed around per-item failures.
+    /// Low-level callers retain BestEffort compatibility; formal Desktop and
+    /// CLI workflows explicitly select ExactAllOrNothing.
+    /// </summary>
+    public ExportCompletionPolicy CompletionPolicy { get; init; } = ExportCompletionPolicy.BestEffort;
+
     /// <summary>
     /// When true, each successfully copied SILK file is passed to the configured decoder.
     /// A decode failure does not discard the original SILK export.

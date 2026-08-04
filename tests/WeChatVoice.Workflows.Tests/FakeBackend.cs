@@ -165,6 +165,8 @@ public sealed class FakeBackend
             AdapterFamily: "fake-adapter",
             AccountStableId: AccountId,
             ConversationStableId: ContactUsername,
+            MessagePrimaryKey: id,
+            MediaPrimaryKey: "media:" + id,
             PayloadState: VoicePayloadState.Linked);
 
     /// <summary>Builds a non-exportable record (Missing / Empty / InvalidHeader / Ambiguous).</summary>

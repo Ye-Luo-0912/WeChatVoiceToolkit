@@ -39,6 +39,16 @@ public interface IDatasetCurationWorkflow
         DatasetBuildRepairRequest request,
         WorkflowContext context,
         CancellationToken cancellationToken);
+
+    Task<DatasetDeletePreview> PreviewDeleteDatasetAsync(
+        DatasetDeleteRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    Task<DatasetDeleteResult> DeleteDatasetAsync(
+        DatasetDeleteRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -182,6 +192,17 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         try
         {
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing, "构建训练数据集");
+            if (request.Profile is not null)
+            {
+                var exportRoot = Path.GetFullPath(request.ExportDirectory);
+                await _profileStore.WriteAsync(exportRoot, request.Profile, cancellationToken).ConfigureAwait(false);
+                request = request with
+                {
+                    Profile = null,
+                    ProfilePath = DatasetSelectionProfileStore.GetPath(exportRoot),
+                };
+            }
+
             var result = await _datasetBuildService.BuildAsync(request, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             return result;
@@ -245,6 +266,68 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         {
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing, "修复训练数据集元数据");
             var result = await _datasetBuildService.RepairAsync(request, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
+    public async Task<DatasetDeletePreview> PreviewDeleteDatasetAsync(
+        DatasetDeleteRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.LoadingWorkspace, "验证待删除训练数据集");
+            var result = await _datasetBuildService.PreviewDeleteAsync(request, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
+    public async Task<DatasetDeleteResult> DeleteDatasetAsync(
+        DatasetDeleteRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing, "删除训练数据集");
+            var result = await _datasetBuildService.DeleteAsync(request, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             return result;
         }
@@ -361,6 +444,7 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
             var isRepresentative = group?.RepresentativeItemId is not null
                 && string.Equals(group.RepresentativeItemId, itemId, StringComparison.OrdinalIgnoreCase);
             var isSelected = passes
+                && entry.DurationMs is not null
                 && (requestedSelected.Contains(itemId) || requestedRepresentatives.Contains(itemId));
             if (isSelected && group is not null && group.RepresentativeItemId is null)
             {
@@ -420,7 +504,7 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
 
         if (entry.DurationMs is null)
         {
-            if (!filters.IncludeUnknownDuration)
+            if (!filters.ShowUnknownDuration)
             {
                 return false;
             }

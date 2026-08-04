@@ -124,7 +124,7 @@ public sealed class VoiceExportService
 
         var entries = new ConcurrentQueue<VoiceExportEntry>();
         var failures = new ConcurrentQueue<VoiceExportFailure>();
-        var activeExports = new List<Task>(options.MaxDegreeOfParallelism);
+        var activeExports = new List<Task<bool>>(options.MaxDegreeOfParallelism);
         var cancellationObserved = false;
         var runFailed = false;
         var commitFailed = false;
@@ -143,7 +143,11 @@ public sealed class VoiceExportService
                 cancellationToken.ThrowIfCancellationRequested();
                 if (activeExports.Count >= options.MaxDegreeOfParallelism)
                 {
-                    await DrainOneAsync(activeExports, cancellationToken).ConfigureAwait(false);
+                    if (!await DrainOneAsync(activeExports, cancellationToken).ConfigureAwait(false)
+                        && options.CompletionPolicy == ExportCompletionPolicy.ExactAllOrNothing)
+                    {
+                        runFailed = true;
+                    }
                 }
 
                 activeExports.Add(ExportOneAsync(record, query, options, context, runId, transaction, journal, entries, failures, cancellationToken));
@@ -164,11 +168,21 @@ public sealed class VoiceExportService
         {
             try
             {
-                await Task.WhenAll(activeExports).ConfigureAwait(false);
+                var completed = await Task.WhenAll(activeExports).ConfigureAwait(false);
+                if (options.CompletionPolicy == ExportCompletionPolicy.ExactAllOrNothing
+                    && completed.Any(static succeeded => !succeeded))
+                {
+                    runFailed = true;
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 cancellationObserved = true;
+            }
+            catch (Exception exception)
+            {
+                runFailed = true;
+                failures.Enqueue(CreateFailure(null, "export", exception));
             }
         }
 
@@ -207,9 +221,12 @@ public sealed class VoiceExportService
                 : failures.Count > 0
                     ? ExportRunStatus.CompletedWithFailures
                     : ExportRunStatus.Completed;
+        var manifestEntries = runFailed && options.CompletionPolicy == ExportCompletionPolicy.ExactAllOrNothing
+            ? Array.Empty<VoiceExportEntry>()
+            : entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal).ToArray();
         var manifest = new VoiceExportManifest(
             DateTimeOffset.UtcNow,
-            entries.OrderBy(static entry => entry.OccurredAtUtc).ThenBy(static entry => entry.MessageId, StringComparer.Ordinal).ToArray(),
+            manifestEntries,
             failures.OrderBy(static failure => failure.MessageId ?? string.Empty, StringComparer.Ordinal)
                 .ThenBy(static failure => failure.Stage, StringComparer.Ordinal)
                 .ThenBy(static failure => failure.Error, StringComparer.Ordinal).ToArray(),
@@ -238,7 +255,7 @@ public sealed class VoiceExportService
                 Context: context,
                 Cancelled: runStatus == ExportRunStatus.Cancelled),
             CancellationToken.None).ConfigureAwait(false);
-        if (!commitFailed)
+        if (!commitFailed && (!runFailed || options.CompletionPolicy == ExportCompletionPolicy.BestEffort))
         {
             await journal.FinalizeAsync(manifest, CancellationToken.None).ConfigureAwait(false);
         }
@@ -314,20 +331,21 @@ public sealed class VoiceExportService
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private async Task DrainOneAsync(List<Task> activeExports, CancellationToken cancellationToken)
+    private async Task<bool> DrainOneAsync(List<Task<bool>> activeExports, CancellationToken cancellationToken)
     {
         var completed = await Task.WhenAny(activeExports).ConfigureAwait(false);
         activeExports.Remove(completed);
         try
         {
-            await completed.ConfigureAwait(false);
+            return await completed.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            return false;
         }
     }
 
-    private async Task ExportOneAsync(
+    private async Task<bool> ExportOneAsync(
         VoiceRecord record,
         VoiceQuery query,
         VoiceExportOptions options,
@@ -347,7 +365,7 @@ public sealed class VoiceExportService
             if (contextError is not null)
             {
                 await RecordFailureAsync(record, "context", contextError, runId, journal, failures, cancellationToken).ConfigureAwait(false);
-                return;
+                return false;
             }
 
             var eligibility = _eligibilityEvaluator.Evaluate(record, context, query);
@@ -362,20 +380,20 @@ public sealed class VoiceExportService
                     _ => eligibility.ReasonCode ?? "eligibility",
                 };
                 await RecordFailureAsync(record, stage, eligibility.Detail ?? "The voice record is not exportable.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
-                return;
+                return false;
             }
 
             if (record.SourceStableKey is null)
             {
                 await RecordFailureAsync(record, "identity", "The voice record lacks a complete SourceStableKey; reusable export is refused.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
-                return;
+                return false;
             }
 
             lease = await transaction.StageItemAsync(record, ExistingArtifactPolicy.SkipIfHashMatches, cancellationToken).ConfigureAwait(false);
             if (lease.OriginalState == ExportArtifactState.Conflict)
             {
                 await RecordFailureAsync(record, "source-content-mismatch", "The existing original artifact conflicts with the source expectation.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
-                return;
+                return false;
             }
 
             var originalArtifact = lease.OriginalState == ExportArtifactState.VerifiedExisting
@@ -396,12 +414,20 @@ public sealed class VoiceExportService
                     hasDecodeError = true;
                     qualityFlags.Add("decoder-not-configured");
                     await RecordFailureAsync(record, "decode", "WAV decoding was requested but no voice decoder was configured.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
+                    if (options.CompletionPolicy == ExportCompletionPolicy.ExactAllOrNothing)
+                    {
+                        return false;
+                    }
                 }
                 else if (lease.DecodedState == ExportArtifactState.Conflict)
                 {
                     hasDecodeError = true;
                     qualityFlags.Add("existing-decoded-conflict");
                     await RecordFailureAsync(record, "decode-existing", "The existing decoded artifact conflicts with the expected decoded content.", runId, journal, failures, cancellationToken).ConfigureAwait(false);
+                    if (options.CompletionPolicy == ExportCompletionPolicy.ExactAllOrNothing)
+                    {
+                        return false;
+                    }
                 }
                 else
                 {
@@ -425,20 +451,31 @@ public sealed class VoiceExportService
                         hasDecodeError = true;
                         qualityFlags.Add("source-content-mismatch");
                         await RecordFailureAsync(record, "source-content-mismatch", exception.Message, runId, journal, failures, cancellationToken).ConfigureAwait(false);
+                        if (options.CompletionPolicy == ExportCompletionPolicy.ExactAllOrNothing)
+                        {
+                            return false;
+                        }
                     }
                     catch (Exception exception)
                     {
                         hasDecodeError = true;
                         qualityFlags.Add("decode-error");
                         await RecordFailureAsync(record, "decode", exception.Message, runId, journal, failures, cancellationToken).ConfigureAwait(false);
+                        if (options.CompletionPolicy == ExportCompletionPolicy.ExactAllOrNothing)
+                        {
+                            return false;
+                        }
                     }
                 }
             }
 
             var entry = CreateEntry(record, originalArtifact, decodedArtifact, durationMs, hasDecodeError, qualityFlags, lease.OriginalState == ExportArtifactState.VerifiedExisting && (!options.DecodeToWav || lease.DecodedState == ExportArtifactState.VerifiedExisting));
-            entries.Enqueue(entry);
             await transaction.RecordEntryAsync(entry, cancellationToken).ConfigureAwait(false);
             entryRecorded = true;
+            // Keep the in-memory manifest projection only after its durable
+            // transaction binding has succeeded.
+            entries.Enqueue(entry);
+            return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -447,10 +484,12 @@ public sealed class VoiceExportService
         catch (SourceContentMismatchException exception)
         {
             await RecordFailureAsync(record, "source-content-mismatch", exception.Message, runId, journal, failures, cancellationToken).ConfigureAwait(false);
+            return false;
         }
         catch (Exception exception)
         {
             await RecordFailureAsync(record, "export", exception.Message, runId, journal, failures, cancellationToken).ConfigureAwait(false);
+            return false;
         }
         finally
         {
@@ -472,7 +511,9 @@ public sealed class VoiceExportService
             {
                 try
                 {
-                    await transaction.DiscardItemAsync(record.MessageId, CancellationToken.None).ConfigureAwait(false);
+                    await transaction.DiscardItemAsync(
+                        ExportItemTransactionKey.Compute(record.SourceStableKey!),
+                        CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception exception)
                 {

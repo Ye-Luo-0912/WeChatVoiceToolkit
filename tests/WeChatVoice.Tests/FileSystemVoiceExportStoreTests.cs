@@ -30,6 +30,33 @@ public sealed class FileSystemVoiceExportStoreTests
     }
 
     [Fact]
+    public async Task Shared_export_root_locks_block_an_exclusive_publisher_but_share_reads()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.GetPath("export");
+        await using var firstReader = await ExportRootLock.AcquireAsync(
+            root,
+            ExportRootLockMode.Shared,
+            "reader-one",
+            runId: null,
+            CancellationToken.None);
+        await using var secondReader = await ExportRootLock.AcquireAsync(
+            root,
+            ExportRootLockMode.Shared,
+            "reader-two",
+            runId: null,
+            CancellationToken.None);
+
+        await Assert.ThrowsAsync<ExportRootBusyException>(async () =>
+            await ExportRootLock.AcquireAsync(
+                root,
+                ExportRootLockMode.Exclusive,
+                "publisher",
+                runId: null,
+                CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Recovery_cleans_only_stale_unreferenced_staging_directories()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -177,7 +204,9 @@ public sealed class FileSystemVoiceExportStoreTests
             ExportPublishState.NotStarted,
             ExportArtifactState.Missing,
             ExportArtifactState.Missing,
-            entry);
+            entry,
+            ExportItemTransactionKey.Compute(entry.SourceStableKey!),
+            ExportTransactionItemState.ReadyToPublish);
         var transaction = new ExportTransactionDocument(
             runId,
             "operation-crashed",
@@ -215,6 +244,97 @@ public sealed class FileSystemVoiceExportStoreTests
             await File.ReadAllTextAsync(Path.Combine(runs, runId + ".transaction.json")),
             options);
         Assert.Equal(ExportTransactionState.Completed, recoveredTransaction!.State);
+    }
+
+    [Fact]
+    public async Task Recovery_rolls_back_a_prepared_item_without_durable_hash_and_entry()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.GetPath("export");
+        var store = new FileSystemVoiceExportStore(root);
+        var runId = "incomplete-prepared";
+        var stagedRelative = $"runs/.{runId}.staging/original/aa/bb/item.silk";
+        var finalRelative = "original/aa/bb/item.silk";
+        var stagedPath = temporary.GetPath("export", stagedRelative.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(stagedPath)!);
+        await File.WriteAllBytesAsync(stagedPath, [1, 2, 3]);
+
+        var transaction = new ExportTransactionDocument(
+            runId,
+            "operation-incomplete",
+            "selection",
+            ExportTransactionState.Prepared,
+            DateTimeOffset.UtcNow,
+            [new ExportTransactionItem(
+                "message",
+                "source-stable-key",
+                stagedRelative,
+                finalRelative,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                ExportPublishState.NotStarted,
+                ExportPublishState.NotStarted,
+                ExportArtifactState.Missing,
+                ExportArtifactState.Missing)]);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        };
+        var runs = temporary.GetPath("export", "runs");
+        Directory.CreateDirectory(runs);
+        await File.WriteAllTextAsync(
+            Path.Combine(runs, runId + ".transaction.json"),
+            JsonSerializer.Serialize(transaction, options));
+
+        await store.RecoverPendingTransactionsAsync(CancellationToken.None);
+
+        Assert.False(File.Exists(temporary.GetPath("export", finalRelative.Replace('/', Path.DirectorySeparatorChar))));
+        Assert.False(Directory.Exists(temporary.GetPath("export", "runs", "." + runId + ".staging")));
+        var recovered = JsonSerializer.Deserialize<ExportTransactionDocument>(
+            await File.ReadAllTextAsync(Path.Combine(runs, runId + ".transaction.json")),
+            options);
+        Assert.Equal(ExportTransactionState.RolledBack, recovered!.State);
+        Assert.Empty(recovered.Items);
+    }
+
+    [Fact]
+    public async Task Recovery_does_not_revive_an_empty_failed_transaction()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.GetPath("export");
+        var runs = Path.Combine(root, "runs");
+        Directory.CreateDirectory(runs);
+        var runId = "empty-failed-recovery";
+        var transactionPath = Path.Combine(runs, runId + ".transaction.json");
+        var journalPath = Path.Combine(runs, runId + ".jsonl");
+        var transaction = new ExportTransactionDocument(
+            runId,
+            "operation",
+            "selection",
+            ExportTransactionState.FailedRecoverable,
+            DateTimeOffset.UtcNow,
+            Array.Empty<ExportTransactionItem>(),
+            MetadataCommit: null,
+            FailureCode: "export-recovery-required");
+        await File.WriteAllTextAsync(transactionPath, JsonSerializer.Serialize(transaction));
+        await File.WriteAllTextAsync(journalPath, string.Empty);
+
+        await new FileSystemVoiceExportStore(root).RecoverPendingTransactionsAsync(CancellationToken.None);
+
+        var recovered = JsonSerializer.Deserialize<ExportTransactionDocument>(
+            await File.ReadAllTextAsync(transactionPath),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+            });
+        Assert.NotNull(recovered);
+        Assert.Equal(ExportTransactionState.RolledBack, recovered!.State);
+        Assert.Empty(recovered.Items);
+        Assert.False(File.Exists(Path.Combine(root, "latest.metadata-commit.json")));
     }
 
     [Fact]

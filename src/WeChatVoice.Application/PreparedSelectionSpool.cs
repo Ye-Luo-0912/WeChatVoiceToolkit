@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -44,6 +46,7 @@ public static class PreparedSelectionSpool
         var root = RootDirectory;
         Directory.CreateDirectory(root);
         EnsureNotReparsePoint(root);
+        EnsurePrivateDirectory(root);
         var path = Path.Combine(root, FilePrefix + Guid.NewGuid().ToString("N") + ".jsonl");
         return PreparedSelectionSpoolWriter.CreateAsync(path, cancellationToken);
     }
@@ -56,24 +59,7 @@ public static class PreparedSelectionSpool
         ValidateDescriptorPath(descriptor);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var fileInfo = new FileInfo(descriptor.Path);
-        if (!fileInfo.Exists
-            || fileInfo.Length != descriptor.ByteLength)
-        {
-            throw new AppFailureException(
-                ErrorCode.SelectionPlanMismatch,
-                "The prepared voice selection spool is missing or changed.");
-        }
-
-        var actualHash = await ComputeSha256Async(descriptor.Path, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(actualHash, descriptor.Sha256, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new AppFailureException(
-                ErrorCode.SelectionPlanMismatch,
-                "The prepared voice selection spool integrity check failed.");
-        }
-
-        var count = 0;
+        EnsurePrivateDirectory(Path.GetDirectoryName(descriptor.Path)!);
         await using var stream = new FileStream(
             descriptor.Path,
             FileMode.Open,
@@ -81,52 +67,68 @@ public static class PreparedSelectionSpool
             FileShare.Read,
             CopyBufferSize,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var byteLength = stream.Length;
+        using var hash = SHA256.Create();
+        await using var hashingStream = new CryptoStream(stream, hash, CryptoStreamMode.Read, leaveOpen: true);
         using var reader = new StreamReader(
-            stream,
+            hashingStream,
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
             detectEncodingFromByteOrderMarks: false,
             bufferSize: CopyBufferSize,
             leaveOpen: false);
-        while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+        var count = 0;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (line.Length == 0 || line.Length > MaximumLineLength)
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (line.Length == 0 || line.Length > MaximumLineLength)
+                {
+                    throw new AppFailureException(
+                        ErrorCode.SelectionPlanMismatch,
+                        "The prepared voice selection spool contains an invalid record.");
+                }
+
+                VoiceRecord? record;
+                try
+                {
+                    var serialized = JsonSerializer.Deserialize<SpoolVoiceRecord>(line, JsonOptions);
+                    record = serialized?.ToVoiceRecord();
+                }
+                catch (JsonException exception)
+                {
+                    throw new AppFailureException(
+                        ErrorCode.SelectionPlanMismatch,
+                        "The prepared voice selection spool contains invalid metadata.",
+                        exception);
+                }
+
+                if (record is null)
+                {
+                    throw new AppFailureException(
+                        ErrorCode.SelectionPlanMismatch,
+                        "The prepared voice selection spool contains an empty record.");
+                }
+
+                count++;
+                yield return record;
+            }
+
+            var actualHash = Convert.ToHexString(hash.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
+            if (byteLength != descriptor.ByteLength
+                || count != descriptor.RecordCount
+                || !string.Equals(actualHash, descriptor.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new AppFailureException(
                     ErrorCode.SelectionPlanMismatch,
-                    "The prepared voice selection spool contains an invalid record.");
+                    "The prepared voice selection spool changed during export preparation.");
             }
-
-            VoiceRecord? record;
-            try
-            {
-                var serialized = JsonSerializer.Deserialize<SpoolVoiceRecord>(line, JsonOptions);
-                record = serialized?.ToVoiceRecord();
-            }
-            catch (JsonException exception)
-            {
-                throw new AppFailureException(
-                    ErrorCode.SelectionPlanMismatch,
-                    "The prepared voice selection spool contains invalid metadata.",
-                    exception);
-            }
-
-            if (record is null)
-            {
-                throw new AppFailureException(
-                    ErrorCode.SelectionPlanMismatch,
-                    "The prepared voice selection spool contains an empty record.");
-            }
-
-            count++;
-            yield return record;
         }
-
-        if (count != descriptor.RecordCount)
+        finally
         {
-            throw new AppFailureException(
-                ErrorCode.SelectionPlanMismatch,
-                "The prepared voice selection spool record count changed.");
+            // Disposing the crypto reader closes the read lease before the
+            // iterator is released; no second open is needed for validation.
+            await hashingStream.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -216,42 +218,11 @@ public static class PreparedSelectionSpool
         }
 
         EnsureNotReparsePoint(Path.GetDirectoryName(path)!);
+        EnsurePrivateDirectory(Path.GetDirectoryName(path)!);
         if (File.Exists(path)
             && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
         {
             throw new AppFailureException(ErrorCode.SelectionPlanMismatch, "The prepared voice selection spool path is invalid.");
-        }
-    }
-
-    private static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)
-    {
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var buffer = ArrayPool<byte>.Shared.Rent(CopyBufferSize);
-        try
-        {
-            await using var stream = new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                CopyBufferSize,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            while (true)
-            {
-                var read = await stream.ReadAsync(buffer.AsMemory(0, CopyBufferSize), cancellationToken).ConfigureAwait(false);
-                if (read == 0)
-                {
-                    break;
-                }
-
-                hash.AppendData(buffer, 0, read);
-            }
-
-            return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
         }
     }
 
@@ -266,6 +237,29 @@ public static class PreparedSelectionSpool
         {
             throw new IOException("The prepared-selection spool directory cannot be a reparse point.");
         }
+    }
+
+    private static void EnsurePrivateDirectory(string path)
+    {
+        if (!OperatingSystem.IsWindows() || !Directory.Exists(path))
+        {
+            return;
+        }
+
+        var directory = new DirectoryInfo(path);
+        var security = directory.GetAccessControl();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        var currentUser = WindowsIdentity.GetCurrent().User
+            ?? throw new UnauthorizedAccessException("The current Windows user SID is unavailable.");
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var rights = FileSystemRights.Read
+            | FileSystemRights.Write
+            | FileSystemRights.Delete
+            | FileSystemRights.Synchronize
+            | FileSystemRights.ReadAndExecute;
+        security.AddAccessRule(new FileSystemAccessRule(currentUser, rights, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+        security.AddAccessRule(new FileSystemAccessRule(system, rights, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+        directory.SetAccessControl(security);
     }
 
     private static string EnsureTrailingSeparator(string path)
@@ -297,7 +291,7 @@ public static class PreparedSelectionSpool
                 path,
                 FileMode.CreateNew,
                 FileAccess.Write,
-                FileShare.Read,
+                FileShare.None,
                 CopyBufferSize,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
             return Task.FromResult(new PreparedSelectionSpoolWriter(path, stream));

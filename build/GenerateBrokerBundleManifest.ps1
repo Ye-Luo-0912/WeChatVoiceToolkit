@@ -6,6 +6,31 @@ param(
 $ErrorActionPreference = 'Stop'
 $Directory = [IO.Path]::GetFullPath($Directory.Trim().Trim('"'))
 . (Join-Path $PSScriptRoot '..\scripts\publisher-fingerprint.ps1')
+
+# MSBuild may invoke this target more than once for the same output directory
+# when the solution graph is built in parallel. Serialize manifest generation
+# across PowerShell processes so one invocation cannot truncate the manifest
+# while another invocation is hashing or writing it.
+$hashAlgorithm = [Security.Cryptography.SHA256]::Create()
+try {
+    $mutexSuffix = ([BitConverter]::ToString($hashAlgorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($Directory.ToLowerInvariant())))).Replace('-', '')
+}
+finally {
+    $hashAlgorithm.Dispose()
+}
+$manifestMutex = [Threading.Mutex]::new($false, "Local\WeChatVoiceToolkit-BundleManifest-$mutexSuffix")
+$manifestMutexHeld = $false
+try {
+    try {
+        $manifestMutexHeld = $manifestMutex.WaitOne([TimeSpan]::FromSeconds(60))
+    }
+    catch [Threading.AbandonedMutexException] {
+        $manifestMutexHeld = $true
+    }
+    if (-not $manifestMutexHeld) {
+        throw "Timed out waiting for bundle manifest generation lock: $Directory"
+    }
+
 $exe = Join-Path $Directory 'WeChatVoice.KeyBroker.exe'
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
     throw "Broker EXE was not produced: $exe"
@@ -104,3 +129,10 @@ $manifest = [ordered]@{
 }
 $json = $manifest | ConvertTo-Json -Depth 3
 [IO.File]::WriteAllText((Join-Path $Directory 'WeChatVoice.KeyBroker.bundle.json'), $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+}
+finally {
+    if ($manifestMutexHeld) {
+        $manifestMutex.ReleaseMutex()
+    }
+    $manifestMutex.Dispose()
+}

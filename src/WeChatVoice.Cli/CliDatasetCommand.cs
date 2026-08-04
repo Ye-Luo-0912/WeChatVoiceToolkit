@@ -78,10 +78,12 @@ internal static partial class CliApplication
         var profileOption = new Option<string?>("--profile") { Description = "Optional selection-profile.json path." };
         var manifestOption = new Option<string?>("--manifest") { Description = "Optional private export manifest path." };
         var outputOption = new Option<string?>("--output") { Description = "Optional curated dataset output directory." };
+        var linkedViewOption = new Option<bool>("--linked-view") { Description = "Advanced/non-portable: use hard links instead of independent copies." };
         buildCommand.Options.Add(exportRootOption);
         buildCommand.Options.Add(profileOption);
         buildCommand.Options.Add(manifestOption);
         buildCommand.Options.Add(outputOption);
+        buildCommand.Options.Add(linkedViewOption);
         buildCommand.SetAction(async (parseResult, cancellationToken) =>
         {
             try
@@ -92,10 +94,15 @@ internal static partial class CliApplication
                         parseResult.GetValue(exportRootOption)!,
                         parseResult.GetValue(profileOption),
                         parseResult.GetValue(manifestOption),
-                        parseResult.GetValue(outputOption)),
+                        parseResult.GetValue(outputOption),
+                        parseResult.GetValue(linkedViewOption) ? DatasetLinkMode.LinkedView : DatasetLinkMode.VerifiedCopy),
                     new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
                     cancellationToken).ConfigureAwait(false);
                 WriteJson(result);
+                if (result.LinkMode == DatasetLinkMode.LinkedView)
+                {
+                    Console.Error.WriteLine("WARNING: Linked View uses hard links, is not an independent portable dataset, and is marked read-only.");
+                }
                 return 0;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -109,6 +116,51 @@ internal static partial class CliApplication
                 return 1;
             }
         });
+
+        var deleteCommand = new Command("delete", "Delete only a verified derived curated dataset; never the export or source workspace.");
+        var deleteExportOption = new Option<string>("--export") { Description = "Export root containing the private manifest and profile.", Required = true };
+        var deleteOutputOption = new Option<string>("--output") { Description = "Curated dataset output directory.", Required = true };
+        var deleteFingerprintOption = new Option<string>("--selection-fingerprint") { Description = "Exact curation Selection Fingerprint.", Required = true };
+        var deleteYesOption = new Option<bool>("--yes") { Description = "Confirm the second destructive deletion step." };
+        deleteCommand.Options.Add(deleteExportOption);
+        deleteCommand.Options.Add(deleteOutputOption);
+        deleteCommand.Options.Add(deleteFingerprintOption);
+        deleteCommand.Options.Add(deleteYesOption);
+        deleteCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            try
+            {
+                await using var root = CreateRoot();
+                var request = new DatasetDeleteRequest(
+                    parseResult.GetValue(deleteExportOption)!,
+                    parseResult.GetValue(deleteOutputOption)!,
+                    parseResult.GetValue(deleteFingerprintOption)!,
+                    parseResult.GetValue(deleteYesOption));
+                var context = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
+                if (!request.Confirmed)
+                {
+                    var preview = await root.DatasetCuration.PreviewDeleteDatasetAsync(request, context, cancellationToken).ConfigureAwait(false);
+                    WriteJson(preview);
+                    Console.Error.WriteLine("Second confirmation required: rerun with --yes.");
+                    return 2;
+                }
+
+                var result = await root.DatasetCuration.DeleteDatasetAsync(request, context, cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return 0;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Dataset deletion was cancelled.");
+                return 130;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+        buildCommand.Subcommands.Add(deleteCommand);
         datasetCommand.Subcommands.Add(buildCommand);
 
         var verifyCommand = new Command("verify", "Verify a curated dataset's audio hashes and derived metadata without modifying it.");

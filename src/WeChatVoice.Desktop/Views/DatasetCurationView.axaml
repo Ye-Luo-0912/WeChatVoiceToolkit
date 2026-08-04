@@ -22,7 +22,7 @@
         <TextBox Width="110" Text="{Binding MaximumByteLengthText}" PlaceholderText="最大字节" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="8">
-        <CheckBox Content="包含未知时长" IsChecked="{Binding IncludeUnknownDuration}" />
+        <CheckBox Content="显示未知时长（不可选入训练集）" IsChecked="{Binding ShowUnknownDuration}" />
         <TextBox Width="360" Text="{Binding ExcludedQualityFlagsText}" PlaceholderText="排除质量标志（逗号分隔）" />
         <Button Content="应用筛选 / 加载" Command="{Binding LoadCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="加载 Profile" Command="{Binding LoadProfileCommand}" IsEnabled="{Binding CanStartOperation}" />
@@ -31,9 +31,12 @@
         <Button Content="构建训练数据集" Command="{Binding BuildDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="验证数据集" Command="{Binding VerifyDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="修复数据集元数据" Command="{Binding RepairDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
+        <TextBox Width="120" Text="{Binding DeleteConfirmationText}" PlaceholderText="输入 DELETE" />
+        <Button Content="删除派生数据集" Command="{Binding DeleteDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
       </StackPanel>
       <TextBlock Text="{Binding CurationSummary}" TextWrapping="Wrap" />
       <TextBlock Text="{Binding ProfileSummary}" TextWrapping="Wrap" />
+      <TextBlock Text="当前选择尚未保存；构建时会自动保存" IsVisible="{Binding SelectionDirty}" Foreground="DarkOrange" />
       <TextBlock Text="{Binding BuildSummary}" TextWrapping="Wrap" />
       <StackPanel Orientation="Horizontal" Spacing="24">
         <TextBlock Text="{Binding SelectedCount, StringFormat='已选：{0} 条'}" />

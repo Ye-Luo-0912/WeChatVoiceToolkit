@@ -5,6 +5,15 @@ using System.Text;
 
 namespace WeChatVoice.Core.Models;
 
+public enum DatasetLinkMode
+{
+    /// <summary>Independent byte-for-byte copy of the verified export artifact.</summary>
+    VerifiedCopy,
+
+    /// <summary>Advanced non-portable view sharing the source file through a hard link.</summary>
+    LinkedView,
+}
+
 /// <summary>
 /// User-controlled filters for dataset curation.  Successful export is never
 /// treated as implicit training selection; the profile's selected IDs are the
@@ -43,6 +52,8 @@ public sealed record DatasetCurationFilters
     public long? MinimumByteLength { get; }
     public long? MaximumByteLength { get; }
     public bool IncludeUnknownDuration { get; }
+    /// <summary>Unknown duration rows may be displayed, but are never training-eligible.</summary>
+    public bool ShowUnknownDuration => IncludeUnknownDuration;
     public bool IncomingOnly { get; }
     public IReadOnlyList<string> ExcludedQualityFlags { get; }
 
@@ -94,6 +105,7 @@ public sealed record DatasetSelectionProfile
             this.Filters,
             this.SelectedItemIds,
             this.DuplicateRepresentativeItemIds);
+        SemanticProfileHash = SelectionFingerprint;
     }
 
     public string ManifestSha256 { get; }
@@ -104,6 +116,7 @@ public sealed record DatasetSelectionProfile
     public DateTimeOffset UpdatedAtUtc { get; }
     public string ProfileVersion { get; }
     public string SelectionFingerprint { get; }
+    public string SemanticProfileHash { get; }
 
     private static IReadOnlyList<string> FreezeIds(IReadOnlyList<string>? values)
         => new ReadOnlyCollection<string>((values ?? Array.Empty<string>())
@@ -225,7 +238,27 @@ public sealed record DatasetBuildRequest(
     string ExportDirectory,
     string? ProfilePath = null,
     string? ManifestPath = null,
-    string? OutputDirectory = null);
+    string? OutputDirectory = null,
+    DatasetLinkMode LinkMode = DatasetLinkMode.VerifiedCopy,
+    DatasetSelectionProfile? Profile = null);
+
+public sealed record DatasetDeleteRequest(
+    string ExportDirectory,
+    string OutputDirectory,
+    string SelectionFingerprint,
+    bool Confirmed = false);
+
+public sealed record DatasetDeletePreview(
+    string OutputDirectory,
+    string SelectionFingerprint,
+    int ItemCount,
+    long TotalByteLength);
+
+public sealed record DatasetDeleteResult(
+    string OutputDirectory,
+    string SelectionFingerprint,
+    int ItemCount,
+    long TotalByteLength);
 
 public sealed record DatasetBuildRepairRequest(
     string ExportDirectory,
@@ -257,7 +290,8 @@ public sealed record DatasetBuildResult(
     int ItemCount,
     long TotalDurationMs,
     long TotalByteLength,
-    bool UsedHardLinks);
+    bool UsedHardLinks,
+    DatasetLinkMode LinkMode = DatasetLinkMode.VerifiedCopy);
 
 public sealed record DatasetBuildManifest
 {
@@ -270,7 +304,9 @@ public sealed record DatasetBuildManifest
         string? DatasetManifestSha256 = null,
         string? DatasetCsvSha256 = null,
         string? ProfileOutputSha256 = null,
-        string Format = "wechatvoice-dataset-build-v1")
+        string Format = "wechatvoice-dataset-build-v1",
+        DatasetLinkMode LinkMode = DatasetLinkMode.VerifiedCopy,
+        string? SemanticProfileHash = null)
     {
         this.SelectionFingerprint = SelectionFingerprint;
         this.SourceManifestSha256 = SourceManifestSha256;
@@ -281,6 +317,8 @@ public sealed record DatasetBuildManifest
         this.DatasetCsvSha256 = DatasetCsvSha256;
         this.ProfileOutputSha256 = ProfileOutputSha256;
         this.Format = Format;
+        this.LinkMode = LinkMode;
+        this.SemanticProfileHash = SemanticProfileHash ?? SelectionFingerprint;
     }
 
     public string SelectionFingerprint { get; }
@@ -292,6 +330,8 @@ public sealed record DatasetBuildManifest
     public string? DatasetCsvSha256 { get; }
     public string? ProfileOutputSha256 { get; }
     public string Format { get; }
+    public DatasetLinkMode LinkMode { get; }
+    public string SemanticProfileHash { get; }
 }
 
 public sealed record DatasetBuildItem(

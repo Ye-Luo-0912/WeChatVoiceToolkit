@@ -26,6 +26,25 @@ public enum ExportPublishState
     Failed,
 }
 
+public enum ExportCompletionPolicy
+{
+    /// <summary>Every prepared eligible item must succeed or the run is rolled back.</summary>
+    ExactAllOrNothing,
+
+    /// <summary>Successful items may be committed while failures remain in the manifest.</summary>
+    BestEffort,
+}
+
+public enum ExportTransactionItemState
+{
+    Created,
+    PayloadCommitted,
+    EntryBound,
+    ReadyToPublish,
+    Publishing,
+    Published,
+}
+
 /// <summary>
 /// Hash bindings for every derived metadata product. The descriptor is the
 /// single durable commit boundary for a run's manifests, CSV, and index.
@@ -58,7 +77,23 @@ public sealed record ExportTransactionItem(
     ExportPublishState DecodedPublishState,
     ExportArtifactState PreviousOriginalState,
     ExportArtifactState PreviousDecodedState,
-    VoiceExportEntry? Entry = null);
+    VoiceExportEntry? Entry = null,
+    string? TransactionKey = null,
+    ExportTransactionItemState ItemState = ExportTransactionItemState.Created);
+
+public static class ExportItemTransactionKey
+{
+    public static string Compute(string sourceStableKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStableKey);
+        return Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sourceStableKey)))
+            .ToLowerInvariant();
+    }
+
+    public static string? TryCompute(string? sourceStableKey)
+        => string.IsNullOrWhiteSpace(sourceStableKey) ? null : Compute(sourceStableKey);
+}
 
 public sealed record ExportTransactionDocument
 {
@@ -71,7 +106,8 @@ public sealed record ExportTransactionDocument
         IReadOnlyList<ExportTransactionItem>? Items = null,
         ExportMetadataCommitDescriptor? MetadataCommit = null,
         string? FailureCode = null,
-        string Format = "wechatvoice-export-transaction-v1")
+        string Format = "wechatvoice-export-transaction-v1",
+        bool ExplicitRollback = false)
     {
         this.RunId = RunId;
         this.OperationId = OperationId;
@@ -82,6 +118,7 @@ public sealed record ExportTransactionDocument
         this.MetadataCommit = MetadataCommit;
         this.FailureCode = FailureCode;
         this.Format = Format;
+        this.ExplicitRollback = ExplicitRollback;
     }
 
     public string RunId { get; }
@@ -93,4 +130,5 @@ public sealed record ExportTransactionDocument
     public ExportMetadataCommitDescriptor? MetadataCommit { get; }
     public string? FailureCode { get; }
     public string Format { get; }
+    public bool ExplicitRollback { get; }
 }

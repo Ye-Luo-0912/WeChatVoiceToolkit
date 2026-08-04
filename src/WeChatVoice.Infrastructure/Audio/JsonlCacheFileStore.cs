@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using WeChatVoice.Infrastructure.Serialization;
 
 namespace WeChatVoice.Infrastructure.Audio;
 
@@ -64,16 +65,11 @@ internal sealed class JsonlCacheFileStore
     internal async Task AppendLineAsync(string line, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(line);
-        await using var stream = new FileStream(
+        await DurableJsonlJournalWriter.AppendRawJsonLinesAsync(
             _path,
-            FileMode.Append,
-            FileAccess.Write,
-            FileShare.Read | FileShare.Delete,
-            16 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var bytes = Encoding.UTF8.GetBytes(line + Environment.NewLine);
-        await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            [line],
+            InfrastructureJson.Compact,
+            cancellationToken).ConfigureAwait(false);
     }
 
     internal async Task ReplaceAsync(

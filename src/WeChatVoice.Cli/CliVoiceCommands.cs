@@ -49,6 +49,10 @@ internal static partial class CliApplication
             Description = "Export format. The first available chain supports silk only.",
             DefaultValueFactory = _ => "silk",
         };
+        var bestEffortOption = new Option<bool>("--best-effort")
+        {
+            Description = "Advanced: commit successful items around failures. The default is exact all-or-nothing.",
+        };
         exportCommand.Options.Add(workspaceOption);
         exportCommand.Options.Add(outputOption);
         exportCommand.Options.Add(conversationOption);
@@ -58,6 +62,7 @@ internal static partial class CliApplication
         exportCommand.Options.Add(toOption);
         exportCommand.Options.Add(maximumResultsOption);
         exportCommand.Options.Add(formatOption);
+        exportCommand.Options.Add(bestEffortOption);
         exportCommand.SetAction(async (parseResult, cancellationToken) =>
         {
             var workspacePath = parseResult.GetValue(workspaceOption);
@@ -103,7 +108,11 @@ internal static partial class CliApplication
                 var exportContext = new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
                 var result = await root.VoiceExport.RunAsync(
                     prepared,
-                    new ExportDestination(output),
+                    new ExportDestination(
+                        output,
+                        parseResult.GetValue(bestEffortOption)
+                            ? ExportCompletionPolicy.BestEffort
+                            : ExportCompletionPolicy.ExactAllOrNothing),
                     exportContext,
                     cancellationToken).ConfigureAwait(false);
                 WriteJson(result.Manifest);

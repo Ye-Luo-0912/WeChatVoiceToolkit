@@ -184,6 +184,88 @@ public sealed class ExportMaintenanceTests
     }
 
     [Fact]
+    public async Task Dataset_build_is_an_independent_copy_and_reuses_same_semantic_profile()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow();
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+
+        var first = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root),
+            NewContext(),
+            CancellationToken.None);
+        var sourcePath = Path.Combine(export.Root, export.Entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar));
+        var sourceBytes = await File.ReadAllBytesAsync(sourcePath);
+        var datasetAudioPath = Path.Combine(first.OutputDirectory, "audio", itemId + ".silk");
+        var datasetBytes = await File.ReadAllBytesAsync(datasetAudioPath);
+        await File.WriteAllBytesAsync(datasetAudioPath, [9, 8, 7]);
+        Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(sourcePath));
+        await File.WriteAllBytesAsync(datasetAudioPath, datasetBytes);
+
+        // Rebuild a semantically identical profile with a different audit
+        // timestamp. The existing dataset identity remains reusable.
+        var rewrittenProfile = new DatasetSelectionProfile(
+            curated.Profile.ManifestSha256,
+            curated.Profile.RunId,
+            curated.Profile.Filters,
+            curated.Profile.SelectedItemIds,
+            curated.Profile.DuplicateRepresentativeItemIds,
+            UpdatedAtUtc: curated.Profile.UpdatedAtUtc.AddDays(1));
+        await curation.SaveProfileAsync(export.Root, rewrittenProfile, NewContext(), CancellationToken.None);
+        var reused = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root),
+            NewContext(),
+            CancellationToken.None);
+        Assert.Equal(first.OutputDirectory, reused.OutputDirectory);
+        Assert.Equal(DatasetLinkMode.VerifiedCopy, reused.LinkMode);
+    }
+
+    [Fact]
+    public async Task Dataset_delete_uses_the_dataset_profile_after_the_current_profile_changes()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow();
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+        var built = await curation.BuildDatasetAsync(new DatasetBuildRequest(export.Root), NewContext(), CancellationToken.None);
+
+        var changed = new DatasetSelectionProfile(
+            curated.Profile.ManifestSha256,
+            curated.Profile.RunId,
+            curated.Profile.Filters,
+            SelectedItemIds: [],
+            DuplicateRepresentativeItemIds: [],
+            UpdatedAtUtc: curated.Profile.UpdatedAtUtc.AddMinutes(1));
+        await curation.SaveProfileAsync(export.Root, changed, NewContext(), CancellationToken.None);
+
+        var deleted = await curation.DeleteDatasetAsync(
+            new DatasetDeleteRequest(
+                export.Root,
+                built.OutputDirectory,
+                curated.Profile.SelectionFingerprint,
+                Confirmed: true),
+            NewContext(),
+            CancellationToken.None);
+
+        Assert.Equal(built.OutputDirectory, deleted.OutputDirectory);
+        Assert.False(Directory.Exists(built.OutputDirectory));
+        Assert.True(File.Exists(Path.Combine(export.Root, export.Entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar))));
+    }
+
+    [Fact]
     public async Task Dataset_build_verify_and_repair_rebuild_only_derived_metadata()
     {
         using var temporary = new TestTemporaryDirectory();

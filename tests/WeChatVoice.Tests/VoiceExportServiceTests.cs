@@ -152,6 +152,36 @@ public sealed class VoiceExportServiceTests
     }
 
     [Fact]
+    public async Task ExactAllOrNothing_rolls_back_every_new_artifact_when_one_prepared_item_fails()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var successful = CreateRecord("exact-good", Hash([0x11, 0x22]), 2);
+        var broken = CreateRecord("exact-broken");
+        var exportRoot = temporary.GetPath("exact-export");
+        var service = new VoiceExportService(
+            new TestVoiceCatalog(
+            [
+                (successful, () => new MemoryStream([0x11, 0x22], writable: false)),
+                (broken, () => new FaultingReadStream()),
+            ]),
+            new FileSystemVoiceExportStore(exportRoot));
+
+        var manifest = await service.ExportAsync(
+            new VoiceQuery(),
+            new VoiceExportOptions
+            {
+                CompletionPolicy = ExportCompletionPolicy.ExactAllOrNothing,
+                MaxDegreeOfParallelism = 1,
+            });
+
+        Assert.Empty(manifest.Entries);
+        Assert.Equal(ExportRunStatus.Failed, manifest.RunStatus);
+        Assert.Contains(manifest.Failures, failure => failure.MessageId == broken.MessageId);
+        Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.silk", SearchOption.AllDirectories));
+        Assert.Empty(Directory.EnumerateFiles(exportRoot, "*.tmp", SearchOption.AllDirectories));
+    }
+
+    [Fact]
     public async Task ExportAsync_can_add_decoded_artifact_when_original_is_already_verified()
     {
         using var temporary = new TestTemporaryDirectory();

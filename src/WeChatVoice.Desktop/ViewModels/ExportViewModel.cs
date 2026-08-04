@@ -133,17 +133,6 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 throw new AppFailureException(ErrorCode.InvalidRequest, "Contact or scan selection changed while exporting; review the plan and run again.");
             }
 
-            Services.Project.LastExportRun = result;
-            Services.Project.Workspace = result.Workspace;
-            Services.Project.ExportDirectory = outputDirectory;
-            ManifestPath = string.IsNullOrWhiteSpace(outputDirectory)
-                ? null
-                : Path.Combine(Path.GetFullPath(outputDirectory), "runs", result.Manifest.RunId + ".dataset.manifest.json");
-            if (!string.IsNullOrWhiteSpace(outputDirectory)
-                && !string.IsNullOrWhiteSpace(Services.Project.WorkspacePath))
-            {
-                Services.RecentWorkspaces.SetLastExportDirectory(Services.Project.WorkspacePath, outputDirectory);
-            }
             var manifest = result.Manifest;
             ExportedCount = manifest.Entries.Count(static entry => !entry.WasSkipped);
             SkippedCount = manifest.Entries.Count(static entry => entry.WasSkipped);
@@ -158,6 +147,27 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 ExportRunStatus.Cancelled => $"导出已取消：已完成 {ExportedCount} 条",
                 _ => $"导出失败：{FailureCount} 条",
             };
+
+            // ExactAllOrNothing returns a failure manifest for presentation,
+            // but it has no committed export to promote into the application
+            // project. Keep the previous successful project/export intact so
+            // Dataset Curation cannot navigate into an uncommitted run.
+            if (manifest.RunStatus == ExportRunStatus.Failed)
+            {
+                return;
+            }
+
+            Services.Project.LastExportRun = result;
+            Services.Project.Workspace = result.Workspace;
+            Services.Project.ExportDirectory = outputDirectory;
+            ManifestPath = string.IsNullOrWhiteSpace(outputDirectory)
+                ? null
+                : Path.Combine(Path.GetFullPath(outputDirectory), "runs", result.Manifest.RunId + ".dataset.manifest.json");
+            if (!string.IsNullOrWhiteSpace(outputDirectory)
+                && !string.IsNullOrWhiteSpace(Services.Project.WorkspacePath))
+            {
+                Services.RecentWorkspaces.SetLastExportDirectory(Services.Project.WorkspacePath, outputDirectory);
+            }
         });
     }
 

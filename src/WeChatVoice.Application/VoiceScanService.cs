@@ -67,26 +67,6 @@ public sealed class VoiceScanService
                 bypassCatalogDeepScan: _payloadHashResolver is not null,
                 cancellationToken: cancellationToken).ConfigureAwait(false))
             {
-                if (spoolWriter is null && records.Count < PreparedSelectionSpool.InMemoryRecordLimit)
-                {
-                    records.Add(record);
-                }
-                else
-                {
-                    if (spoolWriter is null)
-                    {
-                        spoolWriter = await PreparedSelectionSpool.CreateWriterAsync(cancellationToken).ConfigureAwait(false);
-                        foreach (var preparedRecord in records)
-                        {
-                            await spoolWriter.AppendAsync(preparedRecord, cancellationToken).ConfigureAwait(false);
-                        }
-
-                        records.Clear();
-                    }
-
-                    await spoolWriter.AppendAsync(record, cancellationToken).ConfigureAwait(false);
-                }
-
                 count++;
                 if (record.DurationMs is > 0)
                 {
@@ -102,6 +82,29 @@ public sealed class VoiceScanService
                 var eligibility = eligibilityEvaluator.Evaluate(record, _catalog.Context, query);
                 if (eligibility.IsEligible)
                 {
+                    // Prepared Selection is the exact export input. Keep
+                    // rejected/missing/ambiguous rows in the report only so a
+                    // formal export cannot rediscover a known failure later.
+                    if (spoolWriter is null && records.Count < PreparedSelectionSpool.InMemoryRecordLimit)
+                    {
+                        records.Add(record);
+                    }
+                    else
+                    {
+                        if (spoolWriter is null)
+                        {
+                            spoolWriter = await PreparedSelectionSpool.CreateWriterAsync(cancellationToken).ConfigureAwait(false);
+                            foreach (var preparedRecord in records)
+                            {
+                                await spoolWriter.AppendAsync(preparedRecord, cancellationToken).ConfigureAwait(false);
+                            }
+
+                            records.Clear();
+                        }
+
+                        await spoolWriter.AppendAsync(record, cancellationToken).ConfigureAwait(false);
+                    }
+
                     resultSetFingerprint.Append(record);
                     exportable++;
                     totalPayloadBytes = checked(totalPayloadBytes + (record.PayloadByteLength ?? 0));

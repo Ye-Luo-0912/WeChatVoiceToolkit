@@ -266,7 +266,9 @@ public sealed record PreparedVoiceSelection
 
 public sealed record ExportDestination
 {
-    public ExportDestination(string OutputDirectory)
+    public ExportDestination(
+        string OutputDirectory,
+        ExportCompletionPolicy CompletionPolicy = ExportCompletionPolicy.ExactAllOrNothing)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(OutputDirectory);
         if (!Path.IsPathFullyQualified(OutputDirectory))
@@ -275,7 +277,9 @@ public sealed record ExportDestination
         }
 
         this.OutputDirectory = Path.GetFullPath(OutputDirectory);
+        this.CompletionPolicy = CompletionPolicy;
     }
 
     public string OutputDirectory { get; }
+    public ExportCompletionPolicy CompletionPolicy { get; }
 }

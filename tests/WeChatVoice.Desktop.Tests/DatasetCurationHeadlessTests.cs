@@ -52,12 +52,11 @@ public sealed class DatasetCurationHeadlessTests
         Assert.Equal(1, viewModel.SelectedCount);
         Assert.Equal(100, viewModel.SelectedDurationMs);
 
-        Task? saveTask = null;
-        HeadlessTestHost.Dispatch(() => { saveTask = viewModel.SaveProfileCommand.ExecuteAsync(null); });
-        await saveTask!;
+        Assert.True(viewModel.SelectionDirty);
         Task? buildTask = null;
         HeadlessTestHost.Dispatch(() => { buildTask = viewModel.BuildDatasetCommand.ExecuteAsync(null); });
         await buildTask!;
+        Assert.False(viewModel.SelectionDirty);
         Assert.False(string.IsNullOrWhiteSpace(viewModel.DatasetOutputDirectory));
         Assert.True(File.Exists(Path.Combine(viewModel.DatasetOutputDirectory!, "dataset.csv")));
 

@@ -218,7 +218,8 @@ public sealed record VoiceExportWorkflowRequest(
     long? MaximumDurationMs = null,
     long? MinimumPayloadBytes = null,
     long? MaximumPayloadBytes = null,
-    bool ResolveDurations = false);
+    bool ResolveDurations = false,
+    ExportCompletionPolicy CompletionPolicy = ExportCompletionPolicy.ExactAllOrNothing);
 
 public sealed record VoiceExportWorkflowResult(
     VoiceExportManifest Manifest,

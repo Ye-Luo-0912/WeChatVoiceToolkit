@@ -24,7 +24,7 @@ public interface IExportRunTransaction
     /// entry. Failed work must not remain in the durable transaction document
     /// as an unresolved artifact that blocks crash recovery.
     /// </summary>
-    Task DiscardItemAsync(string messageId, CancellationToken cancellationToken);
+    Task DiscardItemAsync(string transactionKey, CancellationToken cancellationToken);
 
     Task CommitAsync(CancellationToken cancellationToken);
 

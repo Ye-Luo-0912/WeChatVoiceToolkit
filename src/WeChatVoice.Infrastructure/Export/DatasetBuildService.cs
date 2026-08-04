@@ -8,8 +8,10 @@ using WeChatVoice.Infrastructure.Serialization;
 namespace WeChatVoice.Infrastructure.Export;
 
 /// <summary>
-/// Builds a derived, portable training dataset from a verified export and an
-/// explicit selection profile. Original export artifacts are never modified.
+/// Builds a derived training dataset from a verified export and an explicit
+/// selection profile. VerifiedCopy is the default and keeps the dataset
+/// independent from the original export; LinkedView is an explicit advanced
+/// mode and is never presented as a portable independent copy.
 /// </summary>
 public sealed class DatasetBuildService
 {
@@ -64,6 +66,7 @@ public sealed class DatasetBuildService
             manifestPath,
             manifestSha256,
             profileSha256,
+            request.LinkMode,
             cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
@@ -79,7 +82,7 @@ public sealed class DatasetBuildService
         Directory.CreateDirectory(parent);
         CleanupStagingDirectories(parent, Path.GetFileName(outputRoot));
         var stagingRoot = Path.Combine(parent, "." + Path.GetFileName(outputRoot) + ".staging-" + Guid.NewGuid().ToString("N"));
-        var usedHardLinks = true;
+        var usedHardLinks = false;
         try
         {
             Directory.CreateDirectory(Path.Combine(stagingRoot, "audio"));
@@ -98,10 +101,17 @@ public sealed class DatasetBuildService
                 var sourceMetadata = await VerifyArtifactAsync(sourcePath, entry.OriginalByteLength, entry.OriginalSha256, cancellationToken).ConfigureAwait(false);
                 var relativeAudioPath = "audio/" + itemId + ".silk";
                 var destinationPath = ExportPathSafety.CombineUnderRoot(stagingRoot, relativeAudioPath);
-                if (!TryCreateHardLink(destinationPath, sourcePath))
+                if (request.LinkMode == DatasetLinkMode.LinkedView)
                 {
-                    usedHardLinks = false;
-                    TryDeleteFile(destinationPath);
+                    if (!TryCreateHardLink(destinationPath, sourcePath))
+                    {
+                        throw new AppFailureException(ErrorCode.InvalidRequest, "The requested Linked View could not create a hard link.");
+                    }
+
+                    usedHardLinks = true;
+                }
+                else
+                {
                     await CopyAsync(sourcePath, destinationPath, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -113,7 +123,7 @@ public sealed class DatasetBuildService
                     outputMetadata.ByteLength,
                     entry.DurationMs,
                     entry.QualityFlags,
-                    entry.TrainingEligibility,
+                    TrainingEligibility.Eligible,
                     Selected: true));
                 buildItems.Add(new DatasetBuildItem(itemId, relativeAudioPath, outputMetadata.Sha256, outputMetadata.ByteLength, entry.DurationMs));
             }
@@ -139,11 +149,17 @@ public sealed class DatasetBuildService
                     buildItems,
                     datasetManifestSha256,
                     datasetCsvSha256,
-                    profileOutputSha256),
+                    profileOutputSha256,
+                    LinkMode: request.LinkMode,
+                    SemanticProfileHash: profile.SemanticProfileHash),
                 JsonOptions,
                 cancellationToken).ConfigureAwait(false);
 
             Directory.Move(stagingRoot, outputRoot);
+            if (request.LinkMode == DatasetLinkMode.LinkedView)
+            {
+                MarkLinkedViewDirectoryReadOnly(outputRoot);
+            }
             return new DatasetBuildResult(
                 outputRoot,
                 profile.SelectionFingerprint,
@@ -154,12 +170,168 @@ public sealed class DatasetBuildService
                 datasetItems.Count,
                 datasetManifest.TotalDurationMs,
                 datasetManifest.TotalByteLength,
-                usedHardLinks);
+                usedHardLinks,
+                request.LinkMode);
         }
         finally
         {
             TryDeleteDirectory(stagingRoot);
         }
+    }
+
+    public async Task<DatasetDeletePreview> PreviewDeleteAsync(
+        DatasetDeleteRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var exportRoot = Path.GetFullPath(request.ExportDirectory);
+        var outputRoot = Path.GetFullPath(request.OutputDirectory);
+        EnsureDatasetOutputUnderRoot(exportRoot, outputRoot);
+        if (!Directory.Exists(exportRoot) || !Directory.Exists(outputRoot))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset directory does not exist.");
+        }
+
+        await using var rootLock = await ExportRootLock.AcquireAsync(
+            exportRoot,
+            ExportRootLockMode.Exclusive,
+            Guid.NewGuid().ToString("N"),
+            runId: null,
+            cancellationToken).ConfigureAwait(false);
+        return await ValidateDeleteAsync(request, exportRoot, outputRoot, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<DatasetDeleteResult> DeleteAsync(
+        DatasetDeleteRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var exportRoot = Path.GetFullPath(request.ExportDirectory);
+        var outputRoot = Path.GetFullPath(request.OutputDirectory);
+        EnsureDatasetOutputUnderRoot(exportRoot, outputRoot);
+        if (!Directory.Exists(exportRoot) || !Directory.Exists(outputRoot))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset directory does not exist.");
+        }
+
+        await using var rootLock = await ExportRootLock.AcquireAsync(
+            exportRoot,
+            ExportRootLockMode.Exclusive,
+            Guid.NewGuid().ToString("N"),
+            runId: null,
+            cancellationToken).ConfigureAwait(false);
+        var preview = await ValidateDeleteAsync(request, exportRoot, outputRoot, cancellationToken).ConfigureAwait(false);
+        if (!request.Confirmed)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "A second explicit confirmation is required before deleting the derived dataset.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        ClearReadOnlyAttributes(outputRoot);
+        Directory.Delete(outputRoot, recursive: true);
+        if (Directory.Exists(outputRoot))
+        {
+            throw new IOException("The curated dataset directory could not be deleted completely.");
+        }
+
+        return new DatasetDeleteResult(
+            preview.OutputDirectory,
+            preview.SelectionFingerprint,
+            preview.ItemCount,
+            preview.TotalByteLength);
+    }
+
+    private static async Task<DatasetDeletePreview> ValidateDeleteAsync(
+        DatasetDeleteRequest request,
+        string exportRoot,
+        string outputRoot,
+        CancellationToken cancellationToken)
+    {
+        if ((File.GetAttributes(outputRoot) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset directory cannot be a reparse point.");
+        }
+        EnsureNoReparsePoints(outputRoot);
+
+        var outputProfilePath = Path.Combine(outputRoot, "selection-profile.json");
+        if (!File.Exists(outputProfilePath))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset selection profile is missing.");
+        }
+
+        // Deleting a previously built dataset must not depend on whichever
+        // selection profile happens to be current at the export root now.
+        // The output's own profile and build manifest are the identity being
+        // deleted; the source private manifest is still required and is
+        // located by its bound run/hash.
+        var outputProfile = await ReadAsync<DatasetSelectionProfile>(outputProfilePath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(outputProfile.SelectionFingerprint, request.SelectionFingerprint, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The requested dataset selection fingerprint does not match the dataset profile.");
+        }
+
+        var sourceManifestPath = await ResolveBoundSourceManifestAsync(exportRoot, outputProfile, cancellationToken).ConfigureAwait(false);
+        var sourceManifestSha256 = await FileHashing.ComputeSha256Async(sourceManifestPath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(sourceManifestSha256, outputProfile.ManifestSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The dataset source manifest no longer matches its recorded binding.");
+        }
+
+        var verified = await TryVerifyExistingAsync(
+            outputRoot,
+            outputProfile,
+            sourceManifestPath,
+            outputProfile.ManifestSha256,
+            await FileHashing.ComputeSha256Async(outputProfilePath, cancellationToken).ConfigureAwait(false),
+            linkMode: null,
+            cancellationToken).ConfigureAwait(false);
+        if (verified is null
+            || !string.Equals(verified.SelectionFingerprint, request.SelectionFingerprint, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset build manifest or audio files failed verification.");
+        }
+
+        return new DatasetDeletePreview(
+            outputRoot,
+            verified.SelectionFingerprint,
+            verified.ItemCount,
+            verified.TotalByteLength);
+    }
+
+    private static async Task<string> ResolveBoundSourceManifestAsync(
+        string exportRoot,
+        DatasetSelectionProfile profile,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(profile.RunId)
+            || profile.RunId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The dataset profile contains an invalid source run identity.");
+        }
+
+        var candidates = new[]
+        {
+            Path.Combine(exportRoot, "runs", ExportManifestLayout.RunPrivateManifestFileName(profile.RunId)),
+            Path.Combine(exportRoot, ExportManifestLayout.PrivateManifestFileName),
+        };
+        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!File.Exists(candidate)
+                || (File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0)
+            {
+                continue;
+            }
+
+            if (string.Equals(
+                    await FileHashing.ComputeSha256Async(candidate, cancellationToken).ConfigureAwait(false),
+                    profile.ManifestSha256,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return candidate;
+            }
+        }
+
+        throw new AppFailureException(ErrorCode.InvalidRequest, "The dataset's bound private export manifest is missing or changed.");
     }
 
     public async Task<DatasetBuildVerificationResult> VerifyAsync(
@@ -201,6 +373,7 @@ public sealed class DatasetBuildService
                 inputs.ManifestPath,
                 inputs.ManifestSha256,
                 inputs.ProfileSha256,
+                linkMode: null,
                 cancellationToken).ConfigureAwait(false);
             return existing is null
                 ? InvalidVerification(outputRoot, "dataset-invalid", null, "The curated dataset is missing or failed verification.")
@@ -244,18 +417,41 @@ public sealed class DatasetBuildService
             {
                 return InvalidVerification(outputRoot, "dataset-reparse-point", null, "The curated dataset directory cannot be a reparse point.");
             }
+            try
+            {
+                EnsureNoReparsePoints(outputRoot);
+            }
+            catch (AppFailureException exception)
+            {
+                return InvalidVerification(outputRoot, "dataset-reparse-point", null, exception.Message);
+            }
 
             var inputs = await LoadInputsAsync(
                 exportRoot,
                 request.ManifestPath,
                 request.ProfilePath,
                 cancellationToken).ConfigureAwait(false);
+            var existingBuildPath = Path.Combine(outputRoot, "build-manifest.json");
+            DatasetBuildManifest? existingBuild = null;
+            if (File.Exists(existingBuildPath))
+            {
+                existingBuild = await ReadAsync<DatasetBuildManifest>(existingBuildPath, cancellationToken).ConfigureAwait(false);
+            }
+            if (existingBuild?.LinkMode == DatasetLinkMode.LinkedView)
+            {
+                ClearReadOnlyAttributes(outputRoot);
+            }
             var selected = CreateSelectedItems(inputs);
             var expectedAudioPaths = selected
                 .Select(static item => item.RelativeAudioPath.Replace('/', Path.DirectorySeparatorChar))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (HasUnexpectedAudioFiles(outputRoot, expectedAudioPaths))
             {
+                if (existingBuild?.LinkMode == DatasetLinkMode.LinkedView)
+                {
+                    MarkLinkedViewDirectoryReadOnly(outputRoot);
+                }
+
                 return InvalidVerification(outputRoot, "dataset-audio-set-invalid", null, "The curated dataset contains missing, extra, or unsafe audio files.");
             }
 
@@ -276,7 +472,7 @@ public sealed class DatasetBuildService
                     metadata.ByteLength,
                     selectedItem.Entry.DurationMs,
                     selectedItem.Entry.QualityFlags,
-                    selectedItem.Entry.TrainingEligibility,
+                    TrainingEligibility.Eligible,
                     Selected: true));
             }
 
@@ -309,9 +505,15 @@ public sealed class DatasetBuildService
                     buildItems,
                     await FileHashing.ComputeSha256Async(datasetManifestPath, cancellationToken).ConfigureAwait(false),
                     await FileHashing.ComputeSha256Async(datasetCsvPath, cancellationToken).ConfigureAwait(false),
-                    await FileHashing.ComputeSha256Async(profileOutputPath, cancellationToken).ConfigureAwait(false)),
+                    await FileHashing.ComputeSha256Async(profileOutputPath, cancellationToken).ConfigureAwait(false),
+                    LinkMode: existingBuild?.LinkMode ?? DatasetLinkMode.VerifiedCopy,
+                    SemanticProfileHash: inputs.Profile.SemanticProfileHash),
                 JsonOptions,
                 cancellationToken).ConfigureAwait(false);
+            if (existingBuild?.LinkMode == DatasetLinkMode.LinkedView)
+            {
+                MarkLinkedViewDirectoryReadOnly(outputRoot);
+            }
         }
 
         return await VerifyAsync(
@@ -354,6 +556,11 @@ public sealed class DatasetBuildService
         if (profile.SelectedItemIds.Any(itemId => !entries.ContainsKey(itemId)))
         {
             throw new AppFailureException(ErrorCode.InvalidRequest, "The selection profile references an item outside the export manifest.");
+        }
+
+        if (manifest.Entries.Any(static entry => string.IsNullOrWhiteSpace(entry.SourceStableKey)))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The private export manifest contains an item without a stable source identity.");
         }
 
         return new BuildInputs(exportRoot, manifestPath, profilePath, manifestSha256, profileSha256, manifest, profile, entries);
@@ -482,6 +689,7 @@ public sealed class DatasetBuildService
         string manifestPath,
         string manifestSha256,
         string profileSha256,
+        DatasetLinkMode? linkMode,
         CancellationToken cancellationToken)
     {
         if (Directory.Exists(outputRoot)
@@ -499,7 +707,8 @@ public sealed class DatasetBuildService
         var build = await ReadAsync<DatasetBuildManifest>(buildManifestPath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(build.SelectionFingerprint, profile.SelectionFingerprint, StringComparison.Ordinal)
             || !string.Equals(build.SourceManifestSha256, manifestSha256, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(build.ProfileSha256, profileSha256, StringComparison.OrdinalIgnoreCase))
+            || !string.Equals(build.SemanticProfileHash, profile.SemanticProfileHash, StringComparison.Ordinal)
+            || linkMode is not null && build.LinkMode != linkMode.Value)
         {
             return null;
         }
@@ -512,7 +721,8 @@ public sealed class DatasetBuildService
             || !File.Exists(profileOutputPath)
             || string.IsNullOrWhiteSpace(build.DatasetManifestSha256)
             || string.IsNullOrWhiteSpace(build.DatasetCsvSha256)
-            || string.IsNullOrWhiteSpace(build.ProfileOutputSha256))
+            || string.IsNullOrWhiteSpace(build.ProfileOutputSha256)
+            )
         {
             return null;
         }
@@ -528,13 +738,15 @@ public sealed class DatasetBuildService
             || !string.Equals(
                 await FileHashing.ComputeSha256Async(profileOutputPath, cancellationToken).ConfigureAwait(false),
                 build.ProfileOutputSha256,
-                StringComparison.OrdinalIgnoreCase))
+                StringComparison.OrdinalIgnoreCase)
+            )
         {
             return null;
         }
 
         var outputProfile = await ReadAsync<DatasetSelectionProfile>(profileOutputPath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(outputProfile.SelectionFingerprint, profile.SelectionFingerprint, StringComparison.Ordinal)
+            || !string.Equals(outputProfile.SemanticProfileHash, profile.SemanticProfileHash, StringComparison.Ordinal)
             || !outputProfile.SelectedItemIds.SequenceEqual(profile.SelectedItemIds, StringComparer.OrdinalIgnoreCase))
         {
             return null;
@@ -587,7 +799,8 @@ public sealed class DatasetBuildService
             build.Items.Count,
             duration,
             bytes,
-            UsedHardLinks: false);
+            UsedHardLinks: build.LinkMode == DatasetLinkMode.LinkedView,
+            LinkMode: build.LinkMode);
     }
 
     private static async Task<T> ReadAsync<T>(string path, CancellationToken cancellationToken)
@@ -709,6 +922,87 @@ public sealed class DatasetBuildService
         if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
         {
             throw new AppFailureException(ErrorCode.InvalidRequest, "The dataset path must remain inside the export directory.");
+        }
+    }
+
+    private static void EnsureDatasetOutputUnderRoot(string exportRoot, string outputRoot)
+    {
+        var datasetsRoot = Path.GetFullPath(Path.Combine(exportRoot, "datasets"));
+        if (Directory.Exists(datasetsRoot)
+            && (File.GetAttributes(datasetsRoot) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The export datasets directory cannot be a reparse point.");
+        }
+
+        var prefix = datasetsRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!outputRoot.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(outputRoot, datasetsRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The dataset output must be a derived child of exportRoot/datasets.");
+        }
+    }
+
+    private static void MarkLinkedViewDirectoryReadOnly(string outputRoot)
+    {
+        if (!Directory.Exists(outputRoot)
+            || (File.GetAttributes(outputRoot) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The Linked View output cannot be a reparse point.");
+        }
+
+        File.SetAttributes(outputRoot, File.GetAttributes(outputRoot) | FileAttributes.ReadOnly);
+    }
+
+    private static void ClearReadOnlyAttributes(string outputRoot)
+    {
+        if (!Directory.Exists(outputRoot))
+        {
+            return;
+        }
+
+        foreach (var path in Directory.EnumerateFiles(outputRoot, "*", SearchOption.AllDirectories))
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0)
+            {
+                File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
+            }
+        }
+
+        foreach (var path in Directory.EnumerateDirectories(outputRoot, "*", SearchOption.AllDirectories))
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0)
+            {
+                File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
+            }
+        }
+
+        File.SetAttributes(outputRoot, File.GetAttributes(outputRoot) & ~FileAttributes.ReadOnly);
+    }
+
+    private static void EnsureNoReparsePoints(string root)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            foreach (var directory in Directory.EnumerateDirectories(current, "*", SearchOption.TopDirectoryOnly))
+            {
+                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset contains a reparse point.");
+                }
+
+                pending.Push(directory);
+            }
+
+            foreach (var file in Directory.EnumerateFiles(current, "*", SearchOption.TopDirectoryOnly))
+            {
+                if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new AppFailureException(ErrorCode.InvalidRequest, "The curated dataset contains a reparse point.");
+                }
+            }
         }
     }
 

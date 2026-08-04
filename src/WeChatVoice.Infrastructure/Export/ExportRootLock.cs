@@ -75,7 +75,10 @@ public sealed class ExportRootLock : IAsyncDisposable
                     path,
                     FileMode.OpenOrCreate,
                     mode == ExportRootLockMode.Exclusive ? FileAccess.ReadWrite : FileAccess.Read,
-                    mode == ExportRootLockMode.Exclusive ? FileShare.None : FileShare.ReadWrite,
+                    // Shared readers may share read access with one another,
+                    // but they must deny write access so an exclusive
+                    // publisher cannot enter while a verifier is reading.
+                    mode == ExportRootLockMode.Exclusive ? FileShare.None : FileShare.Read,
                     4096,
                     FileOptions.Asynchronous | FileOptions.SequentialScan);
             }

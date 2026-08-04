@@ -70,6 +70,7 @@ public sealed class VoiceExportWorkflow(
             var options = new VoiceExportOptions
             {
                 DecodeToWav = false,
+                CompletionPolicy = destination.CompletionPolicy,
                 ExpectedResultSetFingerprint = plan.ResultSetFingerprint,
                 ExpectedResultCount = plan.ResultCount,
                 ExpectedTotalPayloadBytes = plan.TotalPayloadBytes,
@@ -83,14 +84,40 @@ public sealed class VoiceExportWorkflow(
                         ? await service.ExportPreparedAsync(query, options, plan.Records, cancellationToken).ConfigureAwait(false)
                         : await service.ExportAsync(query, options, cancellationToken).ConfigureAwait(false);
             }
-            finally
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 if (plan.Spool is not null)
                 {
                     await PreparedSelectionSpool.DeleteAsync(plan.Spool, cleanupQueue, CancellationToken.None).ConfigureAwait(false);
                 }
+
+                throw;
             }
-            context.StateMachine.TryComplete();
+            catch (Core.Errors.AppFailureException exception) when (exception.Code == Core.Errors.ErrorCode.SelectionPlanMismatch)
+            {
+                if (plan.Spool is not null)
+                {
+                    await PreparedSelectionSpool.DeleteAsync(plan.Spool, cleanupQueue, CancellationToken.None).ConfigureAwait(false);
+                }
+
+                throw;
+            }
+            if (plan.Spool is not null && manifest.RunStatus != ExportRunStatus.Failed)
+            {
+                // A completed run owns no further retry state; remove the
+                // private spool only after a completed result is available.
+                // An exact export failure deliberately retains the immutable
+                // plan so the user can retry without scanning a large history.
+                await PreparedSelectionSpool.DeleteAsync(plan.Spool, cleanupQueue, CancellationToken.None).ConfigureAwait(false);
+            }
+            if (manifest.RunStatus == ExportRunStatus.Failed)
+            {
+                context.StateMachine.TryFail();
+            }
+            else
+            {
+                context.StateMachine.TryComplete();
+            }
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing);
             return new VoiceExportWorkflowResult(manifest, session.Workspace);
         }
@@ -98,6 +125,16 @@ public sealed class VoiceExportWorkflow(
         {
             context.StateMachine.TryCancel();
             context.Report(OperationPhase.VoiceExport, OperationStageIds.Starting, "导出已取消");
+            throw;
+        }
+        catch (Core.Errors.AppFailureException exception) when (exception.Code == Core.Errors.ErrorCode.SelectionPlanMismatch)
+        {
+            if (plan.Spool is not null)
+            {
+                await PreparedSelectionSpool.DeleteAsync(plan.Spool, cleanupQueue, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            context.StateMachine.TryFail();
             throw;
         }
         catch
@@ -160,7 +197,23 @@ public sealed class VoiceExportWorkflow(
         }
         var prepared = scanResult.Selection
             ?? throw new InvalidDataException("The compatibility scan did not produce a prepared selection.");
-        return await RunAsync(prepared, new ExportDestination(request.OutputDirectory), context, cancellationToken).ConfigureAwait(false);
+        if ((request.ExpectedResultSetFingerprint is not null
+                && !string.Equals(request.ExpectedResultSetFingerprint, prepared.ResultSetFingerprint, StringComparison.OrdinalIgnoreCase))
+            || (request.ExpectedResultCount is not null && request.ExpectedResultCount.Value != prepared.ResultCount)
+            || (request.ExpectedTotalPayloadBytes is not null && request.ExpectedTotalPayloadBytes.Value != prepared.TotalPayloadBytes))
+        {
+            context.TryStart();
+            context.StateMachine.TryFail();
+            throw new Core.Errors.AppFailureException(
+                Core.Errors.ErrorCode.SelectionPlanMismatch,
+                "The compatibility export selection no longer matches its expected result set.");
+        }
+
+        return await RunAsync(
+            prepared,
+            new ExportDestination(request.OutputDirectory, request.CompletionPolicy),
+            context,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<VoiceExportManifest> RecoverRunAsync(

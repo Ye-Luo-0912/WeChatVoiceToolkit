@@ -57,14 +57,19 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         {
             await RecoverPendingTransactionsUnderLockAsync(cancellationToken, rootLock).ConfigureAwait(false);
             var journalPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", context.RunId + ".jsonl");
-            var stream = new FileStream(
+            await using (var stream = new FileStream(
                 journalPath,
                 FileMode.CreateNew,
                 FileAccess.Write,
                 FileShare.Read,
                 128 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var journal = new FileSystemExportRunJournal(this, _exportRoot, context, operationId, stream, rootLock);
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
+
+            var journal = new FileSystemExportRunJournal(this, _exportRoot, context, operationId, journalPath, rootLock);
             await journal.InitializeAsync(cancellationToken).ConfigureAwait(false);
             return journal;
         }
@@ -221,7 +226,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 if (transaction.State == ExportTransactionState.RolledBack
                     || string.Equals(transaction.FailureCode, "export-rolled-back", StringComparison.Ordinal))
                 {
-                    throw new InvalidDataException("The export transaction was explicitly rolled back and cannot be recovered.");
+                    // A legacy caller may have appended complete Journal item
+                    // events without using the run transaction API. Preserve
+                    // that explicit recovery path, but never revive an empty
+                    // auto-rolled-back transaction.
+                    if (transaction.ExplicitRollback || transaction.Items.Count != 0)
+                    {
+                        throw new InvalidDataException("The export transaction was explicitly rolled back and cannot be recovered.");
+                    }
                 }
 
                 hasRecordedTransactionItems = transaction.Items.Count > 0;
@@ -646,6 +658,55 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 continue;
             }
 
+            if (document.State is (ExportTransactionState.Staging or ExportTransactionState.Prepared)
+                && CanRollbackBeforePublish(document))
+            {
+                var unpublishedStaging = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + document.RunId + ".staging");
+                TryDeleteDirectory(unpublishedStaging);
+                await AtomicFileWriter.WriteJsonAsync(
+                    transactionPath,
+                    new ExportTransactionDocument(
+                        document.RunId,
+                        document.OperationId,
+                        document.SelectionFingerprint,
+                        ExportTransactionState.RolledBack,
+                        DateTimeOffset.UtcNow,
+                        Array.Empty<ExportTransactionItem>(),
+                        document.MetadataCommit,
+                        "export-rolled-back"),
+                    InfrastructureJson.Indented,
+                    cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            if (document.State == ExportTransactionState.FailedRecoverable
+                && document.Items.Count == 0
+                && document.MetadataCommit is null
+                && !await JournalHasManifestCommitAsync(
+                    ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", document.RunId + ".jsonl"),
+                    cancellationToken).ConfigureAwait(false))
+            {
+                // A run that never durably bound an item or metadata commit is
+                // not an empty export to resume. This is the fail-closed
+                // outcome for a Dispose-time cleanup whose state write was
+                // interrupted; never revive it into an empty Completed run.
+                TryDeleteDirectory(ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + document.RunId + ".staging"));
+                await AtomicFileWriter.WriteJsonAsync(
+                    transactionPath,
+                    new ExportTransactionDocument(
+                        document.RunId,
+                        document.OperationId,
+                        document.SelectionFingerprint,
+                        ExportTransactionState.RolledBack,
+                        DateTimeOffset.UtcNow,
+                        Array.Empty<ExportTransactionItem>(),
+                        null,
+                        "export-rolled-back"),
+                    InfrastructureJson.Indented,
+                    cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
             var updatedItems = new List<ExportTransactionItem>(document.Items.Count);
             var allResolved = true;
             var changed = false;
@@ -716,6 +777,18 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
 
         CleanupOrphanedStagingDirectories(runsDirectory, cancellationToken);
+    }
+
+    private static bool CanRollbackBeforePublish(ExportTransactionDocument document)
+    {
+        if (document.Items.Count == 0)
+        {
+            return true;
+        }
+
+        return document.Items.All(static item =>
+            (item.OriginalPublishState is ExportPublishState.NotStarted or ExportPublishState.Existing)
+            && (item.DecodedPublishState is ExportPublishState.NotStarted or ExportPublishState.Existing));
     }
 
     /// <summary>
@@ -802,9 +875,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 try
                 {
                     var existing = JsonSerializer.Deserialize<VoiceExportJournalEvent>(line, InfrastructureJson.Compact);
-                    if (existing is { Event: "item-committed" or "item-skipped", MessageId: not null })
+                    if (existing is { Event: "item-committed" or "item-skipped" })
                     {
-                        committed.Add(existing.MessageId);
+                        committed.Add(GetJournalTransactionKey(existing));
                     }
                 }
                 catch (JsonException)
@@ -816,7 +889,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
 
         var pending = document.Items
-            .Where(item => item.Entry is not null && !committed.Contains(item.MessageId))
+            .Where(item => IsRecoverableReadyItem(item)
+                && item.Entry is not null
+                && !committed.Contains(GetTransactionKey(item)))
             .Select(item => new VoiceExportJournalEvent(
                 item.Entry!.WasSkipped ? "item-skipped" : "item-committed",
                 document.RunId,
@@ -826,31 +901,81 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             .ToArray();
         if (pending.Length == 0)
         {
+            await DurableJsonlJournalWriter.AppendAsync(
+                journalPath,
+                Array.Empty<VoiceExportJournalEvent>(),
+                InfrastructureJson.Compact,
+                cancellationToken).ConfigureAwait(false);
             return;
         }
 
-        var text = string.Join(
-            string.Empty,
-            pending.Select(item => JsonSerializer.Serialize(item, InfrastructureJson.Compact) + Environment.NewLine));
-        await using (var stream = new FileStream(
+        await DurableJsonlJournalWriter.AppendAsync(
             journalPath,
-            FileMode.Append,
-            FileAccess.Write,
-            FileShare.Read,
-            32 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan))
-        {
-            var bytes = Encoding.UTF8.GetBytes(Environment.NewLine + text);
-            await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            stream.Flush(flushToDisk: true);
-        }
+            pending,
+            InfrastructureJson.Compact,
+            cancellationToken).ConfigureAwait(false);
+
+        static string GetJournalTransactionKey(VoiceExportJournalEvent journalEvent)
+            => ExportItemTransactionKey.TryCompute(journalEvent.Entry?.SourceStableKey)
+                ?? journalEvent.MessageId
+                ?? string.Empty;
+
+        static string GetTransactionKey(ExportTransactionItem item)
+            => item.TransactionKey
+                ?? ExportItemTransactionKey.TryCompute(item.SourceStableKey)
+                ?? item.MessageId;
+
     }
+
+    private static bool IsRecoverableReadyItem(ExportTransactionItem item)
+        => item.Entry is not null
+            && !string.IsNullOrWhiteSpace(item.SourceStableKey)
+            && string.Equals(item.Entry.SourceStableKey, item.SourceStableKey, StringComparison.Ordinal)
+            && string.Equals(
+                item.TransactionKey,
+                ExportItemTransactionKey.Compute(item.SourceStableKey!),
+                StringComparison.Ordinal)
+            && RelativePathsEqual(item.Entry.OriginalPath, item.FinalOriginalPath)
+            && !string.IsNullOrWhiteSpace(item.OriginalSha256)
+            && item.OriginalByteLength is not null
+            && string.Equals(item.Entry.OriginalSha256, item.OriginalSha256, StringComparison.OrdinalIgnoreCase)
+            && item.Entry.OriginalByteLength == item.OriginalByteLength.Value
+            && (string.IsNullOrWhiteSpace(item.FinalDecodedPath)
+                || !string.IsNullOrWhiteSpace(item.DecodedSha256)
+                    && item.DecodedByteLength is not null
+                    && RelativePathsEqual(item.Entry.DecodedPath, item.FinalDecodedPath))
+            && item.TransactionKey is not null
+            && item.ItemState is ExportTransactionItemState.ReadyToPublish
+                or ExportTransactionItemState.Publishing
+                or ExportTransactionItemState.Published;
+
+    private static bool RelativePathsEqual(string? left, string? right)
+        => !string.IsNullOrWhiteSpace(left)
+            && !string.IsNullOrWhiteSpace(right)
+            && string.Equals(
+                left.Replace('\\', '/'),
+                right.Replace('\\', '/'),
+                StringComparison.OrdinalIgnoreCase);
 
     private async Task<(ExportTransactionItem Item, bool Resolved)> ReconcileTransactionItemAsync(
         ExportTransactionItem item,
         CancellationToken cancellationToken)
     {
+        if (!IsRecoverableReadyItem(item))
+        {
+            // A new item is never published during recovery until its stable
+            // identity, entry, length, and SHA-256 have all been durably bound.
+            // Legacy documents without TransactionKey are accepted only when
+            // the complete old-format entry/hash data is present.
+            return (item with
+            {
+                OriginalPublishState = ExportPublishState.Failed,
+                DecodedPublishState = string.IsNullOrWhiteSpace(item.FinalDecodedPath)
+                    ? ExportPublishState.NotStarted
+                    : ExportPublishState.Failed,
+            }, false);
+        }
+
         var original = await ReconcileArtifactAsync(
             item.StagedOriginalPath,
             item.FinalOriginalPath,
@@ -877,6 +1002,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             DecodedSha256 = decoded.Result.Sha256 ?? item.DecodedSha256,
             OriginalPublishState = original.Result.State,
             DecodedPublishState = decoded.Result.State,
+            ItemState = original.Resolved && decoded.Resolved
+                ? ExportTransactionItemState.Published
+                : item.ItemState,
         };
         return (updated, original.Resolved && decoded.Resolved);
     }
@@ -977,8 +1105,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
     }
 
     private static bool Matches(FileHashMetadata metadata, long? expectedLength, string? expectedSha256)
-        => (expectedLength is null || metadata.ByteLength == expectedLength.Value)
-            && (string.IsNullOrWhiteSpace(expectedSha256) || string.Equals(metadata.Sha256, expectedSha256, StringComparison.OrdinalIgnoreCase));
+        => expectedLength is not null
+            && !string.IsNullOrWhiteSpace(expectedSha256)
+            && metadata.ByteLength == expectedLength.Value
+            && string.Equals(metadata.Sha256, expectedSha256, StringComparison.OrdinalIgnoreCase);
 
     private static async Task<T> ReadJsonDocumentAsync<T>(
         string path,
@@ -1047,18 +1177,11 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         VoiceExportJournalEvent journalEvent,
         CancellationToken cancellationToken)
     {
-        var line = JsonSerializer.Serialize(journalEvent, InfrastructureJson.Compact) + Environment.NewLine;
-        var bytes = Encoding.UTF8.GetBytes(line);
-        await using var stream = new FileStream(
+        await DurableJsonlJournalWriter.AppendAsync(
             journalPath,
-            FileMode.Append,
-            FileAccess.Write,
-            FileShare.Read,
-            64 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-        stream.Flush(flushToDisk: true);
+            [journalEvent],
+            InfrastructureJson.Compact,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<bool> MetadataCommitIsCompleteAsync(
@@ -1789,6 +1912,24 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     : _decodedState == ExportArtifactState.VerifiedExisting
                         ? ExportPublishState.Existing
                         : ExportPublishState.NotStarted;
+            var hasDecodedArtifact = _decodedCommitted || ExistingDecodedArtifact is not null || _decodedTemporaryPath is not null;
+            var payloadCommitted = (_originalCommitted || OriginalState == ExportArtifactState.VerifiedExisting)
+                && (!hasDecodedArtifact || _decodedCommitted || DecodedState == ExportArtifactState.VerifiedExisting);
+            var originalPublished = _publishedOriginal || OriginalState == ExportArtifactState.VerifiedExisting;
+            var decodedPublished = !hasDecodedArtifact
+                || _publishedDecoded
+                || DecodedState == ExportArtifactState.VerifiedExisting;
+            var itemState = originalPublished && decodedPublished
+                ? ExportTransactionItemState.Published
+                : _originalPublishing || _decodedPublishing
+                    ? ExportTransactionItemState.Publishing
+                    : _entry is not null && payloadCommitted
+                        ? ExportTransactionItemState.ReadyToPublish
+                        : _entry is not null
+                            ? ExportTransactionItemState.EntryBound
+                            : payloadCommitted
+                                ? ExportTransactionItemState.PayloadCommitted
+                                : ExportTransactionItemState.Created;
             return new ExportTransactionItem(
                 Record.MessageId,
                 Record.SourceStableKey,
@@ -1804,7 +1945,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 decodedState,
                 OriginalState,
                 DecodedState,
-                _entry);
+                _entry,
+                ExportItemTransactionKey.TryCompute(Record.SourceStableKey),
+                itemState);
         }
 
         internal void SetEntry(VoiceExportEntry entry) => _entry = entry;
@@ -2144,18 +2287,20 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         private readonly string? _selectionFingerprint;
         private readonly string _stagingRoot;
         private readonly string _transactionPath;
-        private readonly FileStream _stream;
+        private readonly string _journalPath;
         private readonly ExportRootLock _rootLock;
         private readonly SemaphoreSlim _gate = new(1, 1);
         private readonly SemaphoreSlim _transactionDocumentGate = new(1, 1);
         private readonly object _transactionStateGate = new();
         private readonly List<FileSystemExportItemLease> _stagedItems = [];
+        private readonly HashSet<string> _transactionKeys = new(StringComparer.Ordinal);
         private TaskCompletionSource<bool> _stagesIdle = CompletedSource(completed: true);
         private int _activeStages;
         private bool _transactionClosing;
         private bool _committed;
         private bool _rolledBack;
         private bool _commitAttempted;
+        private bool _explicitRollback;
         private bool _disposed;
         private int _disposeStarted;
         private ExportTransactionState _transactionState = ExportTransactionState.Staging;
@@ -2166,7 +2311,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             string exportRoot,
             VoiceExportRunContext context,
             string operationId,
-            FileStream stream,
+            string journalPath,
             ExportRootLock rootLock)
         {
             _store = store;
@@ -2176,7 +2321,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             _selectionFingerprint = context.SelectionFingerprint;
             _stagingRoot = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + context.RunId + ".staging");
             _transactionPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", context.RunId + ".transaction.json");
-            _stream = stream;
+            _journalPath = journalPath;
             _rootLock = rootLock;
             Directory.CreateDirectory(_stagingRoot);
         }
@@ -2219,7 +2364,14 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                         throw new InvalidOperationException("The export run transaction has already completed.");
                     }
 
-                    _stagedItems.Add((FileSystemExportItemLease)lease);
+                    var transactionItem = (FileSystemExportItemLease)lease;
+                    var transactionKey = ExportItemTransactionKey.Compute(record.SourceStableKey!);
+                    if (!_transactionKeys.Add(transactionKey))
+                    {
+                        throw new InvalidDataException("The same SourceStableKey was staged more than once in one export run.");
+                    }
+
+                    _stagedItems.Add(transactionItem);
                     added = true;
                 }
 
@@ -2260,10 +2412,25 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             {
                 lock (_transactionStateGate)
                 {
-                    var item = _stagedItems.FirstOrDefault(candidate => string.Equals(candidate.Record.MessageId, entry.MessageId, StringComparison.Ordinal));
+                    if (string.IsNullOrWhiteSpace(entry.SourceStableKey))
+                    {
+                        throw new InvalidDataException("The transaction entry lacks a SourceStableKey.");
+                    }
+
+                    var transactionKey = ExportItemTransactionKey.Compute(entry.SourceStableKey);
+                    var item = _stagedItems.FirstOrDefault(candidate =>
+                        string.Equals(
+                            ExportItemTransactionKey.Compute(candidate.Record.SourceStableKey!),
+                            transactionKey,
+                            StringComparison.Ordinal));
                     if (item is null)
                     {
                         throw new InvalidDataException("The transaction entry does not have a staged item.");
+                    }
+
+                    if (!string.Equals(item.Record.SourceStableKey, entry.SourceStableKey, StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException("The transaction entry SourceStableKey does not match its staged item.");
                     }
 
                     item.SetEntry(entry);
@@ -2277,9 +2444,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
         }
 
-        public async Task DiscardItemAsync(string messageId, CancellationToken cancellationToken)
+        public async Task DiscardItemAsync(string transactionKey, CancellationToken cancellationToken)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(messageId);
+            ArgumentException.ThrowIfNullOrWhiteSpace(transactionKey);
             lock (_transactionStateGate)
             {
                 if (_disposed)
@@ -2300,11 +2467,15 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 lock (_transactionStateGate)
                 {
                     var index = _stagedItems.FindIndex(
-                        candidate => string.Equals(candidate.Record.MessageId, messageId, StringComparison.Ordinal));
+                        candidate => string.Equals(
+                            ExportItemTransactionKey.Compute(candidate.Record.SourceStableKey!),
+                            transactionKey,
+                            StringComparison.Ordinal));
                     if (index >= 0)
                     {
                         removed = _stagedItems[index];
                         _stagedItems.RemoveAt(index);
+                        _transactionKeys.Remove(transactionKey);
                     }
                 }
 
@@ -2422,11 +2593,13 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
 
             DeleteStagingDirectory();
-            lock (_transactionStateGate)
-            {
-                _stagedItems.Clear();
-            }
+                lock (_transactionStateGate)
+                {
+                    _stagedItems.Clear();
+                    _transactionKeys.Clear();
+                }
             _transactionState = ExportTransactionState.RolledBack;
+            _explicitRollback = true;
             await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
             lock (_transactionStateGate)
             {
@@ -2625,7 +2798,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     ? "export-recovery-required"
                     : _transactionState == ExportTransactionState.RolledBack
                         ? "export-rolled-back"
-                        : null);
+                        : null,
+                ExplicitRollback: _explicitRollback);
             await AtomicFileWriter.WriteJsonAsync(_transactionPath, document, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
         }
 
@@ -2636,11 +2810,11 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 throw new InvalidDataException($"The journal event RunId '{journalEvent.RunId}' does not match the active journal RunId '{_runId}'.");
             }
 
-            var line = JsonSerializer.Serialize(journalEvent, InfrastructureJson.Compact) + Environment.NewLine;
-            var bytes = Encoding.UTF8.GetBytes(line);
-            await _stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            _stream.Flush(flushToDisk: true);
+            await DurableJsonlJournalWriter.AppendAsync(
+                _journalPath,
+                [journalEvent],
+                InfrastructureJson.Compact,
+                cancellationToken).ConfigureAwait(false);
         }
 
         public async ValueTask DisposeAsync()
@@ -2672,7 +2846,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                         foreach (var item in _stagedItems) item.RollbackPublished();
                         DeleteStagingDirectory();
                         _stagedItems.Clear();
-                        _transactionState = ExportTransactionState.FailedRecoverable;
+                        _transactionState = ExportTransactionState.RolledBack;
                         _rolledBack = true;
                         autoRolledBack = true;
                     }
@@ -2698,7 +2872,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             await _gate.WaitAsync().ConfigureAwait(false);
             try
             {
-                await _stream.DisposeAsync().ConfigureAwait(false);
+                // Append operations own their short-lived file handle. The
+                // gate is still acquired here so no append can overlap the
+                // disposal of the run lease or its cross-process lock.
             }
             finally
             {

@@ -84,7 +84,7 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
     }
 
     [Fact]
-    public async Task Export_commits_linked_voices_and_records_partial_failures()
+    public async Task Compatibility_export_consumes_only_scan_eligible_voices()
     {
         _backend.Fill(
             FakeBackend.Linked("m1", 1_700_000_000, VoiceDirection.Incoming),
@@ -101,10 +101,8 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
             CancellationToken.None);
 
         Assert.Equal(2, result.Manifest.Entries.Count);
-        Assert.Equal(2, result.Manifest.Failures.Count);
-        Assert.Equal(ExportRunStatus.CompletedWithFailures, result.Manifest.RunStatus);
-        Assert.Contains(result.Manifest.Failures, static failure => failure.Stage == "payload-invalid-header");
-        Assert.Contains(result.Manifest.Failures, static failure => failure.Stage == "association");
+        Assert.Empty(result.Manifest.Failures);
+        Assert.Equal(ExportRunStatus.Completed, result.Manifest.RunStatus);
         Assert.True(Directory.Exists(outputRoot));
         Assert.True(Directory.Exists(Path.Combine(outputRoot, "runs")));
     }
