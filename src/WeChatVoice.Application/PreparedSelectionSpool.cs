@@ -55,81 +55,34 @@ public static class PreparedSelectionSpool
         PreparedSelectionSpoolDescriptor descriptor,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await using var lease = await OpenLeaseAsync(descriptor, cancellationToken).ConfigureAwait(false);
+        await foreach (var record in lease.ReadOnceAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return record;
+        }
+    }
+
+    /// <summary>
+    /// Opens one read lease over the immutable prepared selection. The lease
+    /// hashes and parses the same stream that the export consumes, so a large
+    /// spool is not read once for validation and once again for export.
+    /// </summary>
+    internal static Task<VerifiedPreparedSelectionLease> OpenLeaseAsync(
+        PreparedSelectionSpoolDescriptor descriptor,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(descriptor);
         ValidateDescriptorPath(descriptor);
         cancellationToken.ThrowIfCancellationRequested();
-
         EnsurePrivateDirectory(Path.GetDirectoryName(descriptor.Path)!);
-        await using var stream = new FileStream(
+        var stream = new FileStream(
             descriptor.Path,
             FileMode.Open,
             FileAccess.Read,
             FileShare.Read,
             CopyBufferSize,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var byteLength = stream.Length;
-        using var hash = SHA256.Create();
-        await using var hashingStream = new CryptoStream(stream, hash, CryptoStreamMode.Read, leaveOpen: true);
-        using var reader = new StreamReader(
-            hashingStream,
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
-            detectEncodingFromByteOrderMarks: false,
-            bufferSize: CopyBufferSize,
-            leaveOpen: false);
-        var count = 0;
-        try
-        {
-            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (line.Length == 0 || line.Length > MaximumLineLength)
-                {
-                    throw new AppFailureException(
-                        ErrorCode.SelectionPlanMismatch,
-                        "The prepared voice selection spool contains an invalid record.");
-                }
-
-                VoiceRecord? record;
-                try
-                {
-                    var serialized = JsonSerializer.Deserialize<SpoolVoiceRecord>(line, JsonOptions);
-                    record = serialized?.ToVoiceRecord();
-                }
-                catch (JsonException exception)
-                {
-                    throw new AppFailureException(
-                        ErrorCode.SelectionPlanMismatch,
-                        "The prepared voice selection spool contains invalid metadata.",
-                        exception);
-                }
-
-                if (record is null)
-                {
-                    throw new AppFailureException(
-                        ErrorCode.SelectionPlanMismatch,
-                        "The prepared voice selection spool contains an empty record.");
-                }
-
-                count++;
-                yield return record;
-            }
-
-            var actualHash = Convert.ToHexString(hash.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
-            if (byteLength != descriptor.ByteLength
-                || count != descriptor.RecordCount
-                || !string.Equals(actualHash, descriptor.Sha256, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new AppFailureException(
-                    ErrorCode.SelectionPlanMismatch,
-                    "The prepared voice selection spool changed during export preparation.");
-            }
-        }
-        finally
-        {
-            // Disposing the crypto reader closes the read lease before the
-            // iterator is released; no second open is needed for validation.
-            await hashingStream.DisposeAsync().ConfigureAwait(false);
-        }
+        return Task.FromResult(new VerifiedPreparedSelectionLease(descriptor, stream));
     }
 
     public static async Task DeleteAsync(
@@ -266,6 +219,110 @@ public static class PreparedSelectionSpool
         => path.EndsWith(Path.DirectorySeparatorChar)
             ? path
             : path + Path.DirectorySeparatorChar;
+
+    internal sealed class VerifiedPreparedSelectionLease : IAsyncDisposable
+    {
+        private readonly PreparedSelectionSpoolDescriptor _descriptor;
+        private readonly FileStream _stream;
+        private readonly SHA256 _hash = SHA256.Create();
+        private readonly CryptoStream _hashingStream;
+        private readonly StreamReader _reader;
+        private int _consumed;
+        private int _disposed;
+
+        public VerifiedPreparedSelectionLease(
+            PreparedSelectionSpoolDescriptor descriptor,
+            FileStream stream)
+        {
+            _descriptor = descriptor;
+            _stream = stream;
+            _hashingStream = new CryptoStream(stream, _hash, CryptoStreamMode.Read, leaveOpen: true);
+            _reader = new StreamReader(
+                _hashingStream,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
+                detectEncodingFromByteOrderMarks: false,
+                bufferSize: CopyBufferSize,
+                leaveOpen: true);
+        }
+
+        public async IAsyncEnumerable<VoiceRecord> ReadOnceAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            if (Interlocked.Exchange(ref _consumed, 1) != 0)
+            {
+                throw new InvalidOperationException("A prepared selection lease can only be consumed once.");
+            }
+
+            var count = 0;
+            try
+            {
+                while (await _reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (line.Length == 0 || line.Length > MaximumLineLength)
+                    {
+                        throw new AppFailureException(
+                            ErrorCode.SelectionPlanMismatch,
+                            "The prepared voice selection spool contains an invalid record.");
+                    }
+
+                    VoiceRecord? record;
+                    try
+                    {
+                        var serialized = JsonSerializer.Deserialize<SpoolVoiceRecord>(line, JsonOptions);
+                        record = serialized?.ToVoiceRecord();
+                    }
+                    catch (JsonException exception)
+                    {
+                        throw new AppFailureException(
+                            ErrorCode.SelectionPlanMismatch,
+                            "The prepared voice selection spool contains invalid metadata.",
+                            exception);
+                    }
+
+                    if (record is null)
+                    {
+                        throw new AppFailureException(
+                            ErrorCode.SelectionPlanMismatch,
+                            "The prepared voice selection spool contains an empty record.");
+                    }
+
+                    count++;
+                    yield return record;
+                }
+
+                var actualHash = Convert.ToHexString(_hash.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
+                if (_stream.Length != _descriptor.ByteLength
+                    || count != _descriptor.RecordCount
+                    || !string.Equals(actualHash, _descriptor.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new AppFailureException(
+                        ErrorCode.SelectionPlanMismatch,
+                        "The prepared voice selection spool changed during export preparation.");
+                }
+            }
+            finally
+            {
+                // The outer export owns the lease lifetime. Keeping the
+                // handle open until the fingerprint check completes prevents
+                // a replacement or delete between validation and consumption.
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _reader.Dispose();
+            await _hashingStream.DisposeAsync().ConfigureAwait(false);
+            _hash.Dispose();
+            await _stream.DisposeAsync().ConfigureAwait(false);
+        }
+    }
 
     internal sealed class PreparedSelectionSpoolWriter : IAsyncDisposable
     {

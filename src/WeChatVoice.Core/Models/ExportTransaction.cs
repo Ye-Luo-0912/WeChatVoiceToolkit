@@ -132,3 +132,22 @@ public sealed record ExportTransactionDocument
     public string Format { get; }
     public bool ExplicitRollback { get; }
 }
+
+/// <summary>
+/// A bounded transaction WAL event.  Item events carry only the changed item;
+/// they never serialize the complete transaction item list.  Checkpoints
+/// periodically materialize the document so recovery only replays the tail.
+/// </summary>
+public sealed record ExportTransactionWalEvent(
+    string RunId,
+    string OperationId,
+    string? SelectionFingerprint,
+    string Event,
+    DateTimeOffset OccurredAtUtc,
+    string? TransactionKey = null,
+    ExportTransactionItem? Item = null,
+    ExportTransactionState? State = null,
+    ExportMetadataCommitDescriptor? MetadataCommit = null,
+    string? FailureCode = null,
+    bool ExplicitRollback = false,
+    string Format = "wechatvoice-export-transaction-wal-v1");

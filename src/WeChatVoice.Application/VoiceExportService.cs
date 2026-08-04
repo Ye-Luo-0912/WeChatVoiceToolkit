@@ -43,7 +43,12 @@ public sealed class VoiceExportService
         VoiceQuery query,
         VoiceExportOptions? options,
         CancellationToken cancellationToken = default)
-        => await ExportCoreAsync(query, options, preparedSelectionFactory: null, cancellationToken).ConfigureAwait(false);
+        => await ExportCoreAsync(
+            query,
+            options,
+            preparedSelectionFactory: null,
+            validatePreparedSelectionBeforeExport: true,
+            cancellationToken).ConfigureAwait(false);
 
     /// <summary>
     /// Exports the exact records captured by a preceding metadata scan. No
@@ -61,6 +66,7 @@ public sealed class VoiceExportService
             query,
             options,
             cancellationTokenValue => EnumeratePreparedAsync(preparedSelection, cancellationTokenValue),
+            validatePreparedSelectionBeforeExport: true,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -77,10 +83,12 @@ public sealed class VoiceExportService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(spool);
+        await using var lease = await PreparedSelectionSpool.OpenLeaseAsync(spool, cancellationToken).ConfigureAwait(false);
         return await ExportCoreAsync(
             query,
             options,
-            cancellationTokenValue => PreparedSelectionSpool.ReadAsync(spool, cancellationTokenValue),
+            cancellationTokenValue => lease.ReadOnceAsync(cancellationTokenValue),
+            validatePreparedSelectionBeforeExport: false,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -88,6 +96,7 @@ public sealed class VoiceExportService
         VoiceQuery query,
         VoiceExportOptions? options,
         Func<CancellationToken, IAsyncEnumerable<VoiceRecord>>? preparedSelectionFactory,
+        bool validatePreparedSelectionBeforeExport,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -106,7 +115,9 @@ public sealed class VoiceExportService
             preparedSelectionFactory = cancellationTokenValue => EnumeratePreparedAsync(preparedSelection, cancellationTokenValue);
         }
 
-        if (preparedSelectionFactory is not null && HasExpectedSelection(options))
+        if (preparedSelectionFactory is not null
+            && validatePreparedSelectionBeforeExport
+            && HasExpectedSelection(options))
         {
             await ValidateExpectedSelectionAsync(preparedSelectionFactory(cancellationToken), query, options, cancellationToken).ConfigureAwait(false);
         }
@@ -128,6 +139,11 @@ public sealed class VoiceExportService
         var cancellationObserved = false;
         var runFailed = false;
         var commitFailed = false;
+        AppFailureException? selectionMismatch = null;
+        var preparedSelectionCompleted = false;
+        using var preparedFingerprint = preparedSelectionFactory is not null && HasExpectedSelection(options)
+            ? new VoiceResultSetFingerprintBuilder()
+            : null;
         try
         {
             var records = preparedSelectionFactory is null
@@ -141,6 +157,12 @@ public sealed class VoiceExportService
             await foreach (var record in records.ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (preparedFingerprint is not null
+                    && _eligibilityEvaluator.Evaluate(record, context, query).IsEligible)
+                {
+                    preparedFingerprint.Append(record);
+                }
+
                 if (activeExports.Count >= options.MaxDegreeOfParallelism)
                 {
                     if (!await DrainOneAsync(activeExports, cancellationToken).ConfigureAwait(false)
@@ -152,10 +174,20 @@ public sealed class VoiceExportService
 
                 activeExports.Add(ExportOneAsync(record, query, options, context, runId, transaction, journal, entries, failures, cancellationToken));
             }
+
+            preparedSelectionCompleted = true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             cancellationObserved = true;
+        }
+        catch (AppFailureException exception) when (exception.Code == ErrorCode.SelectionPlanMismatch)
+        {
+            runFailed = true;
+            selectionMismatch = exception;
+            var failure = CreateFailure(null, "selection", exception);
+            failures.Enqueue(failure);
+            await AppendAsync(journal, new VoiceExportJournalEvent("run-failed", runId, DateTimeOffset.UtcNow, Context: context, Failure: failure), CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -183,6 +215,36 @@ public sealed class VoiceExportService
             {
                 runFailed = true;
                 failures.Enqueue(CreateFailure(null, "export", exception));
+            }
+        }
+
+        if (preparedFingerprint is not null && preparedSelectionCompleted)
+        {
+            try
+            {
+                var actualFingerprint = preparedFingerprint.Complete();
+                if ((options.ExpectedResultSetFingerprint is not null
+                        && !string.Equals(actualFingerprint, options.ExpectedResultSetFingerprint, StringComparison.OrdinalIgnoreCase))
+                    || (options.ExpectedResultCount is not null && preparedFingerprint.Count != options.ExpectedResultCount.Value)
+                    || (options.ExpectedTotalPayloadBytes is not null && preparedFingerprint.TotalPayloadBytes != options.ExpectedTotalPayloadBytes.Value))
+                {
+                    selectionMismatch = new AppFailureException(
+                        ErrorCode.SelectionPlanMismatch,
+                        "The prepared voice selection changed during export; no artifacts were committed.");
+                    runFailed = true;
+                    var failure = CreateFailure(null, "selection", selectionMismatch);
+                    failures.Enqueue(failure);
+                    await AppendAsync(journal, new VoiceExportJournalEvent("run-failed", runId, DateTimeOffset.UtcNow, Context: context, Failure: failure), CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            catch (InvalidDataException exception)
+            {
+                selectionMismatch = new AppFailureException(
+                    ErrorCode.SelectionPlanMismatch,
+                    "The prepared voice selection lacks a stable identity.",
+                    exception);
+                runFailed = true;
+                failures.Enqueue(CreateFailure(null, "selection", selectionMismatch));
             }
         }
 
@@ -262,6 +324,11 @@ public sealed class VoiceExportService
         if (cancellationObserved || cancellationToken.IsCancellationRequested)
         {
             throw new OperationCanceledException(cancellationToken);
+        }
+
+        if (selectionMismatch is not null)
+        {
+            throw selectionMismatch;
         }
 
         return manifest;

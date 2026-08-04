@@ -217,7 +217,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         {
             try
             {
-                var transaction = await ReadJsonDocumentAsync<ExportTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false);
+                var transaction = await ExportTransactionJournal.ReadAsync(transactionPath, cancellationToken).ConfigureAwait(false);
                 if (!string.Equals(transaction.RunId, runId, StringComparison.Ordinal))
                 {
                     throw new InvalidDataException("The export transaction RunId does not match the recovery Journal.");
@@ -248,7 +248,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         var fallback = new VoiceExportManifest(DateTimeOffset.UtcNow, RunId: runId, RunStatus: ExportRunStatus.Failed);
         var recovered = await ReadManifestFromJournalAsync(fallback, fullJournalPath, cancellationToken).ConfigureAwait(false);
         var completedTransaction = hasTransactionDocument
-            ? await ReadJsonDocumentAsync<ExportTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false)
+            ? await ExportTransactionJournal.ReadAsync(transactionPath, cancellationToken).ConfigureAwait(false)
             : null;
         if (await JournalHasManifestCommitAsync(fullJournalPath, cancellationToken).ConfigureAwait(false)
             && await MetadataCommitIsCompleteAsync(
@@ -305,8 +305,8 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         {
             try
             {
-                var transaction = await ReadJsonDocumentAsync<ExportTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false);
-                await AtomicFileWriter.WriteJsonAsync(
+                var transaction = await ExportTransactionJournal.ReadAsync(transactionPath, cancellationToken).ConfigureAwait(false);
+                await ExportTransactionJournal.WriteSnapshotAsync(
                     transactionPath,
                     new ExportTransactionDocument(
                         transaction.RunId,
@@ -316,7 +316,6 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                         DateTimeOffset.UtcNow,
                         transaction.Items,
                         descriptor),
-                    InfrastructureJson.Indented,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
@@ -626,8 +625,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             ExportTransactionDocument? document;
             try
             {
-                await using var stream = new FileStream(transactionPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                document = await JsonSerializer.DeserializeAsync<ExportTransactionDocument>(stream, InfrastructureJson.Compact, cancellationToken).ConfigureAwait(false);
+                document = await ExportTransactionJournal.ReadAsync(transactionPath, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException)
             {
@@ -664,7 +662,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             {
                 var unpublishedStaging = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + document.RunId + ".staging");
                 TryDeleteDirectory(unpublishedStaging);
-                await AtomicFileWriter.WriteJsonAsync(
+                await ExportTransactionJournal.WriteSnapshotAsync(
                     transactionPath,
                     new ExportTransactionDocument(
                         document.RunId,
@@ -675,7 +673,6 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                         Array.Empty<ExportTransactionItem>(),
                         document.MetadataCommit,
                         "export-rolled-back"),
-                    InfrastructureJson.Indented,
                     cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -692,7 +689,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 // outcome for a Dispose-time cleanup whose state write was
                 // interrupted; never revive it into an empty Completed run.
                 TryDeleteDirectory(ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + document.RunId + ".staging"));
-                await AtomicFileWriter.WriteJsonAsync(
+                await ExportTransactionJournal.WriteSnapshotAsync(
                     transactionPath,
                     new ExportTransactionDocument(
                         document.RunId,
@@ -703,7 +700,6 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                         Array.Empty<ExportTransactionItem>(),
                         null,
                         "export-rolled-back"),
-                    InfrastructureJson.Indented,
                     cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -742,7 +738,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     null);
                 if (changed || recovered.State != document.State)
                 {
-                    await AtomicFileWriter.WriteJsonAsync(transactionPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                    await ExportTransactionJournal.WriteSnapshotAsync(transactionPath, recovered, cancellationToken).ConfigureAwait(false);
                 }
 
                 await AppendRecoveredItemEventsAsync(recovered, cancellationToken).ConfigureAwait(false);
@@ -768,7 +764,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     updatedItems,
                     document.MetadataCommit,
                     "export-recovery-required");
-                await AtomicFileWriter.WriteJsonAsync(transactionPath, recovered, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
+                await ExportTransactionJournal.WriteSnapshotAsync(transactionPath, recovered, cancellationToken).ConfigureAwait(false);
                 throw new IOException($"Export transaction '{document.RunId}' contains an artifact that cannot be recovered safely.");
             }
             else if (!allResolved)
@@ -1285,7 +1281,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             return;
         }
 
-        var transaction = await ReadJsonDocumentAsync<ExportTransactionDocument>(transactionPath, cancellationToken).ConfigureAwait(false);
+        var transaction = await ExportTransactionJournal.ReadAsync(transactionPath, cancellationToken).ConfigureAwait(false);
         if (transaction.State == ExportTransactionState.Completed)
         {
             return;
@@ -1306,7 +1302,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
         }
 
-        await AtomicFileWriter.WriteJsonAsync(
+        await ExportTransactionJournal.WriteSnapshotAsync(
             transactionPath,
             new ExportTransactionDocument(
                 transaction.RunId,
@@ -1316,7 +1312,6 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 DateTimeOffset.UtcNow,
                 transaction.Items,
                 descriptor),
-            InfrastructureJson.Indented,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -2288,6 +2283,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         private readonly string? _selectionFingerprint;
         private readonly string _stagingRoot;
         private readonly string _transactionPath;
+        private readonly ExportTransactionJournal _transactionJournal;
         private readonly string _journalPath;
         private readonly ExportRootLock _rootLock;
         private readonly SemaphoreSlim _gate = new(1, 1);
@@ -2322,6 +2318,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             _selectionFingerprint = context.SelectionFingerprint;
             _stagingRoot = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", "." + context.RunId + ".staging");
             _transactionPath = ExportPathSafety.CombineUnderRoot(_exportRoot, "runs", context.RunId + ".transaction.json");
+            _transactionJournal = new ExportTransactionJournal(_transactionPath);
             _journalPath = journalPath;
             _rootLock = rootLock;
             Directory.CreateDirectory(_stagingRoot);
@@ -2330,7 +2327,17 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         public string RunId => _runId;
 
         internal async Task InitializeAsync(CancellationToken cancellationToken)
-            => await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+        {
+            await _transactionDocumentGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _transactionJournal.InitializeAsync(CreateTransactionDocument, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _transactionDocumentGate.Release();
+            }
+        }
 
         public async ValueTask<IExportItemLease> StageItemAsync(
             VoiceRecord record,
@@ -2376,7 +2383,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     added = true;
                 }
 
-                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+                await PersistTransactionAsync(
+                    cancellationToken,
+                    item: (FileSystemExportItemLease)lease,
+                    eventName: "item-upserted").ConfigureAwait(false);
 
                 return lease;
             }
@@ -2411,6 +2421,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             await _transactionDocumentGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+                var transactionKey = string.Empty;
                 lock (_transactionStateGate)
                 {
                     if (string.IsNullOrWhiteSpace(entry.SourceStableKey))
@@ -2418,7 +2429,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                         throw new InvalidDataException("The transaction entry lacks a SourceStableKey.");
                     }
 
-                    var transactionKey = ExportItemTransactionKey.Compute(entry.SourceStableKey);
+                    transactionKey = ExportItemTransactionKey.Compute(entry.SourceStableKey);
                     var item = _stagedItems.FirstOrDefault(candidate =>
                         string.Equals(
                             ExportItemTransactionKey.Compute(candidate.Record.SourceStableKey!),
@@ -2437,7 +2448,20 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                     item.SetEntry(entry);
                 }
 
-                await PersistTransactionUnlockedAsync(cancellationToken).ConfigureAwait(false);
+                var changedItem = default(FileSystemExportItemLease);
+                lock (_transactionStateGate)
+                {
+                    changedItem = _stagedItems.First(candidate =>
+                        string.Equals(
+                            ExportItemTransactionKey.Compute(candidate.Record.SourceStableKey!),
+                            transactionKey,
+                            StringComparison.Ordinal));
+                }
+
+                await PersistTransactionUnlockedAsync(
+                    cancellationToken,
+                    item: changedItem,
+                    eventName: "item-upserted").ConfigureAwait(false);
             }
             finally
             {
@@ -2484,7 +2508,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 {
                     await removed.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
                     await removed.DisposeAsync().ConfigureAwait(false);
-                    await PersistTransactionUnlockedAsync(cancellationToken).ConfigureAwait(false);
+                    await PersistTransactionUnlockedAsync(
+                        cancellationToken,
+                        transactionKey: transactionKey,
+                        eventName: "item-removed").ConfigureAwait(false);
                 }
             }
             finally
@@ -2514,9 +2541,9 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             {
                 _commitAttempted = true;
                 _transactionState = ExportTransactionState.Prepared;
-                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+                await PersistTransactionAsync(cancellationToken, eventName: "state-changed").ConfigureAwait(false);
                 _transactionState = ExportTransactionState.Publishing;
-                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+                await PersistTransactionAsync(cancellationToken, eventName: "state-changed").ConfigureAwait(false);
                 foreach (var item in items.OrderBy(static item => item.OriginalManifestPath, StringComparer.Ordinal))
                 {
                     _store.ThrowIfFaultRequested(
@@ -2543,7 +2570,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 }
 
                 _transactionState = ExportTransactionState.ArtifactsCommitted;
-                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+                await PersistTransactionAsync(cancellationToken, eventName: "state-changed").ConfigureAwait(false);
                 DeleteStagingDirectory();
                 lock (_transactionStateGate)
                 {
@@ -2553,7 +2580,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             catch (Exception exception)
             {
                 _transactionState = ExportTransactionState.FailedRecoverable;
-                await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+                await PersistTransactionAsync(CancellationToken.None, eventName: "state-changed").ConfigureAwait(false);
                 lock (_transactionStateGate)
                 {
                     _commitAttempted = true;
@@ -2601,7 +2628,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 }
             _transactionState = ExportTransactionState.RolledBack;
             _explicitRollback = true;
-            await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+            await PersistTransactionAsync(CancellationToken.None, eventName: "state-changed", terminal: true).ConfigureAwait(false);
             lock (_transactionStateGate)
             {
                 _rolledBack = true;
@@ -2656,7 +2683,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 journalManifest = metadata.Manifest;
                 _metadataCommit = metadata.Descriptor;
                 _transactionState = ExportTransactionState.MetadataCommitted;
-                await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+                await PersistTransactionAsync(cancellationToken, eventName: "state-changed").ConfigureAwait(false);
                 // This is the durable commit marker. Every manifest file is
                 // complete before the event is flushed to the Journal.
                 await AppendCoreAsync(new VoiceExportJournalEvent(
@@ -2677,7 +2704,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 }
                 try
                 {
-                    await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+                    await PersistTransactionAsync(CancellationToken.None, eventName: "state-changed", terminal: true).ConfigureAwait(false);
                 }
                 catch when (manifestCommitFlushed)
                 {
@@ -2700,7 +2727,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 }
 
                 _transactionState = ExportTransactionState.FailedRecoverable;
-                await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+                await PersistTransactionAsync(CancellationToken.None, eventName: "state-changed").ConfigureAwait(false);
                 throw new IOException("The export metadata transaction requires recovery.", exception);
             }
             finally
@@ -2742,7 +2769,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
         }
 
         private async Task OnItemChangedAsync(FileSystemExportItemLease item, CancellationToken cancellationToken)
-            => await PersistTransactionAsync(cancellationToken).ConfigureAwait(false);
+            => await PersistTransactionAsync(
+                cancellationToken,
+                item,
+                eventName: "item-upserted").ConfigureAwait(false);
 
         private async Task AppendItemCommitEventAsync(
             VoiceExportEntry entry,
@@ -2766,12 +2796,17 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
         }
 
-        private async Task PersistTransactionAsync(CancellationToken cancellationToken)
+        private async Task PersistTransactionAsync(
+            CancellationToken cancellationToken,
+            FileSystemExportItemLease? item = null,
+            string? transactionKey = null,
+            string eventName = "state-changed",
+            bool terminal = false)
         {
             await _transactionDocumentGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await PersistTransactionUnlockedAsync(cancellationToken).ConfigureAwait(false);
+                await PersistTransactionUnlockedAsync(cancellationToken, item, transactionKey, eventName, terminal).ConfigureAwait(false);
             }
             finally
             {
@@ -2779,7 +2814,33 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
         }
 
-        private async Task PersistTransactionUnlockedAsync(CancellationToken cancellationToken)
+        private async Task PersistTransactionUnlockedAsync(
+            CancellationToken cancellationToken,
+            FileSystemExportItemLease? item = null,
+            string? transactionKey = null,
+            string eventName = "state-changed",
+            bool terminal = false)
+        {
+            var walEvent = new ExportTransactionWalEvent(
+                _runId,
+                _operationId,
+                _selectionFingerprint,
+                eventName,
+                DateTimeOffset.UtcNow,
+                transactionKey,
+                item?.CreateTransactionItem(_exportRoot),
+                eventName == "state-changed" ? _transactionState : null,
+                eventName == "state-changed" ? _metadataCommit : null,
+                CurrentFailureCode(),
+                _explicitRollback);
+            await _transactionJournal.AppendAsync(
+                walEvent,
+                CreateTransactionDocument,
+                terminal,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        private ExportTransactionDocument CreateTransactionDocument()
         {
             FileSystemExportItemLease[] items;
             lock (_transactionStateGate)
@@ -2787,7 +2848,7 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 items = _stagedItems.ToArray();
             }
 
-            var document = new ExportTransactionDocument(
+            return new ExportTransactionDocument(
                 _runId,
                 _operationId,
                 _selectionFingerprint,
@@ -2795,14 +2856,16 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
                 DateTimeOffset.UtcNow,
                 items.Select(item => item.CreateTransactionItem(_exportRoot)).ToArray(),
                 _metadataCommit,
-                _transactionState == ExportTransactionState.FailedRecoverable
-                    ? "export-recovery-required"
-                    : _transactionState == ExportTransactionState.RolledBack
-                        ? "export-rolled-back"
-                        : null,
+                CurrentFailureCode(),
                 ExplicitRollback: _explicitRollback);
-            await AtomicFileWriter.WriteJsonAsync(_transactionPath, document, InfrastructureJson.Indented, cancellationToken).ConfigureAwait(false);
         }
+
+        private string? CurrentFailureCode()
+            => _transactionState == ExportTransactionState.FailedRecoverable
+                ? "export-recovery-required"
+                : _transactionState == ExportTransactionState.RolledBack
+                    ? "export-rolled-back"
+                    : null;
 
         private async Task AppendCoreAsync(VoiceExportJournalEvent journalEvent, CancellationToken cancellationToken)
         {
@@ -2860,7 +2923,10 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             {
                 try
                 {
-                    await PersistTransactionAsync(CancellationToken.None).ConfigureAwait(false);
+                    await PersistTransactionAsync(
+                        CancellationToken.None,
+                        eventName: "state-changed",
+                        terminal: true).ConfigureAwait(false);
                 }
                 catch (IOException)
                 {

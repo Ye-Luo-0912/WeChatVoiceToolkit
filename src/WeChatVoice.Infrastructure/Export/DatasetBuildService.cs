@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Buffers;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WeChatVoice.Core.Errors;
@@ -109,11 +111,12 @@ public sealed class DatasetBuildService
                 }
 
                 var sourcePath = ResolveArtifactPath(exportRoot, entry.OriginalPath);
-                var sourceMetadata = await VerifyArtifactAsync(sourcePath, entry.OriginalByteLength, entry.OriginalSha256, cancellationToken).ConfigureAwait(false);
                 var relativeAudioPath = "audio/" + itemId + ".silk";
                 var destinationPath = ExportPathSafety.CombineUnderRoot(stagingRoot, relativeAudioPath);
+                FileHashMetadata sourceMetadata;
                 if (request.LinkMode == DatasetLinkMode.LinkedView)
                 {
+                    sourceMetadata = await VerifyArtifactAsync(sourcePath, entry.OriginalByteLength, entry.OriginalSha256, cancellationToken).ConfigureAwait(false);
                     if (!TryCreateHardLink(destinationPath, sourcePath))
                     {
                         throw new AppFailureException(ErrorCode.InvalidRequest, "The requested Linked View could not create a hard link.");
@@ -123,10 +126,19 @@ public sealed class DatasetBuildService
                 }
                 else
                 {
-                    await CopyAsync(sourcePath, destinationPath, cancellationToken).ConfigureAwait(false);
+                    // VerifiedCopy is the normal, independent dataset mode.
+                    // Hash the source while copying under one read handle; a
+                    // second full read of the newly created output is only
+                    // needed by the later independent Verify operation.
+                    sourceMetadata = await CopyAndVerifyAsync(
+                        sourcePath,
+                        destinationPath,
+                        entry.OriginalByteLength,
+                        entry.OriginalSha256,
+                        cancellationToken).ConfigureAwait(false);
                 }
 
-                var outputMetadata = await VerifyArtifactAsync(destinationPath, sourceMetadata.ByteLength, sourceMetadata.Sha256, cancellationToken).ConfigureAwait(false);
+                var outputMetadata = sourceMetadata;
                 datasetItems.Add(new VoiceDatasetEntry(
                     itemId,
                     relativeAudioPath,
@@ -1204,13 +1216,73 @@ public sealed class DatasetBuildService
         return metadata;
     }
 
-    private static async Task CopyAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken)
+    private static async Task<FileHashMetadata> CopyAndVerifyAsync(
+        string sourcePath,
+        string destinationPath,
+        long expectedLength,
+        string expectedSha256,
+        CancellationToken cancellationToken)
     {
+        if (!File.Exists(sourcePath)
+            || (File.GetAttributes(sourcePath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "A selected export artifact is missing or is a reparse point.");
+        }
+
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
-        await using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using var destination = new FileStream(destinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await source.CopyToAsync(destination, 128 * 1024, cancellationToken).ConfigureAwait(false);
-        await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+        var buffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long length = 0;
+        try
+        {
+            await using var source = new FileStream(
+                sourcePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                128 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await using var destination = new FileStream(
+                destinationPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                128 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            while (true)
+            {
+                var count = await source.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+                if (count == 0)
+                {
+                    break;
+                }
+
+                await destination.WriteAsync(buffer.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+                hasher.AppendData(buffer, 0, count);
+                length = checked(length + count);
+            }
+
+            await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+            destination.Flush(flushToDisk: true);
+        }
+        catch
+        {
+            TryDeleteFile(destinationPath);
+            throw;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
+
+        var sha256 = Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant();
+        if (length != expectedLength || !string.Equals(sha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            TryDeleteFile(destinationPath);
+            throw new AppFailureException(ErrorCode.InvalidRequest, "A source export artifact failed hash verification while building the dataset.");
+        }
+
+        return new FileHashMetadata(length, sha256, HasPlainSqliteHeader: false);
     }
 
     private static bool TryCreateHardLink(string destinationPath, string sourcePath)
