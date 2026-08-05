@@ -52,7 +52,32 @@ internal static class BrokerPipeServer
             await pipe.WaitForConnectionAsync(connectionTimeout.Token).ConfigureAwait(false);
         }
 
-        var callerSid = BrokerClientIdentityVerifier.Verify(pipe.SafePipeHandle);
+        string? callerSid;
+        try
+        {
+            callerSid = BrokerClientIdentityVerifier.Verify(pipe.SafePipeHandle);
+        }
+        catch (Exception)
+        {
+            // The request has not been accepted yet. Return a bounded,
+            // non-sensitive terminal response so the normal-privilege client
+            // can report a typed broker failure instead of observing a silent
+            // pipe EOF. The exception details never cross the boundary.
+            await using var errorWriter = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true)
+            {
+                AutoFlush = true,
+            };
+            BrokerProtocol.Write(errorWriter, new BrokerResponse(
+                "failed",
+                null,
+                null,
+                null,
+                new BrokerError(
+                    BrokerErrorKind.Transport,
+                    "broker_internal",
+                    "The Broker could not verify the named-pipe client identity.")));
+            return 1;
+        }
 
         // The UAC/pipe connection budget is deliberately not reused for the
         // expensive memory scan and materialization operation.
@@ -64,7 +89,7 @@ internal static class BrokerPipeServer
         await using var writer = new StreamWriter(pipe, new UTF8Encoding(false, true), 4096, leaveOpen: true) { AutoFlush = true };
         try
         {
-            return await BrokerHost.RunAsync(
+            var result = await BrokerHost.RunAsync(
                 reader,
                 writer,
                 snapshotManifestPath,
@@ -74,6 +99,31 @@ internal static class BrokerPipeServer
                 allowExperimentalProfile,
                 stage => BrokerProtocol.Write(writer, stage),
                 callerSid).ConfigureAwait(false);
+            return result;
+        }
+        catch (Exception)
+        {
+            // Keep the one-shot transport total: a failure outside the host's
+            // domain catches (including dependency-load/runtime failures) must
+            // still produce a bounded terminal response rather than a silent
+            // named-pipe EOF.
+            try
+            {
+                BrokerProtocol.Write(writer, new BrokerResponse(
+                    "failed",
+                    null,
+                    null,
+                    null,
+                    new BrokerError(
+                        BrokerErrorKind.Transport,
+                        "broker_internal",
+                        "The Key Broker encountered an internal runtime failure.")));
+            }
+            catch
+            {
+            }
+
+            return 1;
         }
         finally
         {

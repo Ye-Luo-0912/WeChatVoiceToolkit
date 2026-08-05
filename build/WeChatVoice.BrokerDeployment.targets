@@ -20,12 +20,17 @@
   <Target Name="CopyKeyBroker" AfterTargets="Build">
     <ItemGroup>
       <KeyBrokerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.KeyBroker*" />
+      <!-- KeyBroker's profile implementation lives in a separate assembly;
+           copy it with the elevated bundle instead of relying on the host's
+           dependency graph (the CLI/Desktop do not reference it directly). -->
+      <KeyBrokerDependencyFiles Include="$(KeyBrokerOutputPath)WeChatVoice.KeyAcquisition*" />
       <SqlCipherWorkerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.SqlCipherWorker*" />
       <SqlCipherProviderFiles Include="$(KeyBrokerOutputPath)SQLitePCLRaw.provider.e_sqlcipher.dll" />
       <SqlCipherNativeFiles Include="$(KeyBrokerOutputPath)runtimes\win-x64\native\e_sqlcipher.dll" Condition="'$(RuntimeIdentifier)' == ''" />
       <SqlCipherNativeFiles Include="$(KeyBrokerOutputPath)e_sqlcipher.dll" Condition="'$(RuntimeIdentifier)' != ''" />
     </ItemGroup>
     <Copy SourceFiles="@(KeyBrokerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(KeyBrokerDependencyFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SqlCipherWorkerFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SqlCipherProviderFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(SqlCipherNativeFiles)" DestinationFolder="$(OutDir)runtimes\win-x64\native" SkipUnchangedFiles="true" />
@@ -48,11 +53,13 @@
   <Target Name="CopyKeyBrokerToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
     <ItemGroup>
       <PublishedKeyBrokerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.KeyBroker*" />
+      <PublishedKeyBrokerDependencyFiles Include="$(KeyBrokerOutputPath)WeChatVoice.KeyAcquisition*" />
       <PublishedSqlCipherWorkerFiles Include="$(KeyBrokerOutputPath)WeChatVoice.SqlCipherWorker*" />
       <PublishedSqlCipherProviderFiles Include="$(KeyBrokerOutputPath)SQLitePCLRaw.provider.e_sqlcipher.dll" />
       <PublishedSqlCipherNativeFiles Include="$(KeyBrokerOutputPath)e_sqlcipher.dll" />
     </ItemGroup>
     <Copy SourceFiles="@(PublishedKeyBrokerFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(PublishedKeyBrokerDependencyFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(PublishedSqlCipherWorkerFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(PublishedSqlCipherProviderFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(PublishedSqlCipherNativeFiles)" DestinationFolder="$(PublishDir)runtimes\win-x64\native" SkipUnchangedFiles="true" />

@@ -109,7 +109,7 @@ public sealed class KeyBrokerClient : IBrokerClient
                 while (response is null)
                 {
                     var responseLine = await framedReader.ReadAsync(operationTimeout.Token).ConfigureAwait(false)
-                        ?? throw new InvalidDataException("The Key Broker closed without a response.");
+                        ?? throw CreateClosedWithoutResponseException(process);
                     using var document = JsonDocument.Parse(responseLine);
                     if (document.RootElement.TryGetProperty("stage", out _))
                     {
@@ -124,7 +124,8 @@ public sealed class KeyBrokerClient : IBrokerClient
                         ?? throw new InvalidDataException("The Key Broker response was empty.");
                 }
 
-                if (!string.Equals(response.RequestId, requestId, StringComparison.Ordinal))
+                if (response.Error is null
+                    && !string.Equals(response.RequestId, requestId, StringComparison.Ordinal))
                 {
                     throw new InvalidDataException("The Key Broker response RequestId did not match.");
                 }
@@ -267,11 +268,48 @@ public sealed class KeyBrokerClient : IBrokerClient
                 when Enum.TryParse<ErrorCode>(error.Code, ignoreCase: true, out var domainCode):
                 return new AppFailureException(domainCode, error.Message);
             case BrokerErrorKind.Transport
-                when Enum.TryParse<BrokerTransportErrorCode>(error.Code, ignoreCase: true, out var transportCode):
+                when TryParseTransportCode(error.Code, out var transportCode):
                 return new BrokerTransportException(transportCode, error.Message);
             default:
                 return new BrokerTransportException(BrokerTransportErrorCode.Unknown, error.Message);
         }
+    }
+
+    private static bool TryParseTransportCode(string code, out BrokerTransportErrorCode value)
+    {
+        value = code switch
+        {
+            "malformed_request" => BrokerTransportErrorCode.MalformedRequest,
+            "unsupported_protocol" => BrokerTransportErrorCode.UnsupportedProtocol,
+            "unsupported_operation" => BrokerTransportErrorCode.UnsupportedOperation,
+            "request_too_large" => BrokerTransportErrorCode.RequestTooLarge,
+            "snapshot_not_found" => BrokerTransportErrorCode.SnapshotNotFound,
+            "cancelled" => BrokerTransportErrorCode.Cancelled,
+            "broker_internal" => BrokerTransportErrorCode.BrokerInternal,
+            _ => BrokerTransportErrorCode.Unknown,
+        };
+        return value != BrokerTransportErrorCode.Unknown
+            || Enum.TryParse(code, ignoreCase: true, out value);
+    }
+
+    private static BrokerTransportException CreateClosedWithoutResponseException(Process process)
+    {
+        int? exitCode = null;
+        try
+        {
+            if (process.HasExited)
+            {
+                exitCode = process.ExitCode;
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        var message = exitCode is { } code
+            ? $"The Key Broker closed without a terminal response (exit code {code})."
+            : "The Key Broker closed without a terminal response.";
+        return new BrokerTransportException(BrokerTransportErrorCode.BrokerInternal, message);
     }
 
     private static OperationProgress ToOperationProgress(BrokerStageEvent stage)

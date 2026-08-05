@@ -112,9 +112,24 @@ internal sealed class SqlCipherEphemeralDatabaseMaterializer : IEphemeralDatabas
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var normalizedBindingPath = NormalizeRelative(binding.RelativeDatabasePath);
-                if (!targetByPath.ContainsKey(normalizedBindingPath) || !boundPaths.Add(normalizedBindingPath))
+                if (!targetByPath.ContainsKey(normalizedBindingPath))
                 {
                     throw new InvalidDataException("A key binding referenced a database outside the verified Snapshot.");
+                }
+
+                // Auxiliary FTS/migration databases are intentionally outside
+                // the voice-export data path. They remain represented in the
+                // manifest as intentionally ignored and are never sent to the
+                // plaintext validation path (Windows SQLite builds may not
+                // carry the matching FTS extension).
+                if (WeixinWindows41155DatabasePolicy.CanIntentionallyIgnore(normalizedBindingPath))
+                {
+                    continue;
+                }
+
+                if (!boundPaths.Add(normalizedBindingPath))
+                {
+                    throw new InvalidDataException("A key binding referenced a database more than once.");
                 }
 
                 var inputPath = CombineUnderRoot(sourceRoot, binding.RelativeDatabasePath);

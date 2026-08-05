@@ -54,6 +54,20 @@ internal static class BrokerHost
             BrokerProtocol.Write(output, Failed(null, "request_too_large", "The one-shot broker request is missing or too large."));
             return 2;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Cancellation can occur while the client request is still being
+            // framed (for example when the client disconnects during UAC or
+            // startup). Keep the wire contract bounded instead of allowing an
+            // elevated process to terminate with a silent pipe EOF.
+            BrokerProtocol.Write(output, Failed(null, "cancelled", "The one-shot Broker operation was cancelled."));
+            return 130;
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        {
+            BrokerProtocol.Write(output, Failed(null, "broker_internal", "The Key Broker could not read the request."));
+            return 1;
+        }
 
         if (line is null)
         {
