@@ -1,5 +1,4 @@
 using Avalonia;
-using Avalonia.Headless;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Desktop.ViewModels;
@@ -38,11 +37,54 @@ public sealed class AvaloniaHeadlessSmokeTests
     }
 
     [Fact]
+    public async Task Source_snapshot_view_renders_the_automatic_single_account_summary_under_headless_platform()
+    {
+        await HeadlessTestHost.DispatchAsync(async () =>
+        {
+            using var temporary = new TestTemporaryDirectory();
+            var source = temporary.CreateDirectory(Path.Combine("wxid_headless_0000000000000008", "db_storage"));
+            File.WriteAllBytes(Path.Combine(source, "headless.db"), [1, 2, 3]);
+            var root = new WorkflowCompositionRoot(
+                new TestDoubles.SilentConfirmation(),
+                environmentAssessment: new FakeEnvironmentWorkflow(),
+                snapshot: new FakeSnapshotWorkflow());
+            await using var services = new DesktopServices(
+                root,
+                new DesktopLog(temporary.Root),
+                new RecentWorkspaceStore(temporary.Root),
+                invokeOnUi: DirectInvokeAsync,
+                dataSourceDiscovery: new FakeDataSourceDiscovery
+                {
+                    Result = new WeixinDataSourceDiscoveryResult(
+                        [new WeixinDataSourceCandidate(
+                            Path.GetDirectoryName(source)!,
+                            "wxid_headless",
+                            source,
+                            DateTimeOffset.UtcNow,
+                            1,
+                            IsReparsePoint: false,
+                            HasSnapshot: false)],
+                        false,
+                        3),
+                },
+                weixinProcessProbe: new FakeWeixinProcessProbe());
+            services.Project.EnvironmentAssessment = new FakeEnvironmentWorkflow().Result;
+            var page = new SourceSnapshotViewModel(services);
+            await page.OnNavigatedToAsync();
+            var view = new SourceSnapshotView { DataContext = page };
+            view.Measure(new Size(1000, 700));
+            view.Arrange(new Rect(0, 0, 1000, 700));
+
+            Assert.Equal("wxid_headless", page.SelectedSourceCandidate?.AccountCandidate);
+            Assert.False(page.IsAdvancedDetailsExpanded);
+            Assert.NotNull(view.DataContext);
+        });
+    }
+
+    [Fact]
     public async Task Fake_backend_runs_the_guided_flow_to_the_second_contact()
     {
         using var temporary = new TestTemporaryDirectory();
-        var source = temporary.CreateDirectory("source");
-        var snapshot = temporary.GetPath("snapshot");
         var export = temporary.GetPath("export");
         var fakeSnapshot = new FakeSnapshotWorkflow();
         var fakeScan = new FakeScanWorkflow();
@@ -57,11 +99,29 @@ public sealed class AvaloniaHeadlessSmokeTests
                 contactDiscovery: new FakeContactWorkflow(),
                 voiceScan: fakeScan,
                 voiceExport: fakeExport);
+            var source = temporary.CreateDirectory(Path.Combine("wxid_owner_0000000000000000", "db_storage"));
+            File.WriteAllBytes(Path.Combine(source, "messages.db"), [1, 2, 3]);
+            var discovery = new FakeDataSourceDiscovery
+            {
+                Result = new WeixinDataSourceDiscoveryResult(
+                    [new WeixinDataSourceCandidate(
+                        Path.GetDirectoryName(source)!,
+                        "wxid_owner",
+                        source,
+                        DateTimeOffset.UtcNow,
+                        1,
+                        IsReparsePoint: false,
+                        HasSnapshot: false)],
+                    WasTruncated: false,
+                    VisitedDirectoryCount: 3),
+            };
             var services = new DesktopServices(
                 root,
                 new DesktopLog(temporary.Root),
                 new RecentWorkspaceStore(temporary.Root),
-                invokeOnUi: DirectInvokeAsync);
+                invokeOnUi: DirectInvokeAsync,
+                dataSourceDiscovery: discovery,
+                weixinProcessProbe: new FakeWeixinProcessProbe());
             return (Services: services, Main: new MainWindowViewModel(services));
         });
 
@@ -79,8 +139,10 @@ public sealed class AvaloniaHeadlessSmokeTests
             Assert.Equal(WorkflowState.Completed, environment.RunHost.State);
 
             Assert.True(sourcePage.CanNavigate);
-            sourcePage.SourceDirectory = source;
-            sourcePage.OutputDirectory = snapshot;
+            main.SelectedPage = sourcePage;
+            await main.NavigationTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal("wxid_owner", sourcePage.SelectedSourceCandidate?.AccountCandidate);
+            Assert.False(string.IsNullOrWhiteSpace(sourcePage.OutputDirectory));
             await sourcePage.CreateSnapshotCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowState.Completed, sourcePage.RunHost.State);
             Assert.Equal(false, fakeSnapshot.LastRequest?.AllowLiveSource);

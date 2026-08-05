@@ -4,7 +4,14 @@ using Avalonia.Platform.Storage;
 namespace WeChatVoice.Desktop.Infrastructure;
 
 /// <summary>Desktop-host folder picker; page ViewModels depend on this port.</summary>
-public sealed class DesktopFolderPicker
+public interface IDesktopFolderPicker
+{
+    void Attach(TopLevel owner);
+
+    Task<string?> PickFolderAsync(string title, CancellationToken cancellationToken = default);
+}
+
+public sealed class DesktopFolderPicker : IDesktopFolderPicker
 {
     private TopLevel? _owner;
 

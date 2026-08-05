@@ -1,6 +1,7 @@
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.Tests;
@@ -121,6 +122,58 @@ public sealed class FakeSnapshotWorkflow : ISnapshotWorkflow
             manifest,
             new SnapshotSourceIdentity("wxid_owner_0000000000000000", "wxid_owner", null, 1),
             Path.Combine(request.OutputDirectory, ".wechatvoice", "snapshot-manifest.json")));
+    }
+}
+
+public sealed class FakeDataSourceDiscovery : IWeixinDataSourceDiscovery
+{
+    public WeixinDataSourceDiscoveryResult Result { get; set; } = new([], false, 0);
+
+    public int CallCount { get; private set; }
+
+    public Func<CancellationToken, Task<WeixinDataSourceDiscoveryResult>>? DiscoverOverride { get; set; }
+
+    public IReadOnlyList<WeixinDataSourceCandidate> Discover(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null)
+        => Result.Candidates;
+
+    public async Task<IReadOnlyList<WeixinDataSourceCandidate>> DiscoverAsync(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => (await DiscoverDetailedAsync(roots, options, cancellationToken).ConfigureAwait(false)).Candidates;
+
+    public Task<WeixinDataSourceDiscoveryResult> DiscoverDetailedAsync(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        CallCount++;
+        cancellationToken.ThrowIfCancellationRequested();
+        return DiscoverOverride is null ? Task.FromResult(Result) : DiscoverOverride(cancellationToken);
+    }
+}
+
+public sealed class FakeWeixinProcessProbe : IWeixinProcessProbe
+{
+    public IReadOnlyList<WeChatVoice.Windows.WeChatProcessInfo> Running { get; set; } = [];
+
+    public IReadOnlyList<WeChatVoice.Windows.WeChatProcessInfo> ListRunning() => Running;
+}
+
+public sealed class FakeFolderPicker : IDesktopFolderPicker
+{
+    public string? NextPath { get; set; }
+
+    public void Attach(Avalonia.Controls.TopLevel owner)
+    {
+    }
+
+    public Task<string?> PickFolderAsync(string title, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(NextPath);
     }
 }
 

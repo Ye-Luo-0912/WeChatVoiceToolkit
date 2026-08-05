@@ -1,6 +1,4 @@
 using System.Security.Cryptography;
-using Avalonia;
-using Avalonia.Headless;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Desktop.ViewModels;

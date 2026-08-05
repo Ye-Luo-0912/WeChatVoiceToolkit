@@ -1,3 +1,4 @@
+using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Snapshots;
@@ -49,6 +50,22 @@ public sealed class SnapshotWorkflow(ISnapshotCreator creator) : ISnapshotWorkfl
             context.StateMachine.TryCancel();
             context.Report(OperationPhase.Snapshot, OperationStageIds.Starting, "快照创建已取消");
             throw;
+        }
+        catch (LiveSnapshotSourceException exception)
+        {
+            context.StateMachine.TryFail();
+            throw new AppFailureException(
+                ErrorCode.WeixinStillRunning,
+                "Weixin must be fully closed before a stable snapshot can be created.",
+                exception);
+        }
+        catch (SnapshotSourceChangedException exception)
+        {
+            context.StateMachine.TryFail();
+            throw new AppFailureException(
+                ErrorCode.SnapshotInconsistent,
+                "The Weixin source changed while the stable snapshot was being created.",
+                exception);
         }
         catch
         {

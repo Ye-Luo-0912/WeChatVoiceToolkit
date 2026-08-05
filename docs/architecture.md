@@ -14,11 +14,30 @@ set, DB/WAL/SHM hashes, and group fingerprints; adapters receive only the
 resulting `VerifiedLocalWorkspace`. `BuiltInAdapters` is the single adapter
 composition root shared by probing, resolution, doctor, and future hosts.
 
+The Desktop source-snapshot page is an orchestration host, not a database
+browser. Its awaitable navigation lifecycle invokes bounded
+`IWeixinDataSourceDiscovery` on first entry, keeps `WasTruncated` and the
+visited-directory count, and requires an explicit account choice when the
+discovery result is ambiguous. A single complete selectable candidate may be
+selected automatically. The page stores only the verified source selection in
+`ExportProjectSession`; its default snapshot destination is generated below
+LocalApplicationData from an opaque account fingerprint and a unique operation
+component. Raw source and output paths are details/advanced settings, not the
+ordinary user workflow.
+
 Snapshots copy the complete source file group into a staging directory and
 accept it only when the before/after inventory agrees. WeChat is required to be
 closed unless the caller explicitly opts into `--allow-live-source`; manifests
 live under `.wechatvoice/snapshot-manifest.json` and exclude that reserved
 metadata directory from source enumeration.
+
+The Desktop always submits `AllowLiveSource: false` for its normal snapshot
+action and rechecks the fixed Weixin process list immediately before invoking
+the Snapshot workflow. A running Weixin process disables the action and is
+presented as a typed `WeixinStillRunning` condition. Manual folder selection is
+only a fallback: it must resolve to one validated `db_storage` layout, reject
+reparse points and empty database trees, and pass the same source/output
+non-overlap and capacity checks as automatic discovery.
 
 Schema adapters operate on `WeChatDataSet`, not one database. A data set contains
 message, media, contact, and shard artifacts. `IWeChatDataSetAdapter` opens an

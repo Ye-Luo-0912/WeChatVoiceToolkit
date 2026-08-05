@@ -112,6 +112,26 @@ public sealed class DiscoveryAndPathValidationTests : IDisposable
         Assert.Same(assessment, session.EnvironmentAssessment);
     }
 
+    [Fact]
+    public void Default_snapshot_output_is_opaque_unique_and_disjoint_from_source()
+    {
+        var source = CreateSource(Path.Combine(_root, "source-root"), "wxid_private_0000000000000010", "source.db");
+        var factory = new SnapshotOutputDirectoryFactory(_root);
+
+        var first = factory.CreateDefault(source, "wxid_private", Path.GetDirectoryName(source)!);
+        var second = factory.CreateDefault(source, "wxid_private", Path.GetDirectoryName(source)!);
+
+        Assert.True(Path.IsPathFullyQualified(first));
+        Assert.True(Path.IsPathFullyQualified(second));
+        Assert.NotEqual(first, second);
+        Assert.DoesNotContain("wxid_private", first, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("wxid_private", second, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(first));
+        Assert.False(Directory.Exists(second));
+        Assert.False(first.StartsWith(source, StringComparison.OrdinalIgnoreCase));
+        Assert.False(source.StartsWith(first, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static string CreateSource(string root, string account, string databaseName)
     {
         var storage = Directory.CreateDirectory(Path.Combine(root, account, "db_storage")).FullName;

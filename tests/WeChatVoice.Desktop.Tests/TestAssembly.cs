@@ -1,4 +1,3 @@
-using Xunit;
 using Avalonia.Headless;
 using WeChatVoice.Desktop;
 

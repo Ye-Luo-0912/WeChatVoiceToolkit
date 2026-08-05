@@ -8,8 +8,8 @@ public sealed record DesktopPathValidationResult(
     public static DesktopPathValidationResult Valid(long? availableFreeBytes = null)
         => new(true, null, availableFreeBytes);
 
-    public static DesktopPathValidationResult Invalid(string error)
-        => new(false, error, null);
+    public static DesktopPathValidationResult Invalid(string error, long? availableFreeBytes = null)
+        => new(false, error, availableFreeBytes);
 }
 
 /// <summary>
@@ -19,7 +19,10 @@ public sealed record DesktopPathValidationResult(
 /// </summary>
 public static class DesktopPathValidator
 {
-    public static DesktopPathValidationResult ValidateSnapshotPaths(string? sourceDirectory, string? outputDirectory)
+    public static DesktopPathValidationResult ValidateSnapshotPaths(
+        string? sourceDirectory,
+        string? outputDirectory,
+        bool verifyCapacity = false)
     {
         if (string.IsNullOrWhiteSpace(sourceDirectory) || string.IsNullOrWhiteSpace(outputDirectory))
         {
@@ -53,6 +56,12 @@ public static class DesktopPathValidator
             return DesktopPathValidationResult.Invalid("源目录和快照输出目录不能相互包含。");
         }
 
+        var outputParent = FindExistingParent(output);
+        if (outputParent is null || ContainsReparsePoint(outputParent))
+        {
+            return DesktopPathValidationResult.Invalid("快照输出目录的父路径包含 Reparse Point 或无法访问。");
+        }
+
         if (File.Exists(output))
         {
             return DesktopPathValidationResult.Invalid("快照输出路径已经是文件。");
@@ -82,7 +91,13 @@ public static class DesktopPathValidator
             }
         }
 
-        return DesktopPathValidationResult.Valid(TryGetAvailableFreeBytes(output));
+        var availableBytes = TryGetAvailableFreeBytes(output);
+        if (verifyCapacity && availableBytes is { } available && TryGetDirectoryByteLength(source) is { } sourceBytes && available < sourceBytes)
+        {
+            return DesktopPathValidationResult.Invalid("快照输出位置可用空间不足。", available);
+        }
+
+        return DesktopPathValidationResult.Valid(availableBytes);
     }
 
     private static bool ContainsReparsePoint(string path)
@@ -140,6 +155,72 @@ public static class DesktopPathValidator
             return null;
         }
         catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static string? FindExistingParent(string path)
+    {
+        var current = Path.GetFullPath(path);
+        while (!Directory.Exists(current))
+        {
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrWhiteSpace(parent) || string.Equals(parent, current, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            current = parent;
+        }
+
+        return current;
+    }
+
+    private static long? TryGetDirectoryByteLength(string root)
+    {
+        try
+        {
+            long total = 0;
+            var pending = new Stack<string>([root]);
+            while (pending.Count > 0)
+            {
+                var directory = pending.Pop();
+                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                {
+                    continue;
+                }
+
+                foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
+                {
+                    if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                    {
+                        continue;
+                    }
+
+                    total = checked(total + new FileInfo(file).Length);
+                }
+
+                foreach (var child in Directory.EnumerateDirectories(directory, "*", SearchOption.TopDirectoryOnly))
+                {
+                    if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0)
+                    {
+                        pending.Push(child);
+                    }
+                }
+            }
+
+            return total;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (OverflowException)
         {
             return null;
         }

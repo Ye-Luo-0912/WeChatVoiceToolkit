@@ -71,4 +71,28 @@ public enum ErrorCode
 
     /// <summary>The caller requested duration analysis but no resolver is configured.</summary>
     DurationResolverUnavailable,
+
+    /// <summary>Automatic Weixin data-source discovery failed.</summary>
+    DataSourceDiscoveryFailed,
+
+    /// <summary>Automatic data-source discovery hit its time or directory budget.</summary>
+    DataSourceDiscoveryTruncated,
+
+    /// <summary>No selectable Weixin data source was found.</summary>
+    NoDataSourceFound,
+
+    /// <summary>More than one selectable Weixin account requires explicit choice.</summary>
+    MultipleAccountsRequireSelection,
+
+    /// <summary>The selected data source failed layout, identity, or file validation.</summary>
+    SelectedDataSourceInvalid,
+
+    /// <summary>A stable snapshot cannot start while Weixin is running.</summary>
+    WeixinStillRunning,
+
+    /// <summary>The snapshot output path failed safety validation.</summary>
+    SnapshotOutputInvalid,
+
+    /// <summary>The snapshot destination does not have enough available space.</summary>
+    InsufficientDiskSpace,
 }

@@ -74,6 +74,13 @@
 22. The CLI composition root is split into focused command and support files;
     command behavior and the shared verified workflow composition remain
     unchanged.
+23. The Desktop source-snapshot flow performs bounded automatic data-source
+    discovery on page activation, selects exactly one complete account only
+    when the result is unambiguous, requires an explicit choice for multiple
+    accounts, and generates an opaque per-operation snapshot destination under
+    LocalApplicationData. Weixin running-state checks, truncated-discovery
+    warnings, validated manual fallback, and cancellable page activation are
+    covered by Desktop and Avalonia Headless tests.
 
 ## Next product work
 

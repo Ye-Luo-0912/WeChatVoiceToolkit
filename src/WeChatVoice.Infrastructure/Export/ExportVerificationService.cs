@@ -591,7 +591,7 @@ public sealed class ExportVerificationService
             }
             catch (Exception exception) when (exception is JsonException or InvalidDataException)
             {
-                    issues.Add(Issue("artifact-index-invalid", relativePath, "The artifact index contains malformed JSON."));
+                issues.Add(Issue("artifact-index-invalid", relativePath, "The artifact index contains malformed JSON."));
             }
         }
 

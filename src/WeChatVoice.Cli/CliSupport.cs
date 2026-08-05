@@ -176,6 +176,14 @@ internal static partial class CliApplication
             ErrorCode.ExportPartialFailure => ("导出完成但存在逐条失败", "review-failures"),
             ErrorCode.AccountConfirmationRequired => ("账号身份仅为候选，需要明确确认", "confirm-account"),
             ErrorCode.UacElevationRejected => ("UAC 管理员授权被拒绝", "retry-materialization"),
+            ErrorCode.DataSourceDiscoveryFailed => ("自动发现微信数据失败", "retry-discovery"),
+            ErrorCode.DataSourceDiscoveryTruncated => ("微信数据发现未完成，结果可能不完整", "retry-discovery"),
+            ErrorCode.NoDataSourceFound => ("未自动找到微信数据", "choose-data-directory"),
+            ErrorCode.MultipleAccountsRequireSelection => ("发现多个微信账号，需要明确选择", "choose-account"),
+            ErrorCode.SelectedDataSourceInvalid => ("选择的微信数据目录无效", "choose-data-directory"),
+            ErrorCode.WeixinStillRunning => ("请完全退出微信后再创建稳定快照", "exit-weixin-and-retry"),
+            ErrorCode.SnapshotOutputInvalid => ("快照保存位置无效", "choose-snapshot-output"),
+            ErrorCode.InsufficientDiskSpace => ("快照保存位置磁盘空间不足", "free-disk-space"),
             _ => ("操作失败", null),
         };
     }

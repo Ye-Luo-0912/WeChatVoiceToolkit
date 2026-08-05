@@ -42,9 +42,13 @@ public sealed class RecentWorkspaceStore
         var baseDirectory = directory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "WeChatVoiceToolkit");
+        StorageDirectory = Path.GetFullPath(baseDirectory);
         _storePath = Path.Combine(baseDirectory, "recent-workspaces.json");
         _snapshotStorePath = Path.Combine(baseDirectory, "recent-snapshots.json");
     }
+
+    /// <summary>Application-local metadata root; never contains raw database data.</summary>
+    public string StorageDirectory { get; }
 
     public IReadOnlyList<RecentWorkspaceEntry> Load()
     {

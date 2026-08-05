@@ -6,10 +6,22 @@ using WeChatVoice.Workflows.Composition;
 namespace WeChatVoice.Desktop.ViewModels;
 
 /// <summary>
+/// Awaitable page lifecycle used by the Desktop navigation host. Pages do not
+/// start asynchronous work from constructors; the host activates them after
+/// navigation and can cancel activation when the page is left.
+/// </summary>
+public interface IAsyncPageActivation
+{
+    Task OnNavigatedToAsync(CancellationToken cancellationToken = default);
+
+    Task OnNavigatedFromAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// Base for every page. Each page owns a <see cref="WorkflowRunHost"/> so the
 /// shared Workflow State Machine is the single source of truth for UI state.
 /// </summary>
-public abstract partial class PageViewModelBase : ObservableObject
+public abstract partial class PageViewModelBase : ObservableObject, IAsyncPageActivation
 {
     private readonly Func<Action, Task> _marshal;
 
@@ -69,6 +81,12 @@ public abstract partial class PageViewModelBase : ObservableObject
     public bool CanStartOperation => !Services.OperationCoordinator.IsBusy && !RunHost.IsRunning;
 
     public virtual string? NavigationHint => null;
+
+    public virtual Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    public virtual Task OnNavigatedFromAsync(CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
 
     public abstract string Title { get; }
 }

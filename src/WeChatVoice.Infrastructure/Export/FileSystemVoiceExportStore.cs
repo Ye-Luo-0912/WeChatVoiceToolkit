@@ -2633,11 +2633,11 @@ public sealed class FileSystemVoiceExportStore : IVoiceExportStore
             }
 
             DeleteStagingDirectory();
-                lock (_transactionStateGate)
-                {
-                    _stagedItems.Clear();
-                    _transactionKeys.Clear();
-                }
+            lock (_transactionStateGate)
+            {
+                _stagedItems.Clear();
+                _transactionKeys.Clear();
+            }
             _transactionState = ExportTransactionState.RolledBack;
             _explicitRollback = true;
             await PersistTransactionAsync(CancellationToken.None, eventName: "state-changed", terminal: true).ConfigureAwait(false);

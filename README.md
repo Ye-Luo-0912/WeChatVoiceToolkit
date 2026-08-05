@@ -21,6 +21,29 @@ Two thin hosts share one workflow layer:
   `dotnet run --project src/WeChatVoice.Desktop`, or pass `--smoke-check` for a
   headless CI smoke.
 
+## Desktop normal flow
+
+The Desktop source-snapshot page automatically searches the supported Weixin
+data roots when the page is first opened. If exactly one complete, selectable
+account is found, it is selected and a private snapshot destination is created
+under `%LocalAppData%\WeChatVoiceToolkit\Data\Snapshots\` using an opaque
+account fingerprint. The normal user does not need to find or understand
+`db_storage`, or choose a snapshot directory.
+
+When multiple accounts are found, the Desktop leaves the selection empty until
+the user explicitly chooses an account. If discovery finds no usable account,
+the page offers a bounded recheck and a validated manual folder picker as a
+fallback. A truncated discovery is shown as potentially incomplete rather than
+being treated as a complete search. Weixin must be fully closed before the
+stable snapshot action is enabled; after the snapshot completes, the user may
+reopen Weixin.
+
+The guided Desktop sequence is:
+
+`Environment assessment -> automatic account discovery -> explicit account
+choice when needed -> exit Weixin -> automatic stable snapshot -> reopen
+Weixin -> materialize -> contact -> incoming scan -> raw SILK export`.
+
 ## Current commands
 
 ```powershell

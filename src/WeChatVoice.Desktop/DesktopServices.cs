@@ -19,7 +19,11 @@ public sealed class DesktopServices : IAsyncDisposable
         DesktopLog log,
         RecentWorkspaceStore recentWorkspaces,
         OperationCoordinator? operationCoordinator = null,
-        Func<Action, Task>? invokeOnUi = null)
+        Func<Action, Task>? invokeOnUi = null,
+        IWeixinDataSourceDiscovery? dataSourceDiscovery = null,
+        IWeixinProcessProbe? weixinProcessProbe = null,
+        SnapshotOutputDirectoryFactory? snapshotOutputDirectories = null,
+        IDesktopFolderPicker? folderPicker = null)
     {
         Workflows = workflows;
         Log = log;
@@ -27,8 +31,11 @@ public sealed class DesktopServices : IAsyncDisposable
         OperationCoordinator = operationCoordinator ?? new OperationCoordinator();
         InvokeOnUi = invokeOnUi;
         Project = new ExportProjectSession();
-        FolderPicker = new DesktopFolderPicker();
-        DataSourceDiscovery = new WeixinDataSourceDiscovery(recentWorkspaces);
+        FolderPicker = folderPicker ?? new DesktopFolderPicker();
+        DataSourceDiscovery = dataSourceDiscovery ?? new WeixinDataSourceDiscovery(recentWorkspaces);
+        WeixinProcessProbe = weixinProcessProbe ?? new WeixinProcessProbe();
+        SnapshotOutputDirectories = snapshotOutputDirectories
+            ?? new SnapshotOutputDirectoryFactory(recentWorkspaces.StorageDirectory);
     }
 
     public static DesktopServices Create(bool allowDevelopmentBroker = false, string? appDataDirectory = null)
@@ -67,9 +74,13 @@ public sealed class DesktopServices : IAsyncDisposable
 
     public ExportProjectSession Project { get; }
 
-    public DesktopFolderPicker FolderPicker { get; }
+    public IDesktopFolderPicker FolderPicker { get; }
 
-    public WeixinDataSourceDiscovery DataSourceDiscovery { get; }
+    public IWeixinDataSourceDiscovery DataSourceDiscovery { get; }
+
+    public IWeixinProcessProbe WeixinProcessProbe { get; }
+
+    public SnapshotOutputDirectoryFactory SnapshotOutputDirectories { get; }
 
     public async ValueTask DisposeAsync()
     {

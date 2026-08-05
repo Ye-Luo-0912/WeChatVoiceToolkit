@@ -76,3 +76,10 @@ user-supplied, lawfully accessible WeChat data source.
   Snapshot, Materialization, Workspace, ContactDiscovery, VoiceScan,
   VoiceExport); hosts map OperationProgress/OperationError to their own
   presentation and never inline Infrastructure composition.
+- The ordinary Desktop source-snapshot flow must abstract internal Weixin
+  layout terms: automatically discover supported account directories on page
+  activation, select a single complete candidate only when unambiguous, require
+  explicit selection for multiple accounts, and generate an opaque safe
+  snapshot destination under LocalApplicationData. `db_storage` and complete
+  paths belong only in validated advanced details or diagnostics; a bounded or
+  truncated discovery must never be presented as complete.

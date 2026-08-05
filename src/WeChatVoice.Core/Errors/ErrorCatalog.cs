@@ -30,6 +30,14 @@ public static class ErrorCatalog
         ErrorCode.OperationBusy => new AppError(code, IsRetryable: true, "wait-for-active-operation", "operation-busy"),
         ErrorCode.SelectionPlanMismatch => new AppError(code, IsRetryable: true, "re-scan-before-export", "selection-plan-mismatch"),
         ErrorCode.DurationResolverUnavailable => new AppError(code, IsRetryable: false, "install-decoder", "duration-resolver-unavailable"),
+        ErrorCode.DataSourceDiscoveryFailed => new AppError(code, IsRetryable: true, "retry-discovery", "data-source-discovery-failed"),
+        ErrorCode.DataSourceDiscoveryTruncated => new AppError(code, IsRetryable: true, "retry-discovery", "data-source-discovery-incomplete"),
+        ErrorCode.NoDataSourceFound => new AppError(code, IsRetryable: true, "choose-data-directory", "no-data-source-found"),
+        ErrorCode.MultipleAccountsRequireSelection => new AppError(code, IsRetryable: false, "choose-account", "multiple-accounts-require-selection"),
+        ErrorCode.SelectedDataSourceInvalid => new AppError(code, IsRetryable: false, "choose-data-directory", "selected-data-source-invalid"),
+        ErrorCode.WeixinStillRunning => new AppError(code, IsRetryable: true, "exit-weixin-and-retry", "weixin-still-running"),
+        ErrorCode.SnapshotOutputInvalid => new AppError(code, IsRetryable: false, "choose-snapshot-output", "snapshot-output-invalid"),
+        ErrorCode.InsufficientDiskSpace => new AppError(code, IsRetryable: false, "free-disk-space", "insufficient-disk-space"),
         _ => new AppError(code, IsRetryable: false, "retry", "unknown-error"),
     };
 }

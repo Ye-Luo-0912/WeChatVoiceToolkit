@@ -25,7 +25,33 @@ public sealed record WeixinDataSourceCandidate(
     bool IsReparsePoint,
     bool HasSnapshot)
 {
-    public bool IsSelectable => !IsReparsePoint && DatabaseCount > 0;
+    public bool IsSelectable => !IsReparsePoint && DatabaseCount > 0 && !string.IsNullOrWhiteSpace(AccountCandidate);
+
+    public string? UnavailableReason
+        => IsSelectable
+            ? null
+            : IsReparsePoint
+                ? "目录包含 Reparse Point"
+                : DatabaseCount <= 0
+                    ? "未找到数据库文件"
+                    : "无法从固定账号目录布局推导账号候选";
+}
+
+public interface IWeixinDataSourceDiscovery
+{
+    IReadOnlyList<WeixinDataSourceCandidate> Discover(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null);
+
+    Task<IReadOnlyList<WeixinDataSourceCandidate>> DiscoverAsync(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    Task<WeixinDataSourceDiscoveryResult> DiscoverDetailedAsync(
+        IEnumerable<string>? roots = null,
+        WeixinDataSourceDiscoveryOptions? options = null,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -33,7 +59,7 @@ public sealed record WeixinDataSourceCandidate(
 /// is intentionally bounded because an unrestricted AppData walk is both
 /// surprising for users and a poor UI operation under a damaged profile.
 /// </summary>
-public sealed class WeixinDataSourceDiscovery
+public sealed class WeixinDataSourceDiscovery : IWeixinDataSourceDiscovery
 {
     private readonly RecentWorkspaceStore _recentWorkspaces;
 
@@ -132,6 +158,11 @@ public sealed class WeixinDataSourceDiscovery
 
                 visitedDirectories++;
                 var isReparsePoint = (info.Attributes & FileAttributes.ReparsePoint) != 0;
+                if (info.Name.Equals(".wechatvoice", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 if (info.Name.Equals("db_storage", StringComparison.OrdinalIgnoreCase))
                 {
                     var databaseTree = CountDatabaseFiles(info, depth, options, cancellationToken, deadline, ref visitedDirectories, ref wasTruncated);
@@ -213,6 +244,11 @@ public sealed class WeixinDataSourceDiscovery
 
             try
             {
+                if (current.Name.Equals(".wechatvoice", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 lastWrite = Max(lastWrite, current.LastWriteTimeUtc);
                 foreach (var file in current.EnumerateFiles("*.db", SearchOption.TopDirectoryOnly))
                 {

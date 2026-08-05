@@ -1,41 +1,127 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
-             xmlns:conv="using:Avalonia.Data.Converters"
+             xmlns:infra="using:WeChatVoice.Desktop.Infrastructure"
              x:Class="WeChatVoice.Desktop.Views.SourceSnapshotView"
              x:DataType="vm:SourceSnapshotViewModel">
-  <DockPanel Margin="24">
-    <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,16,0,0">
-      <ProgressBar IsVisible="{Binding RunHost.IsRunning}" IsIndeterminate="True" />
-      <TextBlock Text="{Binding RunHost.StageMessage}" />
-      <TextBlock Text="{Binding RunHost.LastError}" Foreground="Red" />
-    </StackPanel>
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+    <DockPanel Margin="24">
+      <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,16,0,0">
+        <ProgressBar IsVisible="{Binding IsBusy}" IsIndeterminate="True" />
+        <TextBlock Text="{Binding RunHost.StageMessage}" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding RunHost.LastError}" Foreground="Red" TextWrapping="Wrap" />
+        <Button IsVisible="{Binding IsDiscoveryInProgress}"
+                Content="取消查找"
+                Command="{Binding CancelDiscoveryCommand}"
+                HorizontalAlignment="Left" />
+        <Button IsVisible="{Binding RunHost.CanCancel}"
+                Content="取消当前操作"
+                Command="{Binding RunHost.CancelCommand}"
+                HorizontalAlignment="Left" />
+      </StackPanel>
 
-    <StackPanel Spacing="16">
-      <TextBlock FontSize="20" FontWeight="SemiBold" Text="创建源快照" />
-      <TextBlock Text="源目录为 Weixin 账号目录下的 db_storage（如 …\wxid_xxx_16hex\db_storage）。快照是后续所有步骤的可信输入。" TextWrapping="Wrap" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="350" PlaceholderText="源目录（db_storage）" Text="{Binding SourceDirectory}" />
-        <Button Content="选择" Command="{Binding BrowseSourceCommand}" />
-        <TextBox Width="350" PlaceholderText="输出目录" Text="{Binding OutputDirectory}" />
-        <Button Content="选择" Command="{Binding BrowseOutputCommand}" />
-      </StackPanel>
-      <StackPanel Orientation="Horizontal" Spacing="16">
-        <TextBlock Text="正式流程仅接受稳定快照；活动源仅可通过高级诊断入口使用。" TextWrapping="Wrap" />
-        <StackPanel Orientation="Horizontal" Spacing="8">
-          <Button Content="发现 Weixin 数据源" Command="{Binding DiscoverSourcesCommand}" IsEnabled="{Binding CanStartOperation}" />
-          <ComboBox Width="520" ItemsSource="{Binding SourceCandidates}" SelectedItem="{Binding SelectedSourceCandidate}">
-            <ComboBox.ItemTemplate>
-              <DataTemplate><TextBlock Text="{Binding DbStoragePath}" /></DataTemplate>
-            </ComboBox.ItemTemplate>
-          </ComboBox>
+      <StackPanel Spacing="16" MaxWidth="820">
+        <TextBlock FontSize="22" FontWeight="SemiBold" Text="创建源快照" />
+        <TextBlock Text="先退出微信，再选择数据目录；工具会自动验证文件并创建一致快照。" TextWrapping="Wrap" />
+
+        <Border Background="#E8F1FF" Padding="14" CornerRadius="6">
+          <StackPanel Spacing="6">
+            <TextBlock Foreground="#102A43" FontWeight="SemiBold" Text="{Binding StateSummary}" />
+            <TextBlock Foreground="#243B53" Text="{Binding DiscoverySummary}" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding DiscoveryWarning}" Foreground="#8A4B00" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <Border IsVisible="{Binding HasSelectedSource}" BorderBrush="#D0D7DE" BorderThickness="1" Padding="14" CornerRadius="4">
+          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto">
+            <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="SemiBold" Text="已找到微信账号" />
+            <Button Grid.Row="0" Grid.Column="1" Content="更换账号" Command="{Binding DiscoverSourcesCommand}" />
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding SelectedSourceCandidate.AccountCandidate, StringFormat=账号：{0}}" />
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="{Binding SelectedSourceCandidate.LastWriteTimeUtc, StringFormat=最近更新：{0:G}}" />
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="{Binding SelectedSourceCandidate.DatabaseCount, StringFormat=数据库：{0} 个}" />
+            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedSourceCandidate.HasSnapshot, StringFormat=历史快照：{0}}" />
+          </Grid>
+        </Border>
+
+        <StackPanel IsVisible="{Binding IsAccountListVisible}" Spacing="8">
+          <TextBlock FontWeight="SemiBold" Text="请选择微信账号" />
+          <TextBlock Text="多个账号不会按最近时间或目录顺序自动选择。请选择要创建快照的账号。" TextWrapping="Wrap" />
+          <ListBox ItemsSource="{Binding SourceCandidates}"
+                   SelectedItem="{Binding SelectedSourceCandidate, Mode=TwoWay}"
+                   AutomationProperties.Name="微信账号候选列表">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="infra:WeixinDataSourceCandidate">
+                <Border Padding="10" Margin="0,2" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="3">
+                  <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+                    <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="SemiBold" Text="{Binding AccountCandidate}" />
+                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding HasSnapshot, StringFormat=历史快照：{0}}" />
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding LastWriteTimeUtc, StringFormat=最近更新：{0:G}}" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding DatabaseCount, StringFormat=数据库：{0} 个}" />
+                    <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding UnavailableReason}" Foreground="#A33A00" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
         </StackPanel>
-        <Button Content="创建快照" Command="{Binding CreateSnapshotCommand}" IsEnabled="{Binding CanStartOperation}" />
+
+        <Border IsVisible="{Binding IsNoSourceFound}" Background="#FFF4D6" Padding="14" CornerRadius="6">
+          <StackPanel Spacing="8">
+            <TextBlock Foreground="#3B2F12" FontWeight="SemiBold" Text="未自动找到微信数据" />
+            <TextBlock Foreground="#5C4B1F" Text="这不影响创建快照。点击下面的按钮选择包含微信数据库的目录，工具会继续完成验证。" TextWrapping="Wrap" />
+            <Button Content="选择微信数据目录"
+                    Command="{Binding BrowseSourceCommand}"
+                    HorizontalAlignment="Left" />
+          </StackPanel>
+        </Border>
+
+        <Border Padding="12" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4">
+          <StackPanel Spacing="6">
+            <TextBlock Foreground="#F8FAFC" FontWeight="SemiBold" Text="微信状态" />
+            <TextBlock Foreground="#F8FAFC" Text="{Binding WeixinStatusSummary}" TextWrapping="Wrap" />
+            <Button IsVisible="{Binding IsWeixinRunning}"
+                    Content="我已退出，重新检测"
+                    Command="{Binding RecheckWeixinAfterExitCommand}"
+                    HorizontalAlignment="Left" />
+          </StackPanel>
+        </Border>
+
+        <Border Padding="12" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4">
+          <StackPanel Spacing="6">
+            <TextBlock Foreground="#F8FAFC" FontWeight="SemiBold" Text="快照保存位置" />
+            <TextBlock Foreground="#F8FAFC" Text="{Binding SnapshotLocationSummary}" />
+            <TextBlock Text="创建快照前会再次检查路径、磁盘空间和微信运行状态。" Foreground="#5B6573" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <TextBlock Text="{Binding SnapshotSummary}" FontWeight="SemiBold" TextWrapping="Wrap" />
+
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button Content="自动查找" Command="{Binding DiscoverSourcesCommand}" IsEnabled="{Binding CanStartDiscovery}" />
+          <Button Content="选择数据目录" Command="{Binding BrowseSourceCommand}" IsEnabled="{Binding CanStartDiscovery}" />
+          <Button Content="创建快照"
+                  Command="{Binding CreateSnapshotCommand}"
+                  IsEnabled="{Binding CanCreateSnapshot}" />
+        </StackPanel>
+
+        <Expander Header="高级设置和详细路径" IsExpanded="{Binding IsAdvancedDetailsExpanded}">
+          <StackPanel Spacing="10" Margin="0,10,0,0">
+            <TextBlock Text="这里仅显示经过验证的路径和诊断信息；正常流程不需要手工填写内部目录。" TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="选择微信数据目录" Command="{Binding BrowseSourceCommand}" />
+              <Button Content="更改保存位置" Command="{Binding BrowseOutputCommand}" />
+            </StackPanel>
+            <TextBlock Text="源目录（详细路径）" FontWeight="SemiBold" />
+            <TextBox Text="{Binding SourceDirectory, Mode=TwoWay}" IsReadOnly="True" />
+            <TextBlock Text="快照保存路径（详细路径）" FontWeight="SemiBold" />
+            <TextBox Text="{Binding OutputDirectory, Mode=TwoWay}" />
+            <TextBlock Text="{Binding SelectedSourceCandidate.DbStoragePath, StringFormat=账号数据目录：{0}}" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding SelectedSourceCandidate.AccountDirectory, StringFormat=账号目录：{0}}" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding DetailedDiscoverySummary}" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding PathValidationSummary}" TextWrapping="Wrap" />
+          </StackPanel>
+        </Expander>
       </StackPanel>
-      <TextBlock Text="{Binding PathValidationSummary}" TextWrapping="Wrap" />
-      <TextBlock Text="{Binding SnapshotSummary}" FontWeight="SemiBold" />
-      <TextBlock IsVisible="{Binding AccountCandidate, Converter={x:Static conv:ObjectConverters.IsNotNull}}"
-                 Text="{Binding AccountCandidate, StringFormat='检测到账号候选：{0}'}" />
-    </StackPanel>
-  </DockPanel>
+    </DockPanel>
+  </ScrollViewer>
 </UserControl>
