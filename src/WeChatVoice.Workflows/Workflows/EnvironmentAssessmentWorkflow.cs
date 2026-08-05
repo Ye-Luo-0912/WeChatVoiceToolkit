@@ -76,20 +76,7 @@ public sealed class EnvironmentAssessmentWorkflow : IEnvironmentAssessmentWorkfl
             var workerTrust = workerInstalled
                 ? await WorkerBundleTrustEvaluator.VerifyAsync(AppContext.BaseDirectory, cancellationToken).ConfigureAwait(false)
                 : WorkerBundleTrustResult.Deny("worker-not-installed");
-            var writeability = brokerTrust.Verified
-                ? UserWriteability.NotWritable
-                : string.Equals(brokerTrust.NonSensitiveReason, "install-directory-user-writable", StringComparison.Ordinal)
-                    ? UserWriteability.Writable
-                    : string.Equals(brokerTrust.NonSensitiveReason, "install-directory-writeability-indeterminate", StringComparison.Ordinal)
-                        ? UserWriteability.Indeterminate
-                        : UserWriteability.Indeterminate;
-            var installSecurity = new InstallDirectorySecurityResult(
-                Protected: _brokerTrustPolicy is ReleaseBrokerTrustPolicy
-                    && brokerTrust.Verified
-                    && writeability == UserWriteability.NotWritable,
-                UserWritable: writeability == UserWriteability.Writable,
-                NonSensitiveReason: brokerTrust.Verified ? null : brokerTrust.NonSensitiveReason,
-                Writeability: writeability);
+            var installSecurity = AssessInstallDirectorySecurity(_brokerTrustPolicy, brokerTrust);
             context.StateMachine.TryComplete();
             context.Report(OperationPhase.EnvironmentAssessment, OperationStageIds.Completing);
             return new EnvironmentAssessmentResult(
@@ -119,6 +106,64 @@ public sealed class EnvironmentAssessmentWorkflow : IEnvironmentAssessmentWorkfl
             context.StateMachine.TryFail();
             throw;
         }
+    }
+
+    internal static InstallDirectorySecurityResult AssessInstallDirectorySecurity(
+        IBrokerTrustPolicy trustPolicy,
+        BrokerTrustResult brokerTrust)
+    {
+        ArgumentNullException.ThrowIfNull(trustPolicy);
+        ArgumentNullException.ThrowIfNull(brokerTrust);
+
+        if (trustPolicy is DevelopmentBrokerTrustPolicy)
+        {
+            return new InstallDirectorySecurityResult(
+                Protected: false,
+                UserWritable: false,
+                NonSensitiveReason: null,
+                Writeability: UserWriteability.Indeterminate,
+                SecurityState: InstallSecurityState.DevelopmentModeNotApplicable);
+        }
+
+        if (brokerTrust.Verified)
+        {
+            return new InstallDirectorySecurityResult(
+                Protected: true,
+                UserWritable: false,
+                NonSensitiveReason: null,
+                Writeability: UserWriteability.NotWritable,
+                SecurityState: InstallSecurityState.VerifiedProtected);
+        }
+
+        if (string.Equals(brokerTrust.NonSensitiveReason, "install-directory-user-writable", StringComparison.Ordinal))
+        {
+            return new InstallDirectorySecurityResult(
+                Protected: false,
+                UserWritable: true,
+                NonSensitiveReason: brokerTrust.NonSensitiveReason,
+                Writeability: UserWriteability.Writable,
+                SecurityState: InstallSecurityState.UserWritable);
+        }
+
+        if (string.Equals(brokerTrust.NonSensitiveReason, "install-directory-writeability-indeterminate", StringComparison.Ordinal))
+        {
+            return new InstallDirectorySecurityResult(
+                Protected: false,
+                UserWritable: false,
+                NonSensitiveReason: brokerTrust.NonSensitiveReason,
+                Writeability: UserWriteability.Indeterminate,
+                SecurityState: InstallSecurityState.Indeterminate);
+        }
+
+        // Publisher, signature, bundle, and installation-path failures occur
+        // before ReleaseBrokerTrustPolicy probes writeability. Do not present
+        // that as an ACL/filesystem failure to the user.
+        return new InstallDirectorySecurityResult(
+            Protected: false,
+            UserWritable: false,
+            NonSensitiveReason: brokerTrust.NonSensitiveReason,
+            Writeability: UserWriteability.Indeterminate,
+            SecurityState: InstallSecurityState.NotEvaluated);
     }
 
     /// <summary>

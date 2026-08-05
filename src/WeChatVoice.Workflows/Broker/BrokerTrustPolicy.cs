@@ -25,8 +25,23 @@ public sealed record WorkerBundleTrustResult(bool Verified, string? NonSensitive
     public static WorkerBundleTrustResult Deny(string reason) => new(false, reason);
 }
 
+/// <summary>
+/// Security assessment state for the directory that contains the elevated
+/// Broker. A trust-chain failure before the ACL probe is not evidence that the
+/// directory is indeterminate; it is explicitly NotEvaluated.
+/// </summary>
+public enum InstallSecurityState
+{
+    VerifiedProtected,
+    UserWritable,
+    Indeterminate,
+    NotEvaluated,
+    DevelopmentModeNotApplicable,
+}
+
 public sealed record InstallDirectorySecurityResult(
     bool Protected,
     bool UserWritable,
     string? NonSensitiveReason,
-    UserWriteability Writeability = UserWriteability.Indeterminate);
+    UserWriteability Writeability = UserWriteability.Indeterminate,
+    InstallSecurityState SecurityState = InstallSecurityState.NotEvaluated);
