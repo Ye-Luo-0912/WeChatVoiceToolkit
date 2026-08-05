@@ -115,13 +115,14 @@ public sealed class AvaloniaHeadlessSmokeTests
                     WasTruncated: false,
                     VisitedDirectoryCount: 3),
             };
+            var processProbe = new FakeWeixinProcessProbe();
             var services = new DesktopServices(
                 root,
                 new DesktopLog(temporary.Root),
                 new RecentWorkspaceStore(temporary.Root),
                 invokeOnUi: DirectInvokeAsync,
                 dataSourceDiscovery: discovery,
-                weixinProcessProbe: new FakeWeixinProcessProbe());
+                weixinProcessProbe: processProbe);
             return (Services: services, Main: new MainWindowViewModel(services));
         });
 
@@ -148,6 +149,9 @@ public sealed class AvaloniaHeadlessSmokeTests
             Assert.Equal(false, fakeSnapshot.LastRequest?.AllowLiveSource);
 
             Assert.True(materialization.CanNavigate);
+            var processProbe = Assert.IsType<FakeWeixinProcessProbe>(services.WeixinProcessProbe);
+            processProbe.Running = [new WeChatVoice.Windows.WeChatProcessInfo(1234, "WeChat")];
+            materialization.RefreshWeixinStateCommand.Execute(null);
             materialization.OutputDirectory = temporary.GetPath("materialized");
             materialization.WorkspaceOutputPath = temporary.GetPath("materialized.workspace.json");
             var materializationRun = materialization.MaterializeCommand.ExecuteAsync(null);

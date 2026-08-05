@@ -58,6 +58,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
                 }
             }
         };
+        RefreshWeixinState();
     }
 
     /// <summary>True when the last failure was a declined UAC elevation prompt.</summary>
@@ -67,11 +68,14 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
         => CanStartOperation
             && Services.Project.EnvironmentAssessment?.BrokerAcquireAndMaterializeAvailable == true
             && !string.IsNullOrWhiteSpace(SnapshotDirectory)
-            && !string.IsNullOrWhiteSpace(OutputDirectory);
+            && !string.IsNullOrWhiteSpace(OutputDirectory)
+            && IsWeixinProcessReady;
 
     public string MaterializationReadinessSummary
         => IsConfirmDialogOpen || RunHost.IsAwaitingUser
             ? "已暂停等待账号确认：请在上方确认账号，确认后才会弹出 UAC 并继续。"
+            : !IsWeixinProcessReady
+            ? "请先启动 Weixin，再点击“刷新 Weixin 状态”。创建快照时需要退出 Weixin，但提取密钥和物料化时必须让 Weixin 保持运行。"
             : !CanStartMaterialization
             ? Services.Project.Snapshot is null
                 ? "请先创建源快照。"
@@ -126,8 +130,20 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     [ObservableProperty]
     private bool _isConfirmDialogOpen;
 
+    [ObservableProperty]
+    private bool _isWeixinProcessReady;
+
+    [ObservableProperty]
+    private string _weixinProcessSummary = "尚未检查 Weixin 运行状态";
+
     partial void OnIsConfirmDialogOpenChanged(bool value)
     {
+        OnPropertyChanged(nameof(MaterializationReadinessSummary));
+    }
+
+    partial void OnIsWeixinProcessReadyChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanStartMaterialization));
         OnPropertyChanged(nameof(MaterializationReadinessSummary));
     }
 
@@ -181,7 +197,18 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     public override Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
     {
         ApplyProjectDefaults();
+        RefreshWeixinState();
         return Task.CompletedTask;
+    }
+
+    [RelayCommand]
+    private void RefreshWeixinState()
+    {
+        var processes = Services.WeixinProcessProbe.ListRunning();
+        IsWeixinProcessReady = processes.Count > 0;
+        WeixinProcessSummary = IsWeixinProcessReady
+            ? $"已检测到 Weixin（{processes.Count} 个进程），可以提取密钥。"
+            : "未检测到运行中的 Weixin。请启动 Weixin 后刷新状态。";
     }
 
     private void ApplyProjectDefaults()
@@ -264,6 +291,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
         var requestedAccount = string.IsNullOrWhiteSpace(RequestedAccount) ? null : RequestedAccount;
         var workspaceOutputPath = string.IsNullOrWhiteSpace(WorkspaceOutputPath) ? null : WorkspaceOutputPath;
         var environment = Services.Project.EnvironmentAssessment;
+        RefreshWeixinState();
         await RunHost.RunAsync(
             CreateConfirmationSession,
         async (context, cancellationToken) =>
@@ -280,6 +308,13 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
                 throw new AppFailureException(
                     ErrorCode.WorkerBundleUntrusted,
                     "环境检测中的 Broker、Worker 或安装目录信任校验未通过；请修复环境后重新检测。 ");
+            }
+
+            if (Services.WeixinProcessProbe.ListRunning().Count == 0)
+            {
+                throw new AppFailureException(
+                    ErrorCode.WeixinNotRunning,
+                    "请启动 Weixin 后再执行物料化；密钥提取需要读取受控的 Weixin 进程内存。 ");
             }
 
             if (snapshot?.Manifest.PotentiallyInconsistent == true)

@@ -21,7 +21,14 @@ public sealed class MaterializationViewModelTests : IDisposable
         var root = new WorkflowCompositionRoot(
             new TestDoubles.SilentConfirmation(),
             materialization: _workflow);
-        Services = new DesktopServices(root, new DesktopLog(_root), new RecentWorkspaceStore(_root));
+        Services = new DesktopServices(
+            root,
+            new DesktopLog(_root),
+            new RecentWorkspaceStore(_root),
+            weixinProcessProbe: new FakeWeixinProcessProbe
+            {
+                Running = [new WeChatVoice.Windows.WeChatProcessInfo(1234, "WeChat")],
+            });
         Services.Project.EnvironmentAssessment = new FakeEnvironmentWorkflow().Result;
     }
 
@@ -103,6 +110,21 @@ public sealed class MaterializationViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Materialization_requires_a_live_weixin_process()
+    {
+        ((FakeWeixinProcessProbe)Services.WeixinProcessProbe).Running = [];
+        var viewModel = CreateViewModel();
+        viewModel.SnapshotDirectory = "C:\\snapshots\\s";
+        viewModel.OutputDirectory = "C:\\output";
+
+        await viewModel.MaterializeCommand.ExecuteAsync(null);
+
+        Assert.Equal(WorkflowState.Failed, viewModel.RunHost.State);
+        Assert.Equal(ErrorCode.WeixinNotRunning, viewModel.RunHost.LastErrorCode);
+        Assert.Contains("启动 Weixin", viewModel.WeixinProcessSummary, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Cancel_stops_a_running_materialization()
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -146,7 +168,15 @@ public sealed class MaterializationViewModelTests : IDisposable
             new TestDoubles.SilentConfirmation(),
             materialization: _workflow,
             workspace: workspaceWorkflow);
-        var services = new DesktopServices(root, new DesktopLog(_root), new RecentWorkspaceStore(_root), invokeOnUi: DirectInvokeAsync);
+        var services = new DesktopServices(
+            root,
+            new DesktopLog(_root),
+            new RecentWorkspaceStore(_root),
+            invokeOnUi: DirectInvokeAsync,
+            weixinProcessProbe: new FakeWeixinProcessProbe
+            {
+                Running = [new WeChatVoice.Windows.WeChatProcessInfo(1234, "WeChat")],
+            });
         services.Project.EnvironmentAssessment = new FakeEnvironmentWorkflow().Result;
         var viewModel = new MaterializationViewModel(services, DirectInvokeAsync)
         {

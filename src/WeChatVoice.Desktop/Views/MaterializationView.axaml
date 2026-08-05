@@ -27,8 +27,10 @@
         <TextBlock Foreground="#102A43" Text="{Binding PendingAccountCandidate, StringFormat='检测到账号：{0}'}" />
         <TextBlock Foreground="#102A43" Text="请确认这是您自己的 Weixin 账号。确认后才会继续并弹出 UAC；如果不是，请点击拒绝或取消。" TextWrapping="Wrap" />
         <StackPanel Orientation="Horizontal" Spacing="8">
-          <Button Content="确认" Command="{Binding ConfirmAccountCommand}" />
-          <Button Content="拒绝" Command="{Binding DeclineAccountCommand}" />
+          <Button Content="确认" Command="{Binding ConfirmAccountCommand}"
+                  Background="#1565A8" Foreground="#FFFFFF" BorderBrush="#0D47A1" />
+          <Button Content="拒绝" Command="{Binding DeclineAccountCommand}"
+                  Background="#B42318" Foreground="#FFFFFF" BorderBrush="#7A271A" />
         </StackPanel>
       </StackPanel>
     </Border>
@@ -47,8 +49,18 @@
           <TextBox Width="380" PlaceholderText="可选：Workspace JSON 输出路径" Text="{Binding WorkspaceOutputPath}" />
           <TextBox Width="380" PlaceholderText="可选：显式确认的账号（wxid_…）" Text="{Binding RequestedAccount}" />
         </StackPanel>
+        <Border Background="#E8F1FF" CornerRadius="6" Padding="12">
+          <StackPanel Spacing="6">
+            <TextBlock Foreground="#102A43" FontWeight="SemiBold" Text="密钥提取前置条件" />
+            <TextBlock Foreground="#243B53" Text="{Binding WeixinProcessSummary}" TextWrapping="Wrap" />
+            <TextBlock Foreground="#243B53" Text="创建源快照时需要退出 Weixin；现在请重新启动 Weixin，工具只会进行受控的只读身份验证和密钥提取。" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
         <StackPanel Orientation="Horizontal" Spacing="16">
-          <Button Content="开始物料化" Command="{Binding MaterializeCommand}" IsEnabled="{Binding CanStartMaterialization}" />
+          <Button Content="刷新 Weixin 状态" Command="{Binding RefreshWeixinStateCommand}"
+                  Background="#2F6F9F" Foreground="#FFFFFF" BorderBrush="#8CC8F0" />
+          <Button Content="开始物料化" Command="{Binding MaterializeCommand}" IsEnabled="{Binding CanStartMaterialization}"
+                  Background="#1565A8" Foreground="#FFFFFF" BorderBrush="#8CC8F0" />
           <Button Content="恢复 Workspace（不重新解密）" Command="{Binding RecoverMaterializationCommand}" IsVisible="{Binding CanRecoverMaterialization}" IsEnabled="{Binding CanStartOperation}" />
           <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
           <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />

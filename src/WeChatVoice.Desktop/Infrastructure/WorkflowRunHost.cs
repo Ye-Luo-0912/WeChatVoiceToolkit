@@ -389,6 +389,19 @@ public sealed partial class WorkflowRunHost : ObservableObject
         {
             StageMessage = "等待账号确认…";
         }
+        else if (State == WorkflowState.Running
+            && string.Equals(StageMessage, "等待账号确认…", StringComparison.Ordinal))
+        {
+            StageMessage = "已确认账号，正在继续…";
+        }
+        else if (State == WorkflowState.Failed)
+        {
+            StageMessage = "操作失败";
+        }
+        else if (State == WorkflowState.Cancelled)
+        {
+            StageMessage = "操作已取消";
+        }
     }
 
     private void DetachSession(WorkflowRunSession session)
