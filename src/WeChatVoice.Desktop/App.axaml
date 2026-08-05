@@ -12,6 +12,7 @@
       <Setter Property="FontFamily" Value="Inter" />
       <Setter Property="FontSize" Value="14" />
       <Setter Property="Foreground" Value="#F8FAFC" />
+      <Setter Property="Background" Value="#0B1220" />
     </Style>
     <Style Selector="TextBlock">
       <Setter Property="FontFamily" Value="Inter" />
@@ -21,10 +22,26 @@
     <Style Selector="Button">
       <Setter Property="FontFamily" Value="Inter" />
       <Setter Property="FontSize" Value="14" />
+      <Setter Property="Background" Value="#1D4ED8" />
+      <Setter Property="Foreground" Value="#FFFFFF" />
+      <Setter Property="BorderBrush" Value="#60A5FA" />
+      <Setter Property="Padding" Value="14,9" />
+    </Style>
+    <Style Selector="Button:disabled">
+      <Setter Property="Background" Value="#334155" />
+      <Setter Property="Foreground" Value="#94A3B8" />
+      <Setter Property="BorderBrush" Value="#475569" />
     </Style>
     <Style Selector="TextBox">
       <Setter Property="FontFamily" Value="Inter" />
       <Setter Property="FontSize" Value="14" />
+      <Setter Property="Background" Value="#111827" />
+      <Setter Property="Foreground" Value="#F8FAFC" />
+      <Setter Property="BorderBrush" Value="#475569" />
+      <Setter Property="Padding" Value="12,8" />
+    </Style>
+    <Style Selector="CheckBox">
+      <Setter Property="Foreground" Value="#E2E8F0" />
     </Style>
   </Application.Styles>
 

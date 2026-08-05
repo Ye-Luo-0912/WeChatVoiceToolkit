@@ -59,7 +59,9 @@
         </DockPanel>
       </Border>
 
-      <ContentControl Grid.Column="1" Content="{Binding SelectedPage}" />
+      <Border Grid.Column="1" Background="#0B1220">
+        <ContentControl Content="{Binding SelectedPage}" />
+      </Border>
     </Grid>
   </Grid>
 </Window>

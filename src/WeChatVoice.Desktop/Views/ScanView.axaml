@@ -3,67 +3,124 @@
              xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
              x:Class="WeChatVoice.Desktop.Views.ScanView"
              x:DataType="vm:ScanViewModel">
-  <DockPanel Margin="24">
-    <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,16,0,0">
-      <ProgressBar IsVisible="{Binding RunHost.IsRunning}" IsIndeterminate="True" />
-      <TextBlock Text="{Binding RunHost.StageMessage}" />
-      <TextBlock Text="{Binding RunHost.LastError}" Foreground="Red" />
-    </StackPanel>
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                VerticalScrollBarVisibility="Auto">
+    <DockPanel Margin="28">
+      <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,18,0,0">
+        <ProgressBar IsVisible="{Binding RunHost.IsRunning}" IsIndeterminate="True" />
+        <TextBlock Text="{Binding RunHost.StageMessage}" TextWrapping="Wrap" Foreground="#93C5FD" />
+        <TextBlock Text="{Binding RunHost.LastError}" Foreground="#FCA5A5" TextWrapping="Wrap" />
+      </StackPanel>
 
-    <StackPanel Spacing="16">
-      <TextBlock FontSize="20" FontWeight="SemiBold" Text="语音扫描（元数据审计）" />
-      <TextBlock Text="只读审计，不写任何文件。仅支持一对一联系人；输出为原始 SILK 的关联状态。" TextWrapping="Wrap" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="340" IsReadOnly="True" PlaceholderText="当前 Workspace JSON（由项目会话提供）" Text="{Binding WorkspacePath}" />
-        <TextBlock Width="360" Text="联系人必须在联系人页显式选择" />
+      <StackPanel Spacing="18" MaxWidth="1080">
+        <StackPanel Spacing="5">
+          <TextBlock FontSize="26" FontWeight="SemiBold" Text="语音扫描" />
+          <TextBlock Foreground="#94A3B8"
+                     Text="先确认联系人，再设置范围。扫描只读数据库，不会写入或导出文件。"
+                     TextWrapping="Wrap" />
+        </StackPanel>
+
+        <Border Background="#172554"
+                BorderBrush="#3B82F6"
+                BorderThickness="1"
+                CornerRadius="10"
+                Padding="16">
+          <StackPanel Spacing="6">
+            <TextBlock FontSize="16" FontWeight="SemiBold" Text="联系人" Foreground="#DBEAFE" />
+            <TextBlock Text="{Binding ContactSelectionSummary}" Foreground="#FFFFFF" />
+            <TextBlock IsVisible="{Binding NeedsContactSelection}"
+                       Text="请先点击左侧“联系人”，加载并选择一位一对一联系人。"
+                       Foreground="#BFDBFE"
+                       TextWrapping="Wrap" />
+            <TextBlock IsVisible="{Binding HasSelectedContact}"
+                       Text="扫描和导出会固定使用该内部 username，不会按昵称猜测。"
+                       Foreground="#BFDBFE"
+                       TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <StackPanel IsVisible="{Binding HasSelectedContact}" Spacing="16">
+          <Border Background="#111827"
+                  BorderBrush="#334155"
+                  BorderThickness="1"
+                  CornerRadius="10"
+                  Padding="16">
+            <StackPanel Spacing="12">
+              <TextBlock FontSize="16" FontWeight="SemiBold" Text="扫描范围" Foreground="#E2E8F0" />
+              <TextBlock Text="{Binding WorkspacePath, StringFormat='Workspace：{0}'}" Foreground="#94A3B8" TextWrapping="Wrap" />
+              <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="12">
+                <StackPanel Grid.Row="0" Grid.Column="0" Spacing="5">
+                  <TextBlock Text="方向" Foreground="#94A3B8" />
+                  <TextBox Text="仅对方发来的语音（incoming）" IsReadOnly="True" />
+                </StackPanel>
+                <StackPanel Grid.Row="0" Grid.Column="1" Spacing="5">
+                  <TextBlock Text="最大条数（可选）" Foreground="#94A3B8" />
+                  <TextBox PlaceholderText="例如 500" Text="{Binding MaximumResultsText}" />
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="0" Spacing="5">
+                  <TextBlock Text="起始 UTC 时间（可选）" Foreground="#94A3B8" />
+                  <TextBox PlaceholderText="2025-01-01T00:00:00Z" Text="{Binding FromText}" />
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="1" Spacing="5">
+                  <TextBlock Text="结束 UTC 时间（可选）" Foreground="#94A3B8" />
+                  <TextBox PlaceholderText="2025-12-31T23:59:59Z" Text="{Binding ToText}" />
+                </StackPanel>
+                <StackPanel Grid.Row="2" Grid.Column="0" Spacing="8">
+                  <CheckBox Content="深度扫描：读取并计算完整 Payload Hash" IsChecked="{Binding DeepScan}" />
+                  <CheckBox Content="解析语音时长（较慢）" IsChecked="{Binding ResolveDurations}" IsEnabled="{Binding DurationAnalysisAvailable}" />
+                </StackPanel>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <Border Background="#111827"
+                  BorderBrush="#334155"
+                  BorderThickness="1"
+                  CornerRadius="10"
+                  Padding="16">
+            <StackPanel Spacing="12">
+              <TextBlock FontSize="16" FontWeight="SemiBold" Text="训练筛选（可选）" Foreground="#E2E8F0" />
+              <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="12">
+                <TextBox Grid.Row="0" Grid.Column="0" PlaceholderText="最短时长 ms" Text="{Binding MinimumDurationMsText}" />
+                <TextBox Grid.Row="0" Grid.Column="1" PlaceholderText="最长时长 ms" Text="{Binding MaximumDurationMsText}" />
+                <TextBox Grid.Row="1" Grid.Column="0" PlaceholderText="最小大小 bytes" Text="{Binding MinimumPayloadBytesText}" />
+                <TextBox Grid.Row="1" Grid.Column="1" PlaceholderText="最大大小 bytes" Text="{Binding MaximumPayloadBytesText}" />
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Button Content="开始扫描"
+                    Command="{Binding ScanCommand}"
+                    IsEnabled="{Binding CanStartOperation}"
+                    Background="#2563EB"
+                    FontWeight="SemiBold" />
+            <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
+            <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
+          </StackPanel>
+
+          <Border Background="#0F172A"
+                  BorderBrush="#334155"
+                  BorderThickness="1"
+                  CornerRadius="10"
+                  Padding="16">
+            <StackPanel Spacing="12">
+              <TextBlock FontSize="16" FontWeight="SemiBold" Text="扫描结果" Foreground="#E2E8F0" />
+              <TextBlock Text="{Binding ScanSummary}" Foreground="#CBD5E1" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding AccountSummary}" Foreground="#94A3B8" />
+              <TextBlock Text="{Binding TotalDurationMs, StringFormat='总时长：{0} ms'}" Foreground="#CBD5E1" />
+              <Grid ColumnDefinitions="*,*,*" RowDefinitions="Auto,Auto" ColumnSpacing="18" RowSpacing="12">
+                <StackPanel Grid.Row="0" Grid.Column="0"><TextBlock Text="匹配" Foreground="#94A3B8" /><TextBlock FontSize="22" FontWeight="Bold" Text="{Binding MatchedVoiceCount}" /></StackPanel>
+                <StackPanel Grid.Row="0" Grid.Column="1"><TextBlock Text="可导出" Foreground="#94A3B8" /><TextBlock FontSize="22" FontWeight="Bold" Text="{Binding ExportableVoiceCount}" /></StackPanel>
+                <StackPanel Grid.Row="0" Grid.Column="2"><TextBlock Text="疑似重复" Foreground="#94A3B8" /><TextBlock FontSize="22" FontWeight="Bold" Text="{Binding DuplicateCount}" /></StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="0"><TextBlock Text="Missing" Foreground="#94A3B8" /><TextBlock FontSize="20" Text="{Binding MissingCount}" /></StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="1"><TextBlock Text="Empty / Invalid" Foreground="#94A3B8" /><StackPanel Orientation="Horizontal" Spacing="4"><TextBlock FontSize="20" Text="{Binding EmptyCount}" /><TextBlock FontSize="20" Text="/" /><TextBlock FontSize="20" Text="{Binding InvalidHeaderCount}" /></StackPanel></StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="2"><TextBlock Text="Ambiguous" Foreground="#94A3B8" /><TextBlock FontSize="20" Text="{Binding AmbiguousCount}" /></StackPanel>
+              </Grid>
+            </StackPanel>
+          </Border>
+        </StackPanel>
       </StackPanel>
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBlock Width="180" Text="仅对方发来的语音（incoming）" />
-        <TextBox Width="180" PlaceholderText="起始 UTC 时间" Text="{Binding FromText}" />
-        <TextBox Width="180" PlaceholderText="结束 UTC 时间" Text="{Binding ToText}" />
-        <CheckBox Content="深度扫描（读取并 Hash 完整 Payload）" IsChecked="{Binding DeepScan}" />
-        <CheckBox Content="解码计算时长（可选，较慢）" IsChecked="{Binding ResolveDurations}" IsEnabled="{Binding DurationAnalysisAvailable}" />
-        <TextBox Width="120" PlaceholderText="最大条数（可选）" Text="{Binding MaximumResultsText}" />
-        <Button Content="扫描" Command="{Binding ScanCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
-        <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
-      </StackPanel>
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBlock Width="180" Text="训练筛选（可选）" />
-        <TextBox Width="150" PlaceholderText="最短时长 ms" Text="{Binding MinimumDurationMsText}" />
-        <TextBox Width="150" PlaceholderText="最长时长 ms" Text="{Binding MaximumDurationMsText}" />
-        <TextBox Width="150" PlaceholderText="最小大小 bytes" Text="{Binding MinimumPayloadBytesText}" />
-        <TextBox Width="150" PlaceholderText="最大大小 bytes" Text="{Binding MaximumPayloadBytesText}" />
-      </StackPanel>
-      <TextBlock Text="{Binding AccountSummary}" />
-      <TextBlock Text="{Binding ScanSummary}" FontWeight="SemiBold" />
-      <TextBlock Text="{Binding TotalDurationMs, StringFormat='总时长：{0} ms'}" />
-      <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="24">
-        <StackPanel Grid.Column="0" Spacing="4">
-          <TextBlock Text="匹配" />
-          <TextBlock FontSize="20" FontWeight="Bold" Text="{Binding MatchedVoiceCount}" />
-        </StackPanel>
-        <StackPanel Grid.Column="1" Spacing="4">
-          <TextBlock Text="Missing" />
-          <TextBlock FontSize="20" FontWeight="Bold" Text="{Binding MissingCount}" />
-        </StackPanel>
-        <StackPanel Grid.Column="2" Spacing="4">
-          <TextBlock Text="Empty" />
-          <TextBlock FontSize="20" FontWeight="Bold" Text="{Binding EmptyCount}" />
-        </StackPanel>
-        <StackPanel Grid.Column="3" Spacing="4">
-          <TextBlock Text="InvalidHeader" />
-          <TextBlock FontSize="20" FontWeight="Bold" Text="{Binding InvalidHeaderCount}" />
-        </StackPanel>
-        <StackPanel Grid.Column="4" Spacing="4">
-          <TextBlock Text="Ambiguous" />
-          <TextBlock FontSize="20" FontWeight="Bold" Text="{Binding AmbiguousCount}" />
-        </StackPanel>
-        <StackPanel Grid.Column="5" Spacing="4">
-          <TextBlock Text="疑似重复" />
-          <TextBlock FontSize="20" FontWeight="Bold" Text="{Binding DuplicateCount}" />
-        </StackPanel>
-      </Grid>
-    </StackPanel>
-  </DockPanel>
+    </DockPanel>
+  </ScrollViewer>
 </UserControl>

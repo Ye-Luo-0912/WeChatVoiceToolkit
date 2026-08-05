@@ -35,6 +35,15 @@ public sealed partial class ScanViewModel : PageViewModelBase
         ? "请先完成物料化或加载 Workspace"
         : "请先在联系人页显式选择联系人";
 
+    public bool HasSelectedContact => Services.Project.SelectedContact is not null;
+
+    public bool NeedsContactSelection => !HasSelectedContact;
+
+    public string ContactSelectionSummary
+        => Services.Project.SelectedContact is { } contact
+            ? $"当前联系人：{contact.DisplayName}  ·  内部 username：{contact.Username}"
+            : "尚未选择联系人";
+
     public bool DurationAnalysisAvailable => Services.Workflows.DurationAnalysisAvailable;
 
     [ObservableProperty]
@@ -332,6 +341,14 @@ public sealed partial class ScanViewModel : PageViewModelBase
         if (propertyName == nameof(ExportProjectSession.WorkspacePath))
         {
             WorkspacePath = Services.Project.WorkspacePath;
+        }
+
+        if (propertyName == nameof(ExportProjectSession.SelectedContact))
+        {
+            OnPropertyChanged(nameof(HasSelectedContact));
+            OnPropertyChanged(nameof(NeedsContactSelection));
+            OnPropertyChanged(nameof(ContactSelectionSummary));
+            OnPropertyChanged(nameof(CanNavigate));
         }
     }
 }
