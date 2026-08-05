@@ -22,10 +22,33 @@
         </StackPanel>
         <TextBlock Text="{Binding AccountSummary}" />
         <TextBlock Text="{Binding ContactSummary}" />
+        <Border IsVisible="{Binding HasSelectedContact}"
+                Background="#164E78"
+                BorderBrush="#60A5FA"
+                BorderThickness="1"
+                CornerRadius="4"
+                Padding="12,8">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+            <TextBlock Text="{Binding SelectedContactSummary}"
+                       Foreground="#FFFFFF"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+            <Button Grid.Column="1"
+                    Content="清除选择"
+                    Command="{Binding ClearSelectionCommand}"
+                    Background="#0F3554"
+                    Foreground="#FFFFFF" />
+          </Grid>
+        </Border>
+        <TextBlock IsVisible="{Binding HasSelectedContact}"
+                   Text="已锁定联系人。点击左侧“语音扫描”继续，扫描和导出将始终使用这个 username。"
+                   Foreground="#93C5FD"
+                   TextWrapping="Wrap" />
       </StackPanel>
 
       <ListBox ItemsSource="{Binding Contacts}"
-               SelectedItem="{Binding SelectedContact}">
+               SelectedItem="{Binding SelectedContact, Mode=TwoWay}"
+               SelectionMode="Single">
         <ListBox.ItemTemplate>
           <DataTemplate x:DataType="models:ContactRecord">
             <StackPanel Orientation="Horizontal" Spacing="16">

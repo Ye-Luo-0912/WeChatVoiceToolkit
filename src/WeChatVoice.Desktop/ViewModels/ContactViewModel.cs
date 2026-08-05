@@ -48,6 +48,14 @@ public sealed partial class ContactViewModel : PageViewModelBase
     [ObservableProperty]
     private string _contactSummary = "尚未加载";
 
+    /// <summary>True when the ListBox has a concrete stable contact selection.</summary>
+    public bool HasSelectedContact => SelectedContact is not null;
+
+    public string SelectedContactSummary
+        => SelectedContact is { } contact
+            ? $"已选择：{contact.DisplayName}  ·  内部 username：{contact.Username}"
+            : "尚未选择联系人。请单击列表中的一行；后续扫描会使用该行的内部 username。";
+
     [RelayCommand]
     private Task LoadContactsAsync()
     {
@@ -83,7 +91,13 @@ public sealed partial class ContactViewModel : PageViewModelBase
     {
         Services.Project.SelectedContact = value;
         Services.Project.ClearVoiceSelection(clearContact: false);
+        OnPropertyChanged(nameof(HasSelectedContact));
+        OnPropertyChanged(nameof(SelectedContactSummary));
     }
+
+    [RelayCommand]
+    private void ClearSelection()
+        => SelectedContact = null;
 
     protected override void OnProjectPropertyChanged(string? propertyName)
     {
