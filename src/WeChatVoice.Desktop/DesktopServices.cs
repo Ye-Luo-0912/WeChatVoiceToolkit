@@ -36,6 +36,7 @@ public sealed class DesktopServices : IAsyncDisposable
         WeixinProcessProbe = weixinProcessProbe ?? new WeixinProcessProbe();
         SnapshotOutputDirectories = snapshotOutputDirectories
             ?? new SnapshotOutputDirectoryFactory(recentWorkspaces.StorageDirectory);
+        WorkspaceOutputDirectories = new WorkspaceOutputDirectoryFactory(recentWorkspaces.StorageDirectory);
     }
 
     public static DesktopServices Create(bool allowDevelopmentBroker = false, string? appDataDirectory = null)
@@ -81,6 +82,8 @@ public sealed class DesktopServices : IAsyncDisposable
     public IWeixinProcessProbe WeixinProcessProbe { get; }
 
     public SnapshotOutputDirectoryFactory SnapshotOutputDirectories { get; }
+
+    public WorkspaceOutputDirectoryFactory WorkspaceOutputDirectories { get; }
 
     public async ValueTask DisposeAsync()
     {

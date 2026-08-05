@@ -177,6 +177,19 @@ public sealed class MaterializationViewModelTests : IDisposable
         Assert.Equal(Services.Project.SnapshotDirectory, viewModel.SnapshotDirectory);
     }
 
+    [Fact]
+    public void Materialization_allocates_output_and_workspace_paths_automatically()
+    {
+        var viewModel = CreateViewModel();
+
+        Services.Project.SnapshotDirectory = Path.Combine(_root, "snapshot");
+
+        Assert.False(string.IsNullOrWhiteSpace(viewModel.OutputDirectory));
+        Assert.False(string.IsNullOrWhiteSpace(viewModel.WorkspaceOutputPath));
+        Assert.EndsWith(".workspace.json", viewModel.WorkspaceOutputPath, StringComparison.OrdinalIgnoreCase);
+        Assert.True(viewModel.CanStartMaterialization);
+    }
+
     internal static async Task SpinWaitUntilAsync(Func<bool> condition, int timeoutMs = 5000)
     {
         var deadline = Environment.TickCount64 + timeoutMs;

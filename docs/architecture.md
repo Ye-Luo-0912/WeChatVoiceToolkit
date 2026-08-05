@@ -39,6 +39,12 @@ only a fallback: it must resolve to one validated `db_storage` layout, reject
 reparse points and empty database trees, and pass the same source/output
 non-overlap and capacity checks as automatic discovery.
 
+Once the snapshot workflow completes, the Desktop materialization page derives
+an application-owned Workspace output directory and Workspace JSON path from
+the verified snapshot identity. These paths are prepared before the button is
+enabled, so an empty output field cannot reach the materialization workflow as
+an `InvalidRequest`.
+
 Schema adapters operate on `WeChatDataSet`, not one database. A data set contains
 message, media, contact, and shard artifacts. `IWeChatDataSetAdapter` opens an
 `IAsyncDisposable IVoiceCatalog`, whose voice records carry a `VoicePayloadLocator` that can point

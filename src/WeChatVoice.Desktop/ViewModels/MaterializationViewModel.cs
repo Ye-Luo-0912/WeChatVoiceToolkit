@@ -17,6 +17,9 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
 {
     private DialogAccountConfirmation? _activeConfirmation;
     private readonly WorkflowRunHost _recoveryAssessmentHost;
+    private bool _applyingDefaults;
+    private string? _automaticOutputDirectory;
+    private string? _automaticWorkspaceOutputPath;
 
     public MaterializationViewModel(DesktopServices services)
         : this(services, invokeOnUi: null)
@@ -57,6 +60,21 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
 
     /// <summary>True when the last failure was a declined UAC elevation prompt.</summary>
     public bool IsUacRejected => RunHost.LastErrorCode == ErrorCode.UacElevationRejected;
+
+    public bool CanStartMaterialization
+        => CanStartOperation
+            && Services.Project.EnvironmentAssessment?.BrokerAcquireAndMaterializeAvailable == true
+            && !string.IsNullOrWhiteSpace(SnapshotDirectory)
+            && !string.IsNullOrWhiteSpace(OutputDirectory);
+
+    public string MaterializationReadinessSummary
+        => !CanStartMaterialization
+            ? Services.Project.Snapshot is null
+                ? "请先创建源快照。"
+                : Services.Project.EnvironmentAssessment?.BrokerAcquireAndMaterializeAvailable != true
+                    ? "环境检测尚未通过 Broker/Worker 信任校验。"
+                    : "正在准备物料化路径……"
+            : "路径已自动准备，可以开始物料化。";
 
     public override string Title => "物料化";
 
@@ -106,9 +124,102 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
 
     protected override void OnProjectPropertyChanged(string? propertyName)
     {
-        if (propertyName == nameof(ExportProjectSession.SnapshotDirectory))
+        switch (propertyName)
         {
-            SnapshotDirectory = Services.Project.SnapshotDirectory;
+            case nameof(ExportProjectSession.SnapshotDirectory):
+            case nameof(ExportProjectSession.Snapshot):
+            case nameof(ExportProjectSession.EnvironmentAssessment):
+                ApplyProjectDefaults();
+                OnPropertyChanged(nameof(CanNavigate));
+                OnPropertyChanged(nameof(NavigationHint));
+                OnPropertyChanged(nameof(CanStartMaterialization));
+                OnPropertyChanged(nameof(MaterializationReadinessSummary));
+                break;
+        }
+    }
+
+    partial void OnSnapshotDirectoryChanged(string? value)
+    {
+        if (!_applyingDefaults && !string.IsNullOrWhiteSpace(value))
+        {
+            ApplyOutputDefaults(value);
+        }
+
+        OnPropertyChanged(nameof(CanStartMaterialization));
+        OnPropertyChanged(nameof(MaterializationReadinessSummary));
+    }
+
+    partial void OnOutputDirectoryChanged(string? value)
+    {
+        if (!_applyingDefaults)
+        {
+            _automaticOutputDirectory = null;
+            _automaticWorkspaceOutputPath = null;
+        }
+
+        OnPropertyChanged(nameof(CanStartMaterialization));
+        OnPropertyChanged(nameof(MaterializationReadinessSummary));
+    }
+
+    partial void OnWorkspaceOutputPathChanged(string? value)
+    {
+        if (!_applyingDefaults)
+        {
+            _automaticWorkspaceOutputPath = null;
+        }
+    }
+
+    public override Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
+    {
+        ApplyProjectDefaults();
+        return Task.CompletedTask;
+    }
+
+    private void ApplyProjectDefaults()
+    {
+        _applyingDefaults = true;
+        try
+        {
+            var projectSnapshotDirectory = Services.Project.SnapshotDirectory;
+            if (!string.IsNullOrWhiteSpace(projectSnapshotDirectory))
+            {
+                SnapshotDirectory = projectSnapshotDirectory;
+            }
+
+            if (!string.IsNullOrWhiteSpace(SnapshotDirectory))
+            {
+                ApplyOutputDefaults(SnapshotDirectory);
+            }
+        }
+        finally
+        {
+            _applyingDefaults = false;
+        }
+
+        OnPropertyChanged(nameof(CanNavigate));
+        OnPropertyChanged(nameof(NavigationHint));
+        OnPropertyChanged(nameof(CanStartMaterialization));
+        OnPropertyChanged(nameof(MaterializationReadinessSummary));
+    }
+
+    private void ApplyOutputDefaults(string snapshotDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(OutputDirectory)
+            || string.Equals(OutputDirectory, _automaticOutputDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            var output = Services.WorkspaceOutputDirectories.CreateDefault(
+                snapshotDirectory,
+                Services.Project.Snapshot?.Manifest.SnapshotId);
+            OutputDirectory = output;
+            _automaticOutputDirectory = output;
+        }
+
+        if (string.IsNullOrWhiteSpace(WorkspaceOutputPath)
+            || string.Equals(WorkspaceOutputPath, _automaticWorkspaceOutputPath, StringComparison.OrdinalIgnoreCase))
+        {
+            var workspacePath = WorkspaceOutputDirectoryFactory.CreateWorkspaceDocumentPath(OutputDirectory!);
+            WorkspaceOutputPath = workspacePath;
+            _automaticWorkspaceOutputPath = workspacePath;
         }
     }
 
@@ -195,6 +306,8 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
         {
             await AssessRecoveryAsync(outputDirectory, workspaceOutputPath).ConfigureAwait(true);
         }
+
+        OnPropertyChanged(nameof(CanStartMaterialization));
     }
 
     [RelayCommand]

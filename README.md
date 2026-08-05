@@ -44,6 +44,12 @@ The guided Desktop sequence is:
 choice when needed -> exit Weixin -> automatic stable snapshot -> reopen
 Weixin -> materialize -> contact -> incoming scan -> raw SILK export`.
 
+After a snapshot completes, the materialization page automatically fills the
+verified snapshot path, an opaque Workspace output directory, and its
+Workspace JSON path. The user only needs to start materialization and confirm
+the account/UAC prompt; paths are still available under the page details for
+diagnostics.
+
 ## Current commands
 
 ```powershell
