@@ -13,46 +13,51 @@
       </Border>
     </StackPanel>
 
-    <StackPanel Spacing="16">
-      <TextBlock FontSize="20" FontWeight="SemiBold" Text="物料化（解密数据库）" />
-      <TextBlock Text="快照完成后会自动填充快照目录、Workspace 输出目录和 JSON 路径。点击开始后，Key Broker 会弹出 UAC 授权并确认账号。" TextWrapping="Wrap" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="380" PlaceholderText="快照目录" Text="{Binding SnapshotDirectory}" />
-        <Button Content="选择快照" Command="{Binding BrowseSnapshotCommand}" />
-        <TextBox Width="380" PlaceholderText="物料化输出目录" Text="{Binding OutputDirectory}" />
-        <Button Content="选择输出目录" Command="{Binding BrowseOutputCommand}" />
-      </StackPanel>
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="380" PlaceholderText="可选：Workspace JSON 输出路径" Text="{Binding WorkspaceOutputPath}" />
-        <TextBox Width="380" PlaceholderText="可选：显式确认的账号（wxid_…）" Text="{Binding RequestedAccount}" />
-      </StackPanel>
-      <StackPanel Orientation="Horizontal" Spacing="16">
-        <Button Content="开始物料化" Command="{Binding MaterializeCommand}" IsEnabled="{Binding CanStartMaterialization}" />
-        <Button Content="恢复 Workspace（不重新解密）" Command="{Binding RecoverMaterializationCommand}" IsVisible="{Binding CanRecoverMaterialization}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
-        <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
-      </StackPanel>
-      <TextBlock Text="{Binding ResultSummary}" FontWeight="SemiBold" />
-      <TextBlock Text="{Binding IdentitySummary}" />
-      <TextBlock Text="{Binding RecoverySummary}" TextWrapping="Wrap" />
-      <TextBlock Text="{Binding MaterializationReadinessSummary}" TextWrapping="Wrap" />
-    </StackPanel>
-
-    <Border IsVisible="{Binding IsConfirmDialogOpen}"
+    <!-- Keep the safety confirmation above the form. The workflow deliberately
+         pauses here until the user confirms the detected Weixin account. -->
+    <Border DockPanel.Dock="Top"
+            IsVisible="{Binding IsConfirmDialogOpen}"
             Background="#EEF2F7"
             CornerRadius="6"
             Padding="16"
             Margin="0,12,0,0"
             VerticalAlignment="Top">
       <StackPanel Spacing="10">
-        <TextBlock FontWeight="SemiBold" Text="确认账号身份" />
-        <TextBlock Text="{Binding PendingAccountCandidate, StringFormat='检测到账号：{0}'}" />
-        <TextBlock Text="请确认这是您自己的 Weixin 账号。该账号将与密钥提取和物料化结果绑定。" TextWrapping="Wrap" />
+        <TextBlock Foreground="#102A43" FontWeight="SemiBold" Text="确认账号身份（流程正在等待此操作）" />
+        <TextBlock Foreground="#102A43" Text="{Binding PendingAccountCandidate, StringFormat='检测到账号：{0}'}" />
+        <TextBlock Foreground="#102A43" Text="请确认这是您自己的 Weixin 账号。确认后才会继续并弹出 UAC；如果不是，请点击拒绝或取消。" TextWrapping="Wrap" />
         <StackPanel Orientation="Horizontal" Spacing="8">
           <Button Content="确认" Command="{Binding ConfirmAccountCommand}" />
           <Button Content="拒绝" Command="{Binding DeclineAccountCommand}" />
         </StackPanel>
       </StackPanel>
     </Border>
+
+    <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+      <StackPanel Spacing="16" MinWidth="720">
+        <TextBlock FontSize="20" FontWeight="SemiBold" Text="物料化（解密数据库）" />
+        <TextBlock Text="快照完成后会自动填充快照目录、Workspace 输出目录和 JSON 路径。点击开始后，Key Broker 会弹出 UAC 授权并确认账号。" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBox Width="380" PlaceholderText="快照目录" Text="{Binding SnapshotDirectory}" />
+          <Button Content="选择快照" Command="{Binding BrowseSnapshotCommand}" />
+          <TextBox Width="380" PlaceholderText="物料化输出目录" Text="{Binding OutputDirectory}" />
+          <Button Content="选择输出目录" Command="{Binding BrowseOutputCommand}" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBox Width="380" PlaceholderText="可选：Workspace JSON 输出路径" Text="{Binding WorkspaceOutputPath}" />
+          <TextBox Width="380" PlaceholderText="可选：显式确认的账号（wxid_…）" Text="{Binding RequestedAccount}" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="16">
+          <Button Content="开始物料化" Command="{Binding MaterializeCommand}" IsEnabled="{Binding CanStartMaterialization}" />
+          <Button Content="恢复 Workspace（不重新解密）" Command="{Binding RecoverMaterializationCommand}" IsVisible="{Binding CanRecoverMaterialization}" IsEnabled="{Binding CanStartOperation}" />
+          <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
+          <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
+        </StackPanel>
+        <TextBlock Text="{Binding ResultSummary}" FontWeight="SemiBold" />
+        <TextBlock Text="{Binding IdentitySummary}" />
+        <TextBlock Text="{Binding RecoverySummary}" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding MaterializationReadinessSummary}" TextWrapping="Wrap" />
+      </StackPanel>
+    </ScrollViewer>
   </DockPanel>
 </UserControl>

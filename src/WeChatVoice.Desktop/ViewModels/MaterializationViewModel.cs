@@ -44,6 +44,8 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
             if (eventArgs.PropertyName is nameof(WorkflowRunHost.State)
                 or nameof(WorkflowRunHost.IsRunning))
             {
+                OnPropertyChanged(nameof(MaterializationReadinessSummary));
+
                 if (!RunHost.IsAwaitingUser)
                 {
                     IsConfirmDialogOpen = false;
@@ -68,7 +70,9 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
             && !string.IsNullOrWhiteSpace(OutputDirectory);
 
     public string MaterializationReadinessSummary
-        => !CanStartMaterialization
+        => IsConfirmDialogOpen || RunHost.IsAwaitingUser
+            ? "已暂停等待账号确认：请在上方确认账号，确认后才会弹出 UAC 并继续。"
+            : !CanStartMaterialization
             ? Services.Project.Snapshot is null
                 ? "请先创建源快照。"
                 : Services.Project.EnvironmentAssessment?.BrokerAcquireAndMaterializeAvailable != true
@@ -121,6 +125,11 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
 
     [ObservableProperty]
     private bool _isConfirmDialogOpen;
+
+    partial void OnIsConfirmDialogOpenChanged(bool value)
+    {
+        OnPropertyChanged(nameof(MaterializationReadinessSummary));
+    }
 
     protected override void OnProjectPropertyChanged(string? propertyName)
     {
