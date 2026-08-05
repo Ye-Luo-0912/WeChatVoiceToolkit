@@ -637,24 +637,33 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
             RefreshWeixinStatus();
             State = SourceSnapshotPageState.WaitingForWeixinExit;
         }
-        else if (RunHost.State == WorkflowState.Cancelled)
-        {
-            RefreshWeixinStatus();
-            State = SelectedSourceCandidate is null
-                ? SourceSnapshotPageState.SourceInvalid
-                : IsWeixinRunning
-                    ? SourceSnapshotPageState.WaitingForWeixinExit
-                    : SourceSnapshotPageState.ReadyForSnapshot;
-        }
-        else if (RunHost.State == WorkflowState.Failed)
-        {
-            State = RunHost.LastErrorCode switch
+        else switch (RunHost.State)
             {
-                ErrorCode.SelectedDataSourceInvalid => SourceSnapshotPageState.SourceInvalid,
-                ErrorCode.SnapshotOutputInvalid or ErrorCode.InsufficientDiskSpace => SourceSnapshotPageState.Failed,
-                _ => SourceSnapshotPageState.Failed,
-            };
-        }
+                case WorkflowState.Cancelled:
+                    RefreshWeixinStatus();
+                    State = SelectedSourceCandidate is null
+                        ? SourceSnapshotPageState.SourceInvalid
+                        : IsWeixinRunning
+                            ? SourceSnapshotPageState.WaitingForWeixinExit
+                            : SourceSnapshotPageState.ReadyForSnapshot;
+                    break;
+                case WorkflowState.Failed:
+                    State = RunHost.LastErrorCode switch
+                    {
+                        ErrorCode.SelectedDataSourceInvalid => SourceSnapshotPageState.SourceInvalid,
+                        ErrorCode.SnapshotOutputInvalid or ErrorCode.InsufficientDiskSpace => SourceSnapshotPageState.Failed,
+                        _ => SourceSnapshotPageState.Failed,
+                    };
+                    break;
+                case WorkflowState.Idle:
+                case WorkflowState.Running:
+                case WorkflowState.AwaitingUser:
+                case WorkflowState.Cancelling:
+                case WorkflowState.Completed:
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
 
         NotifyDerivedProperties();
     }
@@ -719,12 +728,9 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
             while (pending.Count > 0)
             {
                 var current = pending.Pop();
-                foreach (var file in current.EnumerateFiles("*.db", SearchOption.TopDirectoryOnly))
+                if (current.EnumerateFiles("*.db", SearchOption.TopDirectoryOnly).Any(file => (file.Attributes & FileAttributes.ReparsePoint) == 0))
                 {
-                    if ((file.Attributes & FileAttributes.ReparsePoint) == 0)
-                    {
-                        return true;
-                    }
+                    return true;
                 }
 
                 foreach (var child in current.EnumerateDirectories())

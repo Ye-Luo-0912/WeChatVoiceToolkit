@@ -50,6 +50,29 @@ public sealed class DiscoveryAndPathValidationTests : IDisposable
     }
 
     [Fact]
+    public void Discovery_uses_configured_data_root_when_no_root_is_given()
+    {
+        var root = Path.Combine(_root, "configured-xwechat-files");
+        var source = CreateSource(root, "wxid_configured_0000000000000001", "message_0.db");
+        var previous = Environment.GetEnvironmentVariable("WECHATVOICE_WEIXIN_DATA_ROOT");
+        try
+        {
+            Environment.SetEnvironmentVariable("WECHATVOICE_WEIXIN_DATA_ROOT", root);
+
+            var candidate = new WeixinDataSourceDiscovery()
+                .Discover()
+                .First(item => string.Equals(item.DbStoragePath, source, StringComparison.OrdinalIgnoreCase));
+
+            Assert.Equal(source, candidate.DbStoragePath);
+            Assert.Equal("wxid_configured", candidate.AccountCandidate);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WECHATVOICE_WEIXIN_DATA_ROOT", previous);
+        }
+    }
+
+    [Fact]
     public void Snapshot_path_preflight_rejects_overlap_and_non_empty_output()
     {
         var source = Directory.CreateDirectory(Path.Combine(_root, "source")).FullName;

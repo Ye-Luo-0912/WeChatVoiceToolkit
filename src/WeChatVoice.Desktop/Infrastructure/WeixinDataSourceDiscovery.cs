@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security;
+using Microsoft.Win32;
 using WeChatVoice.Core.Models;
 
 namespace WeChatVoice.Desktop.Infrastructure;
@@ -293,27 +295,133 @@ public sealed class WeixinDataSourceDiscovery : IWeixinDataSourceDiscovery
     private static IEnumerable<string> GetDefaultRoots()
     {
         var configuredRoot = Environment.GetEnvironmentVariable("WECHATVOICE_WEIXIN_DATA_ROOT");
+        var userName = Environment.UserName;
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        // The modern xwechat_files roots are first. The legacy roots remain a
-        // bounded fallback for installations that have not migrated.
+        // The modern xwechat_files roots are first. The registry and fixed-drive
+        // candidates cover installations whose Windows profile or Weixin data
+        // was moved to another volume; users should not have to know that path.
         var roots = new List<string>();
         if (!string.IsNullOrWhiteSpace(configuredRoot))
         {
             roots.Add(configuredRoot);
         }
 
+        roots.AddRange(ReadRegistryDataRoots(documents));
         roots.AddRange(
         [
+            Path.Combine(userProfile, "AppData", "Local", "Programs", "xwechat_files"),
+            Path.Combine(userProfile, "AppData", "Local", "xwechat_files"),
+            Path.Combine(userProfile, "AppData", "Roaming", "Tencent", "xwechat"),
+            Path.Combine(userProfile, "AppData", "Roaming", "Tencent", "Weixin"),
             Path.Combine(documents, "xwechat_files"),
+            Path.Combine(documents, "Weixin Files"),
             Path.Combine(localAppData, "Tencent", "xwechat_files"),
             Path.Combine(appData, "Tencent", "xwechat_files"),
             Path.Combine(documents, "WeChat Files"),
+            Path.Combine(localAppData, "Programs", "xwechat_files"),
+            Path.Combine(localAppData, "xwechat_files"),
             Path.Combine(localAppData, "Tencent", "WeChat"),
             Path.Combine(appData, "Tencent", "WeChat"),
         ]);
+
+        // Some Weixin installers put the per-user data under a same-named
+        // profile on a non-system fixed drive. This is an exact path probe,
+        // not a recursive drive scan.
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                try
+                {
+                    if (drive.DriveType != DriveType.Fixed || !drive.IsReady)
+                    {
+                        continue;
+                    }
+
+                    var alternateProfile = Path.Combine(drive.RootDirectory.FullName, "Users", userName);
+                    roots.Add(Path.Combine(alternateProfile, "AppData", "Local", "Programs", "xwechat_files"));
+                    roots.Add(Path.Combine(alternateProfile, "AppData", "Local", "xwechat_files"));
+                    roots.Add(Path.Combine(alternateProfile, "AppData", "Roaming", "Tencent", "xwechat"));
+                    roots.Add(Path.Combine(alternateProfile, "Documents", "xwechat_files"));
+                    roots.Add(Path.Combine(alternateProfile, "Documents", "Weixin Files"));
+                    roots.Add(Path.Combine(alternateProfile, "Documents", "WeChat Files"));
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+
         return roots;
+    }
+
+    private static IEnumerable<string> ReadRegistryDataRoots(string documents)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            yield break;
+        }
+
+        string[] keyNames =
+        [
+            @"Software\Tencent\Weixin",
+            @"Software\Tencent\WeChat",
+            @"Software\Tencent\xwechat",
+        ];
+        string[] valueNames = ["FileSavePath", "OldFileSavePath", "DataPath", "DataRoot", "StoragePath"];
+
+        foreach (var keyName in keyNames)
+        {
+            RegistryKey? key = null;
+            try
+            {
+                key = Registry.CurrentUser.OpenSubKey(keyName, writable: false);
+            }
+            catch (SecurityException)
+            {
+                continue;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            using (key)
+            {
+                if (key is null)
+                {
+                    continue;
+                }
+
+                foreach (var valueName in valueNames)
+                {
+                    if (key.GetValue(valueName) is not string raw || string.IsNullOrWhiteSpace(raw))
+                    {
+                        continue;
+                    }
+
+                    var value = Environment.ExpandEnvironmentVariables(raw.Trim());
+                    if (value.Equals("MyDocument:", StringComparison.OrdinalIgnoreCase)
+                        || value.Equals("MyDocuments:", StringComparison.OrdinalIgnoreCase)
+                        || value.Equals("MyDocument", StringComparison.OrdinalIgnoreCase))
+                    {
+                        yield return documents;
+                        continue;
+                    }
+
+                    if (Path.IsPathRooted(value))
+                    {
+                        yield return value;
+                    }
+                }
+            }
+        }
     }
 
     private sealed record DatabaseTreeStatistics(int DatabaseCount, DateTimeOffset LastWriteTimeUtc);
