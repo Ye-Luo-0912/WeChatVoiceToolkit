@@ -358,7 +358,7 @@ public sealed partial class WorkflowRunHost : ObservableObject
             case AppFailureException app:
                 LastErrorCode = app.Code;
                 LastAppError = ErrorCatalog.Get(app.Code);
-                LastError = $"[{app.Code}] {LastAppError.SuggestedAction}";
+                LastError = $"[{app.Code}] {GetUserFacingError(app.Code, LastAppError.SuggestedAction)}";
                 Log?.ErrorCode(app.Code);
                 break;
             case BrokerTransportException transport:
@@ -377,6 +377,16 @@ public sealed partial class WorkflowRunHost : ObservableObject
                 break;
         }
     }
+
+    private static string GetUserFacingError(ErrorCode code, string fallbackAction)
+        => code switch
+        {
+            ErrorCode.GroupChatNotSupported => "当前联系人包含群聊语音，首版不支持群聊导出，请返回联系人页选择一对一联系人。",
+            ErrorCode.ContactNotFound => "未找到所选联系人，请重新加载联系人列表并选择联系人。",
+            ErrorCode.WorkspaceInvalid => "工作区校验失败，请重新物料化数据后再扫描。",
+            ErrorCode.UnsupportedSchema => "数据库结构不受当前版本支持，请重新物料化或检查微信版本。",
+            _ => fallbackAction,
+        };
 
     private void OnStateChanged(WorkflowRunSession session)
     {

@@ -239,6 +239,38 @@ public sealed class WeixinWindows4AdapterTests
     }
 
     [Fact]
+    public async Task Incoming_query_ignores_account_sender_rows_in_a_one_to_one_conversation()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var root = temporary.CreateDirectory("workspace");
+        await CreateFixtureAsync(root);
+        var tableName = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(ContactId))).ToLowerInvariant();
+        await ExecuteAsync(Path.Combine(root, "databases", "message", "message_0.db"), $"""
+            INSERT INTO "{tableName}"
+                (local_id, server_id, local_type, sort_seq, real_sender_id, create_time, status, upload_status,
+                 download_status, server_seq, origin_source)
+            VALUES (16, 106, 34, 7, 1, 1700000360, 3, 0, 0, 7, 2);
+            """);
+        await ExecuteAsync(Path.Combine(root, "databases", "message", "media_0.db"), """
+            INSERT INTO VoiceInfo (chat_name_id, create_time, local_id, svr_id, voice_data, data_index)
+            VALUES (1, 1700000360, 16, 106, X'232153494C4B5F56330A', '0');
+            """);
+
+        var verified = await CreateVerifiedWorkspaceAsync(root);
+        await using var catalog = await new WeixinWindows4Adapter().OpenAsync(verified, CancellationToken.None);
+
+        var incoming = await CollectAsync(catalog.QueryVoicesAsync(
+            StableQuery(VoiceDirection.Incoming, deepScan: false),
+            CancellationToken.None));
+
+        // The account-owned row has origin_source=2 after sync, but it is not
+        // an incoming voice from the selected contact and must not trigger the
+        // group-chat speaker guard.
+        Assert.Equal(4, incoming.Count);
+        Assert.DoesNotContain(incoming, item => item.MessageId.EndsWith(":16:106", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Adapter_merges_message_shards_under_a_global_maximum_results()
     {
         using var temporary = new TestTemporaryDirectory();
@@ -285,7 +317,7 @@ public sealed class WeixinWindows4AdapterTests
         await using var catalog = await new WeixinWindows4Adapter().OpenAsync(verified, CancellationToken.None);
         var yielded = 0;
 
-        var exception = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+        var exception = await Assert.ThrowsAsync<WeChatVoice.Core.Errors.AppFailureException>(async () =>
         {
             await foreach (var _ in catalog.QueryVoicesAsync(
                 StableQuery(VoiceDirection.Incoming),
@@ -295,7 +327,7 @@ public sealed class WeixinWindows4AdapterTests
             }
         });
 
-        Assert.Contains("more than one speaker", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(WeChatVoice.Core.Errors.ErrorCode.GroupChatNotSupported, exception.Code);
         Assert.Equal(0, yielded);
     }
 

@@ -22,6 +22,7 @@ public static class ErrorCatalog
         ErrorCode.WorkspaceInvalid => new AppError(code, IsRetryable: false, "re-materialize", "workspace-invalid"),
         ErrorCode.UnsupportedSchema => new AppError(code, IsRetryable: false, "use-supported-schema", "unsupported-schema"),
         ErrorCode.ContactNotFound => new AppError(code, IsRetryable: false, "choose-contact", "contact-not-found"),
+        ErrorCode.GroupChatNotSupported => new AppError(code, IsRetryable: false, "choose-one-to-one-contact", "group-chat-not-supported"),
         ErrorCode.ExportPartialFailure => new AppError(code, IsRetryable: true, "review-failures", "export-partial-failure"),
         ErrorCode.AccountConfirmationRequired => new AppError(code, IsRetryable: true, "confirm-account", "account-confirmation-required"),
         ErrorCode.UacElevationRejected => new AppError(code, IsRetryable: true, "retry-materialization", "uac-elevation-rejected"),

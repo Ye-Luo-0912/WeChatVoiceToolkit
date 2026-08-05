@@ -362,7 +362,9 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog, IVoiceCatalogQ
             if (row.OriginSource == 2
                 && !string.Equals(row.SpeakerId ?? username, username, StringComparison.Ordinal))
             {
-                throw new InvalidDataException("A one-to-one incoming export resolved more than one speaker; group-chat association is refused.");
+                throw new Core.Errors.AppFailureException(
+                    Core.Errors.ErrorCode.GroupChatNotSupported,
+                    "The selected contact includes group-chat voice messages; group-chat export is not supported in this release.");
             }
 
             batch.Add(row);
@@ -406,7 +408,9 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog, IVoiceCatalogQ
             if (row.OriginSource == 2
                 && !string.Equals(row.SpeakerId ?? username, username, StringComparison.Ordinal))
             {
-                throw new InvalidDataException("A one-to-one incoming export resolved more than one speaker; group-chat association is refused.");
+                throw new Core.Errors.AppFailureException(
+                    Core.Errors.ErrorCode.GroupChatNotSupported,
+                    "The selected contact includes group-chat voice messages; group-chat export is not supported in this release.");
             }
         }
     }
@@ -563,6 +567,31 @@ internal sealed class WeixinWindows4VoiceCatalog : IVoiceCatalog, IVoiceCatalogQ
         {
             where.Add("m.origin_source = $originSource");
             command.Parameters.AddWithValue("$originSource", query.Direction == VoiceDirection.Incoming ? 2 : 5);
+
+            // origin_source describes the message direction, but the same
+            // conversation can contain rows written by the account itself
+            // (for example after sync/import). Bind the sender as well; using
+            // direction alone can falsely turn a one-to-one chat into a
+            // multi-speaker/group-chat result.
+            var accountUsername = _workspace.DataSet.AccountId;
+            if (string.IsNullOrWhiteSpace(accountUsername))
+            {
+                throw new InvalidDataException("The verified workspace has no stable account ID for voice direction filtering.");
+            }
+
+            if (query.Direction == VoiceDirection.Incoming)
+            {
+                // Keep all non-self senders so the preflight can still detect
+                // a real group-chat speaker, but exclude account-owned rows
+                // that Weixin may store under origin_source=2 after sync.
+                where.Add("n.user_name IS NOT NULL AND n.user_name <> $accountUsername");
+                command.Parameters.AddWithValue("$accountUsername", accountUsername);
+            }
+            else
+            {
+                where.Add("n.user_name = $speakerUsername");
+                command.Parameters.AddWithValue("$speakerUsername", accountUsername);
+            }
         }
 
         if (query.FromUtc is not null)

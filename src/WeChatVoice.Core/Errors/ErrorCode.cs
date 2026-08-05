@@ -48,6 +48,9 @@ public enum ErrorCode
     /// <summary>The requested stable contact could not be resolved.</summary>
     ContactNotFound,
 
+    /// <summary>The selected contact's voice rows include a group-chat speaker, which the first release refuses to export.</summary>
+    GroupChatNotSupported,
+
     /// <summary>An export run completed with per-message failures.</summary>
     ExportPartialFailure,
 

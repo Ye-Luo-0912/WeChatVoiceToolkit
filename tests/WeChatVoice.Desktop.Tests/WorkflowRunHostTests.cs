@@ -88,6 +88,19 @@ public sealed class WorkflowRunHostTests
     }
 
     [Fact]
+    public async Task Group_chat_scan_failure_is_actionable_instead_of_generic_workflow_failed()
+    {
+        var host = CreateHost();
+        await host.RunAsync((_, _) => throw new Core.Errors.AppFailureException(
+            Core.Errors.ErrorCode.GroupChatNotSupported,
+            "internal detail"));
+
+        Assert.Equal(Core.Errors.ErrorCode.GroupChatNotSupported, host.LastErrorCode);
+        Assert.Contains("群聊", host.LastError, StringComparison.Ordinal);
+        Assert.Contains("一对一", host.LastError, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Retry_runs_the_same_action_again()
     {
         var host = CreateHost();
