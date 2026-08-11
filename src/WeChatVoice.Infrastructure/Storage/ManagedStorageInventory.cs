@@ -17,6 +17,8 @@ public sealed record StorageRoots(
 
     public string WorkspacesRoot => Path.Combine(AppDataRoot, "Data", "Workspaces");
 
+    public string ScanCacheRoot => Path.Combine(AppDataRoot, "Data", "scan-cache");
+
     public string? PreparedSelectionRoot => TempRoot is null ? null : Path.Combine(TempRoot, "prepared-selection");
 }
 
@@ -268,6 +270,7 @@ public sealed class ManagedStorageInventory
         }
 
         AddTransientRoot(assets, _roots.PreparedSelectionRoot);
+        AddTransientRoot(assets, _roots.ScanCacheRoot);
         AddTransientRoot(assets, Path.Combine(_roots.TempRoot, "Snapshots"));
         AddTransientRoot(assets, Path.Combine(_roots.TempRoot, "SnapshotsStaging"));
     }

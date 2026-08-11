@@ -437,9 +437,10 @@ public static class PreparedSelectionSpool
 
     // VoiceRecord exposes computed SourceStableKey/Provenance properties and
     // therefore cannot be used directly as a parameterized JSON constructor.
-    // Keep this private DTO aligned with the verified model constructor so the
-    // spool format never gains derived or presentation-only fields.
-    private sealed record SpoolVoiceRecord(
+    // Keep this DTO aligned with the verified model constructor so the JSONL
+    // format never gains derived or presentation-only fields. It is shared by
+    // the temporary spool and the persistent scan cache.
+    internal sealed record SpoolVoiceRecord(
         string MessageId,
         string ConversationId,
         DateTimeOffset OccurredAtUtc,

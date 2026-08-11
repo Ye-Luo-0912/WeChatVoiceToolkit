@@ -342,6 +342,55 @@ public sealed class ContactScanExportWorkflowTests : IDisposable
         Assert.Equal(WorkflowState.Completed, secondContext.StateMachine.State);
     }
 
+    [Fact]
+    public async Task Scan_cache_reuses_a_verified_result_without_re_scanning()
+    {
+        _backend.Fill(
+            FakeBackend.Linked("m1", 1_700_000_000, VoiceDirection.Incoming),
+            FakeBackend.Linked("m2", 1_700_000_060, VoiceDirection.Incoming));
+        var workflow = new VoiceScanWorkflow(
+            _opener,
+            new ContactResolver(),
+            scanCache: new ScanCacheService(Path.Combine(_root, "appdata")));
+        var request = new VoiceScanWorkflowRequest(_workspacePath, FakeBackend.ContactUsername);
+
+        var first = await workflow.RunAsync(request, new WorkflowContext(new TestConfirmation()), CancellationToken.None);
+        Assert.Equal(2, first.Report.ExportableVoiceCount);
+        Assert.Equal(1, _backend.QueryVoiceCount);
+
+        // A second scan of the unchanged workspace must reuse the persistent
+        // cache instead of querying the catalog again.
+        var second = await workflow.RunAsync(request, new WorkflowContext(new TestConfirmation()), CancellationToken.None);
+        Assert.Equal(2, second.Report.ExportableVoiceCount);
+        Assert.Equal(1, _backend.QueryVoiceCount);
+        Assert.Equal(first.Report.ResultSetFingerprint, second.Report.ResultSetFingerprint);
+        Assert.Equal("m1", second.Selection?.Records[0].MessageId);
+    }
+
+    [Fact]
+    public async Task Scan_cache_misses_when_the_query_fingerprint_changes()
+    {
+        _backend.Fill(
+            FakeBackend.Linked("m1", 1_700_000_000, VoiceDirection.Incoming),
+            FakeBackend.Linked("m2", 1_700_000_060, VoiceDirection.Incoming));
+        var workflow = new VoiceScanWorkflow(
+            _opener,
+            new ContactResolver(),
+            scanCache: new ScanCacheService(Path.Combine(_root, "appdata")));
+
+        await workflow.RunAsync(
+            new VoiceScanWorkflowRequest(_workspacePath, FakeBackend.ContactUsername, MaximumResults: 1),
+            new WorkflowContext(new TestConfirmation()),
+            CancellationToken.None);
+        Assert.Equal(1, _backend.QueryVoiceCount);
+
+        await workflow.RunAsync(
+            new VoiceScanWorkflowRequest(_workspacePath, FakeBackend.ContactUsername),
+            new WorkflowContext(new TestConfirmation()),
+            CancellationToken.None);
+        Assert.Equal(2, _backend.QueryVoiceCount);
+    }
+
     private VoiceCatalogOpener OpenerFor(FakeBackend backend)
     {
         var workspace = TestFixtures.MakeWorkspace();

@@ -77,7 +77,8 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
                     : DecoderVoiceDurationResolver.CurrentDecoderVersion);
         Func<VerifiedLocalWorkspace, IVoicePayloadHashCache> deepScanCacheFactory = workspaceResult =>
             new JsonlVoicePayloadHashCache(VoicePayloadHashCachePath.ForWorkspace(workspaceResult));
-        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory, deepScanCacheFactory, _cleanupQueue);
+        var scanCache = new ScanCacheService(storageRoots.AppDataRoot);
+        VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory, deepScanCacheFactory, _cleanupQueue, scanCache);
         VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory, configuredDecoder, cleanupQueue: _cleanupQueue);
         DatasetCuration = datasetCuration
             ?? new DatasetCurationWorkflow(

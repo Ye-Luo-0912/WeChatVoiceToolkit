@@ -15,7 +15,8 @@ public sealed class VoiceScanWorkflow(
     IVoiceDurationResolver? durationResolver = null,
     Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = null,
     Func<VerifiedLocalWorkspace, IVoicePayloadHashCache>? deepScanCacheFactory = null,
-    ITemporaryFileCleanupQueue? cleanupQueue = null) : IVoiceScanWorkflow
+    ITemporaryFileCleanupQueue? cleanupQueue = null,
+    ScanCacheService? scanCache = null) : IVoiceScanWorkflow
 {
     public async Task<VoiceScanWorkflowResult> RunAsync(
         VoiceScanWorkflowRequest request,
@@ -42,7 +43,6 @@ public sealed class VoiceScanWorkflow(
                 request.MaximumResults, request.DeepScan, request.ResolveDurations,
                 request.MinimumDurationMs, request.MaximumDurationMs,
                 request.MinimumPayloadBytes, request.MaximumPayloadBytes);
-            context.Report(OperationPhase.VoiceScan, OperationStageIds.QueryingVoices);
             var effectiveDurationResolver = durationResolver is not null && durationCache is not null
                 ? new CachedVoiceDurationResolver(durationResolver, durationCache, cleanupQueue)
                 : durationResolver;
@@ -59,17 +59,63 @@ public sealed class VoiceScanWorkflow(
                         percent);
                 })
                 : null;
+            var durationResolverVersion = SelectionIdentity.DurationResolverVersion(effectiveDurationResolver);
+            var queryFingerprint = scanCache is null
+                ? null
+                : PreparedVoiceSelection.ComputeQueryFingerprint(
+                    session.Workspace.Workspace.WorkspaceId,
+                    session.Catalog.Context,
+                    contact,
+                    query,
+                    PreparedVoiceSelection.CurrentSelectionEngineVersion,
+                    durationResolverVersion);
+
+            PreparedVoiceSelection selection;
+            if (scanCache is not null && queryFingerprint is not null)
+            {
+                var cached = await scanCache.TryReadAsync(session.Workspace.Workspace.WorkspaceId, queryFingerprint, cancellationToken).ConfigureAwait(false);
+                if (cached is not null)
+                {
+                    context.Report(OperationPhase.VoiceScan, OperationStageIds.UsingCachedSelection);
+                    selection = PreparedVoiceSelection.Create(
+                        request.WorkspacePath,
+                        session.Workspace,
+                        session.Catalog.Context,
+                        contact,
+                        query,
+                        cached.Report,
+                        durationResolverVersion,
+                        cached.Records,
+                        cached.Spool);
+                    context.StateMachine.TryComplete();
+                    context.Report(OperationPhase.VoiceScan, OperationStageIds.Completing);
+                    return new VoiceScanWorkflowResult(cached.Report, session.Workspace, selection);
+                }
+            }
+
+            context.Report(OperationPhase.VoiceScan, OperationStageIds.QueryingVoices);
             var scan = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache, cleanupQueue)
                 .ScanWithRecordsAsync(query, durationProgress, cancellationToken)
                 .ConfigureAwait(false);
-            var selection = PreparedVoiceSelection.Create(
+            if (scanCache is not null && queryFingerprint is not null)
+            {
+                await scanCache.WriteAsync(
+                    session.Workspace.Workspace.WorkspaceId,
+                    queryFingerprint,
+                    scan.Report,
+                    scan.Records,
+                    scan.Spool,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            selection = PreparedVoiceSelection.Create(
                 request.WorkspacePath,
                 session.Workspace,
                 session.Catalog.Context,
                 contact,
                 query,
                 scan.Report,
-                SelectionIdentity.DurationResolverVersion(effectiveDurationResolver),
+                durationResolverVersion,
                 scan.Records,
                 scan.Spool);
             context.StateMachine.TryComplete();

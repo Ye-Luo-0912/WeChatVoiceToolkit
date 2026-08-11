@@ -48,6 +48,7 @@ public static class OperationStageIds
     public const string LoadingWorkspace = "loading-workspace";
     public const string ResolvingContact = "resolving-contact";
     public const string QueryingVoices = "querying-voices";
+    public const string UsingCachedSelection = "using-cached-selection";
     public const string Exporting = "exporting";
     public const string ResolvingDurations = "resolving-durations";
     public const string Committing = "committing";

@@ -101,10 +101,21 @@ quality flags, and Dataset Repair recomputes them from the on-disk WAV so the
 rebuilt metadata stays faithful. The analyzer is covered by Core unit tests and
 a WAV-build enrichment integration test.
 
+Scan / prepared-selection persistence is implemented (`ScanCacheService`): scan
+results are cached under the managed `Data/scan-cache` directory bound to the
+verified workspace identity and the query fingerprint (catalog + query +
+selection-engine + duration-resolver). Records serialize as JSONL (larger sets
+rehydrate through a temporary spool), a SHA-256 manifest guards integrity on
+read, and `VoiceScanWorkflow` reuses an intact hit so a later scan of the
+unchanged workspace does not re-read the catalog. A changed fingerprint or
+verification failure triggers a fresh scan that is written back to the cache.
+The cache is included in the managed transient inventory and is covered by Core
+round-trip/corruption tests plus workflow reuse/miss tests.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
 work: decoder productization (Phase 3: optional packaged reviewed decoder),
-scan/prepared selection persistence, refresh semantics, and run retention.
+refresh semantics, and run retention.
 Account
 self-identity evidence is already
 re-derived from the verified `encrypt_username = username` row; user

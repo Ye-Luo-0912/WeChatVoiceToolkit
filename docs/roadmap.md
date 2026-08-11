@@ -141,6 +141,16 @@
     `QualityFlags`, and Dataset Repair recomputes them from the on-disk WAV so
     rebuilt metadata stays faithful. The analyzer and its WAV-build enrichment
     are covered by Core unit tests and integration tests.
+29. Scan / prepared-selection persistence: a `ScanCacheService` keeps scan
+    results retrievable across app restarts by binding them to the verified
+    workspace identity and the query fingerprint (catalog + query +
+    selection-engine + duration-resolver). Records are serialized as JSONL and
+    larger sets are rehydrated through a temporary spool; a SHA-256 manifest
+    guards integrity on read. `VoiceScanWorkflow` reuses an intact cache hit and
+    only re-scans on a fingerprint change or verification failure, writing fresh
+    results back afterward. The cache lives under `Data/scan-cache` and is
+    included in the managed transient inventory. Cache reuse/miss and
+    round-trip/corruption are covered by Core and workflow tests.
 
 ## Next product work
 

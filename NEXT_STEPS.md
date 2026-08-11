@@ -566,6 +566,12 @@ workspace identity
 
 注意：不要把 cache 变成第二套 authoritative database。
 
+> **状态：已完成。** `ScanCacheService`（绑定 verified Workspace + query fingerprint 的持久
+> scan cache，JSONL 序列化 VoiceRecords + `ScanCacheReportDto` 报告，SHA-256 完整性校验，
+> 大结果经临时 spool 落盘）已接入 `VoiceScanWorkflow`：指纹一致时直接复用缓存，指纹变化或
+> 校验失败时重新扫描并写缓存。缓存目录 `Data/scan-cache` 已纳入 `ManagedStorageInventory`
+> 的 transient 扫描。已覆盖 `ScanCacheService` 单元测试与 workflow 级 cache reuse/miss 测试。
+
 ---
 
 # 9. P1：用户可理解的“刷新”语义

@@ -173,6 +173,15 @@ only temporary input/output paths. Worker stdout is protocol-only and stderr is
 bounded. The worker executable must support `--worker --protocol
 wechatvoice-decoder-jsonl-v1 --sample-rate 24000`.
 
+Scan results are persisted and reused across restarts: a `ScanCacheService`
+binds each prepared selection to the verified workspace identity and the query
+fingerprint (catalog + query + selection-engine + duration-resolver), so a
+later scan of the unchanged workspace reuses the cached result instead of
+re-reading the catalog. The cache lives under the managed
+`Data/scan-cache` directory and is integrity-checked on read; a changed query
+fingerprint or a verification failure triggers a fresh scan that is written
+back to the cache.
+
 For a complete self-contained `win-x64` layout, use the single package entry
 point below. It publishes CLI, Desktop, Broker, Worker, native SQLCipher,
 post-signature bundle manifests, package manifest, a pinned Microsoft SBOM Tool
