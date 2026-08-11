@@ -651,14 +651,14 @@ Rebuild training dataset
 
 ### 工作项
 
-- [ ] Project state inspector / resume planner；
-- [ ] Completed materialization verify + reuse；
-- [ ] FailedRecoverable automatic recovery path；
-- [ ] Workspace JSON repair/adopt path 接入 Resume；
-- [ ] canonical Workspace 先 inspect，不直接 GUID fallback；
-- [ ] Existing Snapshot 显式 continue / refresh 语义；
-- [ ] Desktop Resume-first UI；
-- [ ] integration tests：第二次运行不触发 Broker/UAC/materialization。
+- [x] Project state inspector / resume planner；
+- [x] Completed materialization verify + reuse；
+- [x] FailedRecoverable automatic recovery path；
+- [x] Workspace JSON repair/adopt path 接入 Resume；
+- [x] canonical Workspace 先 inspect，不直接 GUID fallback；
+- [x] Existing Snapshot 显式 continue / refresh 语义；
+- [x] Desktop Resume-first UI；
+- [x] integration tests：第二次运行不触发 Broker/UAC/materialization。
 
 ### 完成定义
 
