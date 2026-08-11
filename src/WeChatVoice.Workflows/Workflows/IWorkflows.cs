@@ -87,6 +87,27 @@ public sealed record StorageCleanupRequest(
     bool ForceRecoverable = false,
     TimeSpan? RecoverableOlderThan = null);
 
+/// <summary>
+/// Run / metadata retention for an export root's <c>runs/</c> directory.
+/// Preview is read-only and never deletes; compact removes only the journal and
+/// transaction metadata of older unreferenced runs while always retaining the
+/// committed manifests, CSV, artifact index, and metadata-commit descriptor.
+/// A run bound to a dataset selection profile is never compacted, and the
+/// <c>latest</c> aliases are never the sole authority for what may be removed.
+/// </summary>
+public interface IRunRetentionWorkflow
+{
+    Task<RunRetentionPreview> PreviewAsync(
+        RunRetentionOptions options,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    Task<RunRetentionResult> CompactAsync(
+        RunRetentionOptions options,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+}
+
 public interface ISnapshotWorkflow
 {
     Task<SnapshotWorkflowResult> RunAsync(

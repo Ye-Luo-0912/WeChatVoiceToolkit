@@ -611,6 +611,18 @@ Rebuild training dataset
 - 如果某 Dataset / profile 仍引用旧 run manifest，则不可删除；
 - `latest.metadata-commit.json` 永远不是删除旧 run 的唯一依据。
 
+### 完成状态
+
+- [x] `RunRetention` Core 模型（disposition / item / preview / options / result）；
+- [x] `RunRetentionService`（preview 只读分类 + compact 只删 journal/transaction）；
+- [x] `IRunRetentionWorkflow` + `RunRetentionWorkflow` 并接入组合根；
+- [x] CLI：`export run-retention preview / compact`（`--output` + `--keep-recent`）；
+- [x] 保留最近 N 个完整 run；旧、未引用 run 仅 compact journal/transaction，保留 committed manifests / CSV / artifact index / metadata-commit descriptor；
+- [x] Dataset selection profile 引用的 run 永不 compact；
+- [x] 未提交完整 manifest 的 run 保留 journal 以便恢复；
+- [x] Reparse Point 保护 + 删除后复核；
+- [x] 测试（7 个）。
+
 ---
 
 # 11. 暂缓功能

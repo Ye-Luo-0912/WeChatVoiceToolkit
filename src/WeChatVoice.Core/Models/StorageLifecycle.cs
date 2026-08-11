@@ -85,3 +85,69 @@ public sealed record StorageCleanupResult(
 public sealed record DuplicateSnapshotGroup(
     string SnapshotId,
     IReadOnlyList<StorageAssetRecord> Copies);
+
+/// <summary>
+/// Disposition of one export run under the run/metadata retention policy.
+/// </summary>
+public enum RunRetentionDisposition
+{
+    /// <summary>Within the keep-recent window; journal and transaction are retained.</summary>
+    KeepRecent,
+
+    /// <summary>Bound to a dataset selection profile or build; never compacted.</summary>
+    Referenced,
+
+    /// <summary>Older than the keep window and unreferenced; safe to compact.</summary>
+    Compactable,
+}
+
+/// <summary>
+/// One export run inspected by <see cref="IRunRetentionWorkflow"/>. Carries only
+/// non-sensitive identity and size metadata. <c>JournalBytes</c> and
+/// <c>TransactionBytes</c> are the derived metadata that compaction would
+/// remove; the committed manifests and artifact index are always retained.
+/// </summary>
+public sealed record RunRetentionItem(
+    string RunId,
+    RunRetentionDisposition Disposition,
+    bool IsComplete,
+    DateTimeOffset CreatedUtc,
+    long JournalBytes,
+    long TransactionBytes,
+    long TotalBytes,
+    string? Reason);
+
+/// <summary>
+/// Read-only preview of what run compaction would reclaim. A preview never
+/// deletes; the compact path repeats inspection and re-checks references first.
+/// </summary>
+public sealed record RunRetentionPreview(
+    int KeepRecent,
+    int CompactableCount,
+    long CompactableBytes,
+    IReadOnlyList<RunRetentionItem> Items);
+
+/// <summary>
+/// Options for run/metadata retention. <c>KeepRecent</c> is the number of most
+/// recent complete runs to retain in full; older unreferenced runs are
+/// compacted (their journal and transaction removed, manifests retained).
+/// </summary>
+public sealed record RunRetentionOptions(string ExportRoot, int KeepRecent)
+{
+    public RunRetentionOptions(string ExportRoot)
+        : this(ExportRoot, DefaultKeepRecent)
+    {
+    }
+
+    public const int DefaultKeepRecent = 5;
+}
+
+/// <summary>
+/// Outcome of a completed run compaction. Only independent, unreferenced,
+/// out-of-window journals and transactions are removed; committed manifests and
+/// the artifact index are never removed. A skipped run carries a reason.
+/// </summary>
+public sealed record RunRetentionResult(
+    int CompactedCount,
+    long CompactedBytes,
+    IReadOnlyList<string> SkippedReasons);

@@ -90,6 +90,10 @@ dotnet run --project src/WeChatVoice.Cli -- contact search --workspace .\.wechat
 dotnet run --project src/WeChatVoice.Cli -- voice scan --workspace .\.wechatvoice\local-workspace.json --contact-username wxid_xxx --direction incoming --from 2025-01-01
 dotnet run --project src/WeChatVoice.Cli -- voice export --workspace .\.wechatvoice\local-workspace.json --contact-username wxid_xxx --direction incoming --format silk --output .\exports\peer
 dotnet run --project src/WeChatVoice.Cli -- voice export recover --journal .\exports\peer\runs\<run-id>.jsonl
+dotnet run --project src/WeChatVoice.Cli -- voice export verify --output .\exports\peer
+dotnet run --project src/WeChatVoice.Cli -- voice export repair --output .\exports\peer
+dotnet run --project src/WeChatVoice.Cli -- voice export run-retention preview --output .\exports\peer --keep-recent 5
+dotnet run --project src/WeChatVoice.Cli -- voice export run-retention compact --output .\exports\peer --keep-recent 5
 dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --backend weixin-windows-4 --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- workspace adopt --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json

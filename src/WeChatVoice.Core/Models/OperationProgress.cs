@@ -17,6 +17,7 @@ public enum OperationPhase
     VoiceExport,
     ProjectState,
     StorageLifecycle,
+    RunRetention,
 }
 
 /// <summary>Current status of a workflow run as seen by a host.</summary>
@@ -59,6 +60,10 @@ public static class OperationStageIds
     public const string ScanningStorage = "scanning-storage";
     public const string PreviewingCleanup = "previewing-cleanup";
     public const string CleaningStorage = "cleaning-storage";
+
+    // Run / metadata retention
+    public const string InspectingRuns = "inspecting-runs";
+    public const string CompactingRuns = "compacting-runs";
 
     public const string Completing = "completing";
 }

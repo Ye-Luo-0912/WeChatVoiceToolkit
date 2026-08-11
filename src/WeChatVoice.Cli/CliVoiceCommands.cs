@@ -301,7 +301,95 @@ internal static partial class CliApplication
         });
         exportCommand.Subcommands.Add(verifyExportCommand);
         exportCommand.Subcommands.Add(repairExportCommand);
+
+        AddRunRetentionCommand(exportCommand);
         return voiceCommand;
+    }
+
+    static void AddRunRetentionCommand(Command exportCommand)
+    {
+        var retentionCommand = new Command("run-retention", "Preview or compact run/metadata retention for an export root's runs directory.");
+        var previewCommand = new Command("preview", "Report which runs are safe to compact without deleting anything.");
+        var compactCommand = new Command("compact", "Remove journal/transaction metadata of older unreferenced runs, retaining committed manifests.");
+
+        var outputOption = new Option<string>("--output") { Description = "Export root directory (the parent of the runs directory).", Required = true };
+        var keepRecentOption = new Option<int>("--keep-recent")
+        {
+            Description = "Number of most recent complete runs to retain in full.",
+            DefaultValueFactory = _ => RunRetentionOptions.DefaultKeepRecent,
+        };
+        previewCommand.Options.Add(outputOption);
+        previewCommand.Options.Add(keepRecentOption);
+        compactCommand.Options.Add(outputOption);
+        compactCommand.Options.Add(keepRecentOption);
+
+        previewCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var output = parseResult.GetValue(outputOption);
+            var keepRecent = parseResult.GetValue(keepRecentOption);
+            try
+            {
+                await using var root = CreateRoot();
+                var preview = await root.RunRetention.PreviewAsync(
+                    new RunRetentionOptions(output!, keepRecent),
+                    new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(new RunRetentionPreviewReport(
+                    preview.KeepRecent,
+                    preview.CompactableCount,
+                    preview.CompactableBytes,
+                    preview.Items.Select(static item => new RunRetentionItemReport(
+                        item.RunId,
+                        item.Disposition,
+                        item.IsComplete,
+                        item.CreatedUtc,
+                        item.JournalBytes,
+                        item.TransactionBytes,
+                        item.TotalBytes,
+                        item.Reason)).ToArray()));
+                return 0;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Run retention preview was cancelled.");
+                return 130;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+
+        compactCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var output = parseResult.GetValue(outputOption);
+            var keepRecent = parseResult.GetValue(keepRecentOption);
+            try
+            {
+                await using var root = CreateRoot();
+                var result = await root.RunRetention.CompactAsync(
+                    new RunRetentionOptions(output!, keepRecent),
+                    new WorkflowContext(root.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(new RunRetentionCompactReport(result.CompactedCount, result.CompactedBytes, result.SkippedReasons.ToArray()));
+                return 0;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Run retention compaction was cancelled.");
+                return 130;
+            }
+            catch (Exception exception)
+            {
+                WriteError(exception);
+                return 1;
+            }
+        });
+
+        retentionCommand.Subcommands.Add(previewCommand);
+        retentionCommand.Subcommands.Add(compactCommand);
+        exportCommand.Subcommands.Add(retentionCommand);
     }
 
     static VoiceDirection? ParseDirection(string? directionText)
@@ -318,5 +406,26 @@ internal static partial class CliApplication
 
         return parsedDirection;
     }
+
+    internal sealed record RunRetentionPreviewReport(
+        int KeepRecent,
+        int CompactableCount,
+        long CompactableBytes,
+        IReadOnlyList<RunRetentionItemReport> Items);
+
+    internal sealed record RunRetentionItemReport(
+        string RunId,
+        RunRetentionDisposition Disposition,
+        bool IsComplete,
+        DateTimeOffset CreatedUtc,
+        long JournalBytes,
+        long TransactionBytes,
+        long TotalBytes,
+        string? Reason);
+
+    internal sealed record RunRetentionCompactReport(
+        int CompactedCount,
+        long CompactedBytes,
+        IReadOnlyList<string> SkippedReasons);
 
 }
