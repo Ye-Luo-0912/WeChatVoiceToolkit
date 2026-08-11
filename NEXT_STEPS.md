@@ -532,6 +532,13 @@ P0 完成后再补，不要阻塞基本可用。
 
 不要第一版就引入复杂神经网络 quality model。
 
+> **状态：已完成。** `VoiceQualityAnalysis` / `VoiceQualityAnalyzer`（bounded streaming
+> PCM 分析：decode success、duration、sample rate/channels/PCM、silence ratio、
+> clipping ratio、RMS/peak、empty/silent/clipping/low-level/decode-failed/
+> duration-mismatch flags）已实现并接入 WAV dataset build；每个派生条目合并
+> quality flags，Dataset Repair 从磁盘 WAV 重算，保证重建元数据一致。已覆盖
+> Core 单元测试与 WAV build 集成测试。
+
 ---
 
 # 8. P1：Scan / Prepared Selection 持久复用
@@ -678,13 +685,13 @@ Rebuild training dataset
 
 ### 工作项
 
-- [ ] decoder status / discovery；
-- [ ] user-facing decoder configuration；
+- [x] decoder status / discovery；
+- [x] user-facing decoder configuration；
 - [ ] optional packaged reviewed decoder（如果许可允许）；
-- [ ] duration cache reuse；
-- [ ] unknown/stale only re-analysis；
-- [ ] metadata enrichment；
-- [ ] Desktop progress / error summary。
+- [x] duration cache reuse；
+- [x] unknown/stale only re-analysis；
+- [x] metadata enrichment；
+- [x] Desktop progress / error summary。
 
 ### 完成定义
 

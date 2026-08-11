@@ -132,6 +132,15 @@
     the Windows `winmm` API with cleanup on stop. WAV build / fingerprint /
     verify / repair / delete and preview decode are covered by Core and Desktop
     headless tests.
+28. P1 audio quality analysis: a bounded, streaming `VoiceQualityAnalysis` /
+    `VoiceQualityAnalyzer` reads a decoded PCM WAV in one pass and computes
+    decode success, duration, sample rate / channels / PCM format, silence
+    ratio, clipping ratio, RMS and peak, deriving structured quality flags
+    (empty, silent, clipping, low-level, decode-failed, duration-mismatch). The
+    WAV dataset build merges these derived flags into each entry's
+    `QualityFlags`, and Dataset Repair recomputes them from the on-disk WAV so
+    rebuilt metadata stays faithful. The analyzer and its WAV-build enrichment
+    are covered by Core unit tests and integration tests.
 
 ## Next product work
 

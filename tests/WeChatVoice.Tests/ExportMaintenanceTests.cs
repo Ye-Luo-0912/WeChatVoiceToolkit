@@ -12,6 +12,11 @@ namespace WeChatVoice.Tests;
 
 public sealed class ExportMaintenanceTests
 {
+    private static readonly JsonSerializerOptions DatasetJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+
     [Fact]
     public async Task Verify_maps_a_cross_process_lock_conflict_to_operation_busy()
     {
@@ -484,6 +489,60 @@ public sealed class ExportMaintenanceTests
             CancellationToken.None);
         Assert.True(repaired.IsValid, string.Join(Environment.NewLine, repaired.Issues.Select(issue => issue.Code)));
         Assert.Equal(silkBytes, await File.ReadAllBytesAsync(silkPath));
+    }
+
+    [Fact]
+    public async Task Dataset_wav_build_enriches_quality_flags_and_repair_recomputes_them()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow(
+            datasetBuildService: new DatasetBuildService(new FakeDecoderFactory()));
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+
+        var audioProfile = new AudioBuildProfile(SampleRate: 24000);
+        var built = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root, AudioProfile: audioProfile),
+            NewContext(),
+            CancellationToken.None);
+        Assert.NotNull(built.AudioProfileFingerprint);
+        Assert.NotNull(built.DecoderIdentity);
+
+        // The fixed test decoder emits a silent (all-zero) PCM WAV, so the
+        // derived quality analysis must flag it as empty and decode-valid.
+        var dataset = JsonSerializer.Deserialize<VoiceDatasetManifest>(
+            await File.ReadAllTextAsync(built.DatasetManifestPath),
+            DatasetJsonOptions);
+        var item = Assert.Single(dataset!.Items);
+        Assert.Contains(VoiceQualityAnalysis.EmptyFlag, item.QualityFlags);
+        Assert.DoesNotContain(VoiceQualityAnalysis.DecodeFailedFlag, item.QualityFlags);
+
+        var verified = await curation.VerifyDatasetAsync(
+            new DatasetBuildRequest(export.Root, OutputDirectory: built.OutputDirectory),
+            NewContext(),
+            CancellationToken.None);
+        Assert.True(verified.IsValid, string.Join(Environment.NewLine, verified.Issues.Select(issue => issue.Code)));
+
+        // Repair must recompute the same derived quality flags from the on-disk
+        // WAV rather than dropping them, keeping the rebuilt metadata faithful.
+        await File.WriteAllTextAsync(Path.Combine(built.OutputDirectory, "dataset.csv"), "broken\n");
+        var repaired = await curation.RepairDatasetAsync(
+            new DatasetBuildRepairRequest(export.Root, built.OutputDirectory),
+            NewContext(),
+            CancellationToken.None);
+        Assert.True(repaired.IsValid, string.Join(Environment.NewLine, repaired.Issues.Select(issue => issue.Code)));
+        var repairedDataset = JsonSerializer.Deserialize<VoiceDatasetManifest>(
+            await File.ReadAllTextAsync(built.DatasetManifestPath),
+            DatasetJsonOptions);
+        var repairedItem = Assert.Single(repairedDataset!.Items);
+        Assert.Contains(VoiceQualityAnalysis.EmptyFlag, repairedItem.QualityFlags);
+        Assert.DoesNotContain(VoiceQualityAnalysis.DecodeFailedFlag, repairedItem.QualityFlags);
     }
 
     [Fact]

@@ -147,11 +147,11 @@ public sealed class DatasetBuildService
                         relativeWavPath,
                         wavMetadata.Sha256,
                         wavMetadata.ByteLength,
-                        durationMs,
-                        entry.QualityFlags,
+                        durationMs.DurationMs,
+                        MergeQualityFlags(entry.QualityFlags, durationMs.QualityFlags),
                         TrainingEligibility.Eligible,
                         Selected: true));
-                    buildItems.Add(new DatasetBuildItem(itemId, relativeWavPath, wavMetadata.Sha256, wavMetadata.ByteLength, durationMs));
+                    buildItems.Add(new DatasetBuildItem(itemId, relativeWavPath, wavMetadata.Sha256, wavMetadata.ByteLength, durationMs.DurationMs));
                     continue;
                 }
 
@@ -327,9 +327,9 @@ public sealed class DatasetBuildService
         try
         {
             var sourcePath = ResolveArtifactPath(exportRoot, match.OriginalPath);
-            var durationMs = await DecodeToWavAsync(decoder, sourcePath, destinationPath, match, cancellationToken).ConfigureAwait(false);
+            var decoded = await DecodeToWavAsync(decoder, sourcePath, destinationPath, match, cancellationToken).ConfigureAwait(false);
             var metadata = new FileInfo(destinationPath);
-            return new DatasetPreviewDecodeResult(itemId, destinationPath, metadata.Length, durationMs, decoderIdentity);
+            return new DatasetPreviewDecodeResult(itemId, destinationPath, metadata.Length, decoded.DurationMs, decoderIdentity);
         }
         catch
         {
@@ -674,7 +674,11 @@ public sealed class DatasetBuildService
                     metadata.Sha256,
                     metadata.ByteLength,
                     repairItem.DurationMs,
-                    inputs.Entries[repairItem.ItemId].QualityFlags,
+                    existingBuild?.AudioProfileFingerprint is not null
+                        ? MergeQualityFlags(
+                            inputs.Entries[repairItem.ItemId].QualityFlags,
+                            ComputeWavQualityFlags(path, repairItem.DurationMs, cancellationToken))
+                        : inputs.Entries[repairItem.ItemId].QualityFlags,
                     TrainingEligibility.Eligible,
                     Selected: true));
             }
@@ -1246,6 +1250,10 @@ public sealed class DatasetBuildService
         string RelativeAudioPath,
         VoiceExportEntry Entry);
 
+    private sealed record DecodedWav(
+        long? DurationMs,
+        IReadOnlyList<string> QualityFlags);
+
     private sealed record RepairAudioItem(
         string ItemId,
         string RelativeAudioPath,
@@ -1427,7 +1435,7 @@ public sealed class DatasetBuildService
             ? profile.SelectionFingerprint
             : DatasetBuildFingerprint.Compute(profile.SelectionFingerprint, audioProfile);
 
-    private static async Task<long?> DecodeToWavAsync(
+    private static async Task<DecodedWav> DecodeToWavAsync(
         IVoiceDecoder decoder,
         string sourcePath,
         string destinationPath,
@@ -1460,9 +1468,50 @@ public sealed class DatasetBuildService
             throw new AppFailureException(ErrorCode.InvalidRequest, "The decoder produced no WAV output for a selected item.");
         }
 
-        return await WavFileValidator.TryReadDurationMsAsync(destinationPath, cancellationToken).ConfigureAwait(false)
+        var durationMs = await WavFileValidator.TryReadDurationMsAsync(destinationPath, cancellationToken).ConfigureAwait(false)
             ?? entry.DurationMs;
+        var qualityFlags = ComputeWavQualityFlags(destinationPath, durationMs, cancellationToken);
+        return new DecodedWav(durationMs, qualityFlags);
     }
+
+    /// <summary>
+    /// Runs the bounded, deterministic quality analysis over a decoded PCM WAV
+    /// and returns the derived quality flags. A failed or unreadable WAV still
+    /// yields a decode-failed flag rather than throwing, so a single item can
+    /// never abort the whole dataset build.
+    /// </summary>
+    private static IReadOnlyList<string> ComputeWavQualityFlags(
+        string wavPath,
+        long? expectedDurationMs,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var stream = new FileStream(
+                wavPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                128 * 1024,
+                FileOptions.SequentialScan);
+            var analysis = VoiceQualityAnalyzer.Analyze(stream, expectedDurationMs, cancellationToken);
+            return analysis.Flags;
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            return [VoiceQualityAnalysis.DecodeFailedFlag];
+        }
+    }
+
+    private static IReadOnlyList<string> MergeQualityFlags(
+        IReadOnlyList<string> sourceFlags,
+        IReadOnlyList<string> derivedFlags)
+        => sourceFlags
+            .Concat(derivedFlags)
+            .Where(static flag => !string.IsNullOrWhiteSpace(flag))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private static bool IsTrainingEligible(VoiceExportEntry entry, DatasetCurationFilters filters)
     {

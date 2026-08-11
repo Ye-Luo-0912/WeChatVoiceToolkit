@@ -91,11 +91,21 @@ the build manifest as the authoritative build identity. All WAV build /
 fingerprint / verify / repair / delete and preview-decode paths are covered by
 Core and Desktop headless tests.
 
+P1 audio quality analysis is implemented (`VoiceQualityAnalysis` /
+`VoiceQualityAnalyzer`): a bounded, streaming analyzer over decoded PCM WAV
+computes decode success, duration, sample rate / channels / PCM format, silence
+ratio, clipping ratio, RMS and peak, and derives structured quality flags
+(empty, silent, clipping, low-level, decode-failed, duration-mismatch). It is
+integrated into the WAV dataset build so each derived entry carries merged
+quality flags, and Dataset Repair recomputes them from the on-disk WAV so the
+rebuilt metadata stays faithful. The analyzer is covered by Core unit tests and
+a WAV-build enrichment integration test.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
-work: decoder productization (Phase 3: user-facing decoder configuration and
-persistent duration enrichment), P1 audio quality analysis, scan/prepared
-selection persistence, refresh semantics, and run retention. Account
+work: decoder productization (Phase 3: optional packaged reviewed decoder),
+scan/prepared selection persistence, refresh semantics, and run retention.
+Account
 self-identity evidence is already
 re-derived from the verified `encrypt_username = username` row; user
 confirmation remains a separate state. The existing decoder boundary is
