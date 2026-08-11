@@ -170,6 +170,41 @@ public sealed class StorageLifecycleWorkflowTests
         Assert.Contains(result.SkippedReasons, reason => reason.Contains("Reparse", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task DuplicateSnapshots_detects_same_content_fingerprint()
+    {
+        using var temp = new StorageTemp();
+        var first = temp.CreateSnapshotWithManifest("acct-1", "op-a", "payload-1");
+        var second = temp.CreateSnapshotWithManifest("acct-1", "op-b", "payload-1");
+        temp.CreateSnapshotWithManifest("acct-1", "op-c", "payload-different");
+        var workflow = new StorageLifecycleWorkflow(inventory: new ManagedStorageInventory(temp.Roots));
+
+        var groups = await workflow.DuplicateSnapshotsAsync(
+            new StorageInventoryRequest(),
+            Context(),
+            CancellationToken.None);
+
+        var group = Assert.Single(groups);
+        Assert.Equal(2, group.Copies.Count);
+        Assert.Contains(group.Copies, item => item.Path == first);
+        Assert.Contains(group.Copies, item => item.Path == second);
+    }
+
+    [Fact]
+    public async Task DuplicateSnapshots_skips_invalid_manifest()
+    {
+        using var temp = new StorageTemp();
+        temp.CreateSnapshot("acct-1", "op-a", withManifest: false);
+        var workflow = new StorageLifecycleWorkflow(inventory: new ManagedStorageInventory(temp.Roots));
+
+        var groups = await workflow.DuplicateSnapshotsAsync(
+            new StorageInventoryRequest(),
+            Context(),
+            CancellationToken.None);
+
+        Assert.Empty(groups);
+    }
+
     private static WorkflowContext Context() => new(new TestConfirmation());
 
     private sealed class TestConfirmation : IAccountConfirmation
@@ -219,6 +254,29 @@ public sealed class StorageLifecycleWorkflowTests
                 File.WriteAllText(Path.Combine(metadata, "snapshot-manifest.json"), "{}");
             }
 
+            return path;
+        }
+
+        public string CreateSnapshotWithManifest(string account, string operation, string payload)
+        {
+            var path = Combine("Data", "Snapshots", account, operation);
+            Directory.CreateDirectory(path);
+            var payloadBytes = System.Text.Encoding.UTF8.GetBytes(payload);
+            File.WriteAllBytes(Path.Combine(path, "payload.bin"), payloadBytes);
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payloadBytes)).ToLowerInvariant();
+            var manifest = new SnapshotManifest(
+                SourceDirectory: Combine("source"),
+                SnapshotDirectory: path,
+                CreatedAtUtc: DateTimeOffset.UtcNow,
+                Files:
+                [
+                    new SnapshotFileRecord("payload.bin", payloadBytes.Length, sha, DateTimeOffset.UtcNow),
+                ]);
+            var metadata = Path.Combine(path, ".wechatvoice");
+            Directory.CreateDirectory(metadata);
+            File.WriteAllText(
+                Path.Combine(metadata, "snapshot-manifest.json"),
+                JsonSerializer.Serialize(manifest, CamelCase));
             return path;
         }
 

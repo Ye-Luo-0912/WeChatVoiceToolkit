@@ -655,10 +655,10 @@ Rebuild training dataset
 - [x] Managed storage inventory；
 - [x] ownership/reachability 分类；
 - [x] cleanup preview；
-- [ ] temp orphan startup sweep；
+- [x] temp orphan startup sweep；
 - [x] stale/recoverable Workspace retention；
-- [ ] Snapshot duplicate detection；
-- [ ] dangling Recent metadata repair；
+- [x] Snapshot duplicate detection；
+- [x] dangling Recent metadata repair；
 - [x] Storage UI；
 - [x] safe-delete tests / crash tests / reparse-point tests。
 

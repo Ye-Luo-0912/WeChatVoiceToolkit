@@ -43,6 +43,10 @@ public sealed class DesktopServices : IAsyncDisposable
     {
         var log = new DesktopLog(appDataDirectory is null ? null : Path.Combine(appDataDirectory, "logs"));
         var recentWorkspaces = new RecentWorkspaceStore(appDataDirectory);
+        // Drop Recent entries that reference workspaces/snapshots no longer on
+        // disk. This keeps the Resume-first index accurate without touching any
+        // workspace, snapshot, or export content.
+        recentWorkspaces.RepairDangling();
         // Pages pass their own UI-backed confirmation port per run; the
         // composition root only requires a port for construction.
         var workflows = new WorkflowCompositionRoot(SilentAccountConfirmation.Instance, allowDevelopmentBroker, appDataDirectory: appDataDirectory);

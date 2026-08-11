@@ -50,6 +50,56 @@ public sealed class RecentWorkspaceAndLogTests : IDisposable
     }
 
     [Fact]
+    public void RepairDangling_removes_entries_for_missing_workspaces_and_snapshots()
+    {
+        var store = new RecentWorkspaceStore(_root);
+        var workspace = TestDoubles.Verified();
+
+        var existingWorkspace = Path.Combine(_root, "existing", "workspace.json");
+        var danglingWorkspace = Path.Combine(_root, "missing-workspace", "workspace.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(existingWorkspace)!);
+        File.WriteAllText(existingWorkspace, "{}");
+        store.Add(workspace, existingWorkspace);
+        store.Add(workspace, danglingWorkspace);
+
+        var existingSnapshot = Path.Combine(_root, "snapshots", "existing");
+        var danglingSnapshot = Path.Combine(_root, "snapshots", "missing");
+        Directory.CreateDirectory(existingSnapshot);
+        store.AddSnapshot(Path.Combine(_root, "src-existing"), existingSnapshot, "snap-existing");
+        store.AddSnapshot(Path.Combine(_root, "src-missing"), danglingSnapshot, "snap-missing");
+
+        var removed = store.RepairDangling();
+
+        Assert.Equal(2, removed);
+        var workspaces = store.Load();
+        var single = Assert.Single(workspaces);
+        Assert.Equal(Path.GetFullPath(existingWorkspace), single.WorkspacePath);
+        var snapshots = store.LoadSnapshots();
+        var snapshot = Assert.Single(snapshots);
+        Assert.Equal(Path.GetFullPath(existingSnapshot), snapshot.SnapshotDirectory);
+    }
+
+    [Fact]
+    public void RepairDangling_keeps_valid_entries_and_returns_zero()
+    {
+        var store = new RecentWorkspaceStore(_root);
+        var workspace = TestDoubles.Verified();
+        var existingWorkspace = Path.Combine(_root, "valid", "workspace.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(existingWorkspace)!);
+        File.WriteAllText(existingWorkspace, "{}");
+        store.Add(workspace, existingWorkspace);
+        var existingSnapshot = Path.Combine(_root, "snapshots", "valid");
+        Directory.CreateDirectory(existingSnapshot);
+        store.AddSnapshot(_root, existingSnapshot, "snap-valid");
+
+        var removed = store.RepairDangling();
+
+        Assert.Equal(0, removed);
+        Assert.Single(store.Load());
+        Assert.Single(store.LoadSnapshots());
+    }
+
+    [Fact]
     public void Log_scrubs_wxid_and_long_hex()
     {
         var log = new DesktopLog(_root);

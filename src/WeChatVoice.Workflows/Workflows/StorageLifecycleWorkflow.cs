@@ -176,6 +176,37 @@ public sealed class StorageLifecycleWorkflow : IStorageLifecycleWorkflow
         }
     }
 
+    public async Task<IReadOnlyList<DuplicateSnapshotGroup>> DuplicateSnapshotsAsync(
+        StorageInventoryRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.StorageLifecycle, OperationStageIds.ScanningStorage, "正在检测重复快照");
+            var groups = await _inventory.DetectDuplicateSnapshotsAsync(cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            context.Report(OperationPhase.StorageLifecycle, OperationStageIds.Completing);
+            return groups;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
     private static IEnumerable<StorageAssetRecord> SelectReclaimable(
         StorageInventorySummary summary,
         StorageCleanupRequest request)

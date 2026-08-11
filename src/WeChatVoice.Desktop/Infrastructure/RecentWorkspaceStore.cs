@@ -168,6 +168,60 @@ public sealed class RecentWorkspaceStore
         }
     }
 
+    /// <summary>
+    /// Removes recent entries that point to workspaces or snapshots which no
+    /// longer exist on disk. The Recent list is a UX index, not ownership data;
+    /// repair only drops dangling references and never deletes any workspace,
+    /// snapshot, or export content. Returns the number of entries removed.
+    /// </summary>
+    public int RepairDangling()
+    {
+        lock (_gate)
+        {
+            var removed = 0;
+
+            var workspaces = Load();
+            var repairedWorkspaces = new List<RecentWorkspaceEntry>(workspaces.Count);
+            foreach (var entry in workspaces)
+            {
+                if (File.Exists(entry.WorkspacePath))
+                {
+                    repairedWorkspaces.Add(entry);
+                }
+                else
+                {
+                    removed++;
+                }
+            }
+
+            if (repairedWorkspaces.Count != workspaces.Count)
+            {
+                Save(repairedWorkspaces);
+            }
+
+            var snapshots = LoadSnapshots();
+            var repairedSnapshots = new List<RecentSnapshotEntry>(snapshots.Count);
+            foreach (var entry in snapshots)
+            {
+                if (Directory.Exists(entry.SnapshotDirectory))
+                {
+                    repairedSnapshots.Add(entry);
+                }
+                else
+                {
+                    removed++;
+                }
+            }
+
+            if (repairedSnapshots.Count != snapshots.Count)
+            {
+                SaveSnapshots(repairedSnapshots);
+            }
+
+            return removed;
+        }
+    }
+
     public bool HasSnapshotForSource(string sourceDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);

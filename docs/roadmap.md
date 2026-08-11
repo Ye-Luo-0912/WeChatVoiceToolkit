@@ -101,10 +101,19 @@
     and exposes a two-step preview-then-clean. Cleanup only removes independent
     transient objects and expired-recoverable workspaces (routed through the
     workspace deletion boundary), never skips active locks or reparse points,
-    and never auto-deletes raw exports or datasets. The Desktop "存储管理" page
-    and the CLI `storage inventory|preview|cleanup` commands both consume the
+    and never auto-deletes raw exports or datasets. The Desktop "存储管理" page and the CLI `storage inventory|preview|cleanup` commands both consume the
     shared workflow; inventory/preview/preview/cleanup/reparse-point/lock tests
     are covered in the Workflows suite.
+26. Storage lifecycle is now complete on the startup/orphan front: a
+    `StartupOrphanSweeper` clears stale app-owned staging and decoder/duration
+    temp payloads (refusing reparse points and only touching known roots), the
+    `ManagedStorageInventory` detects redundant snapshots by content
+    fingerprint (`SnapshotManifest.SnapshotId`) and surfaces
+    `DuplicateSnapshotGroup`s through the workflow, and the Desktop recent index
+    self-repairs by dropping entries that reference workspaces/snapshots no
+    longer on disk (`RecentWorkspaceStore.RepairDangling`) on startup. None of
+    these paths delete raw exports or datasets, and all are covered by startup
+    sweep, duplicate-detection, and recent-repair tests.
 
 ## Next product work
 

@@ -1,5 +1,6 @@
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Materialization;
+using WeChatVoice.Infrastructure.Serialization;
 
 namespace WeChatVoice.Infrastructure.Storage;
 
@@ -83,6 +84,91 @@ public sealed class ManagedStorageInventory
             recoverable,
             reclaimable,
             assets);
+    }
+
+    /// <summary>
+    /// Detects snapshots that share the same content fingerprint
+    /// (<see cref="SnapshotManifest.SnapshotId"/>). Only verified snapshots with
+    /// a readable manifest are considered; a manifest that cannot be read is
+    /// skipped rather than assumed to be a duplicate. The scan is read-only.
+    /// </summary>
+    public async Task<IReadOnlyList<DuplicateSnapshotGroup>> DetectDuplicateSnapshotsAsync(CancellationToken cancellationToken)
+    {
+        var snapshotRoot = _roots.SnapshotsRoot;
+        if (!Directory.Exists(snapshotRoot) || IsReparsePoint(snapshotRoot))
+        {
+            return [];
+        }
+
+        var byId = new Dictionary<string, List<StorageAssetRecord>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var accountDirectory in Directory.EnumerateDirectories(snapshotRoot))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsReparsePoint(accountDirectory))
+            {
+                continue;
+            }
+
+            foreach (var operation in Directory.EnumerateDirectories(accountDirectory))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsReparsePoint(operation))
+                {
+                    continue;
+                }
+
+                var manifestPath = Path.Combine(operation, ".wechatvoice", "snapshot-manifest.json");
+                if (!File.Exists(manifestPath))
+                {
+                    continue;
+                }
+
+                SnapshotManifest manifest;
+                try
+                {
+                    await using var stream = new FileStream(
+                        manifestPath,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.Read,
+                        64 * 1024,
+                        FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    manifest = await System.Text.Json.JsonSerializer.DeserializeAsync<SnapshotManifest>(
+                        stream,
+                        InfrastructureJson.Compact,
+                        cancellationToken).ConfigureAwait(false) ?? throw new InvalidDataException("Snapshot manifest is empty.");
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+                {
+                    continue;
+                }
+
+                var record = new StorageAssetRecord(
+                    StorageAssetKind.ReusableIntermediate,
+                    operation,
+                    GetDirectorySize(operation),
+                    WorkspaceId: null,
+                    SnapshotId: manifest.SnapshotId,
+                    LastModifiedUtc: GetLastModifiedUtc(operation),
+                    HasActiveLock: false,
+                    Note: "snapshot");
+                if (!byId.TryGetValue(manifest.SnapshotId, out var list))
+                {
+                    list = [];
+                    byId[manifest.SnapshotId] = list;
+                }
+
+                list.Add(record);
+            }
+        }
+
+        return byId
+            .Where(static pair => pair.Value.Count > 1)
+            .Select(static pair => new DuplicateSnapshotGroup(
+                pair.Key,
+                pair.Value.OrderByDescending(static item => item.LastModifiedUtc).ToArray()))
+            .OrderByDescending(static group => group.Copies.Sum(static copy => copy.TotalBytes))
+            .ToArray();
     }
 
     private async Task ScanSnapshotsAsync(List<StorageAssetRecord> assets, CancellationToken cancellationToken)

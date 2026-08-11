@@ -74,6 +74,11 @@ public interface IStorageLifecycleWorkflow
         StorageCleanupRequest request,
         WorkflowContext context,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<DuplicateSnapshotGroup>> DuplicateSnapshotsAsync(
+        StorageInventoryRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
 }
 
 public sealed record StorageInventoryRequest(string? AppDataRoot = null);

@@ -41,6 +41,8 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(accountConfirmation);
         _cleanupQueue = new TemporaryFileCleanupQueue();
         PreparedSelectionSpool.CleanupOrphans(cleanupQueue: _cleanupQueue);
+        var storageRoots = StorageRootsFor(appDataDirectory);
+        new StartupOrphanSweeper(storageRoots).Sweep(cleanupQueue: _cleanupQueue);
         var loader = new Workspaces.WorkspaceLoader();
         var adapters = BuiltInAdapters.Create();
         var resolver = new DataSetAdapterResolver(adapters);
@@ -76,7 +78,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         DatasetCuration = datasetCuration ?? new DatasetCurationWorkflow();
         StorageLifecycle = storageLifecycle
             ?? new StorageLifecycleWorkflow(
-                inventory: new ManagedStorageInventory(StorageRootsFor(appDataDirectory)));
+                inventory: new ManagedStorageInventory(storageRoots));
         AccountConfirmation = accountConfirmation;
         AllowDevelopmentBroker = allowDevelopmentBroker;
     }

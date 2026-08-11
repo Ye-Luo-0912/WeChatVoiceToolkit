@@ -75,3 +75,13 @@ public sealed record StorageCleanupResult(
     int DeletedCount,
     long DeletedBytes,
     IReadOnlyList<string> SkippedReasons);
+
+/// <summary>
+/// A group of snapshots that share the same content fingerprint
+/// (<see cref="SnapshotManifest.SnapshotId"/>). Retaining more than one copy is
+/// redundant; the UI can surface this group so the user can keep only the newest
+/// or most convenient copy.
+/// </summary>
+public sealed record DuplicateSnapshotGroup(
+    string SnapshotId,
+    IReadOnlyList<StorageAssetRecord> Copies);
