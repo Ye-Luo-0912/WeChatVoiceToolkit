@@ -49,6 +49,7 @@ public static class OperationStageIds
     public const string ResolvingContact = "resolving-contact";
     public const string QueryingVoices = "querying-voices";
     public const string Exporting = "exporting";
+    public const string ResolvingDurations = "resolving-durations";
     public const string Committing = "committing";
     public const string InspectingState = "inspecting-state";
     public const string ResumingState = "resuming-state";

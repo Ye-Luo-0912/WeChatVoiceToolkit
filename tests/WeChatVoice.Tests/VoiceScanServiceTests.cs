@@ -203,6 +203,38 @@ public sealed class VoiceScanServiceTests
     }
 
     [Fact]
+    public async Task ScanAsync_reports_cumulative_duration_resolution_progress()
+    {
+        var records = Enumerable.Range(1, 4)
+            .Select(index => new VoiceRecord(
+                $"progress-{index}",
+                "conversation",
+                DateTimeOffset.UtcNow.AddMinutes(index),
+                VoiceDirection.Incoming,
+                new VoicePayloadLocator("media", 0, index.ToString()),
+                PayloadByteLength: 10,
+                DurationMs: index % 2 == 0 ? index * 1000 : null,
+                AdapterId: "adapter",
+                AccountId: "account"))
+            .ToArray();
+        var progress = new List<DurationResolutionProgress>();
+        var scanner = new VoiceScanService(new FakeCatalog(records), new RecordDurationResolver());
+
+        var result = await scanner.ScanWithRecordsAsync(
+            new VoiceQuery(Direction: VoiceDirection.Incoming, ResolveDuration: true),
+            new SynchronousProgress<DurationResolutionProgress>(progress.Add),
+            CancellationToken.None);
+        var report = result.Report;
+
+        Assert.Equal(4, report.MatchedVoiceCount);
+        Assert.Equal(2, report.DurationKnownCount);
+        Assert.Equal(4, progress.Count);
+        Assert.Equal(4, progress[^1].Attempted);
+        Assert.Equal(2, progress[^1].Resolved);
+        Assert.Equal(2, progress[^1].Failed);
+    }
+
+    [Fact]
     public async Task Large_scan_uses_a_verified_disk_spool_and_releases_it_after_read()
     {
         var records = Enumerable.Range(0, PreparedSelectionSpool.InMemoryRecordLimit + 1)
@@ -242,6 +274,12 @@ public sealed class VoiceScanServiceTests
         }
 
         return count;
+    }
+
+    /// <summary>Invokes the callback inline so progress is guaranteed before the scan returns.</summary>
+    private sealed class SynchronousProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => handler(value);
     }
 
     private sealed class FakeDurationResolver(long duration) : IVoiceDurationResolver

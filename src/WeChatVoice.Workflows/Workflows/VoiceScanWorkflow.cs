@@ -46,8 +46,21 @@ public sealed class VoiceScanWorkflow(
             var effectiveDurationResolver = durationResolver is not null && durationCache is not null
                 ? new CachedVoiceDurationResolver(durationResolver, durationCache, cleanupQueue)
                 : durationResolver;
+            var durationProgress = request.ResolveDurations
+                ? new InlineProgress<DurationResolutionProgress>(value =>
+                {
+                    var percent = value.Attempted > 0
+                        ? Math.Clamp(value.Resolved * 100.0 / value.Attempted, 0, 100)
+                        : (double?)null;
+                    context.Report(
+                        OperationPhase.VoiceScan,
+                        OperationStageIds.ResolvingDurations,
+                        $"{value.Resolved}/{value.Attempted}",
+                        percent);
+                })
+                : null;
             var scan = await new VoiceScanService(session.Catalog, effectiveDurationResolver, deepScanCache, cleanupQueue)
-                .ScanWithRecordsAsync(query, cancellationToken)
+                .ScanWithRecordsAsync(query, durationProgress, cancellationToken)
                 .ConfigureAwait(false);
             var selection = PreparedVoiceSelection.Create(
                 request.WorkspacePath,
@@ -84,5 +97,16 @@ public sealed class VoiceScanWorkflow(
                 Core.Errors.ErrorCode.SelectionPlanMismatch,
                 "The resolved contact no longer matches the selected stable ContactId.");
         }
+    }
+
+    /// <summary>
+    /// Invokes the callback inline on the calling thread so every progress
+    /// update reaches the workflow context before the scan task completes.
+    /// Unlike <see cref="Progress{T}"/>, this never defers delivery through a
+    /// SynchronizationContext and therefore cannot drop the final update.
+    /// </summary>
+    private sealed class InlineProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => handler(value);
     }
 }

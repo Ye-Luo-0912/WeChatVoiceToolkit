@@ -9,6 +9,8 @@ public interface IDesktopFolderPicker
     void Attach(TopLevel owner);
 
     Task<string?> PickFolderAsync(string title, CancellationToken cancellationToken = default);
+
+    Task<string?> PickFileAsync(string title, CancellationToken cancellationToken = default);
 }
 
 public sealed class DesktopFolderPicker : IDesktopFolderPicker
@@ -27,5 +29,17 @@ public sealed class DesktopFolderPicker : IDesktopFolderPicker
             AllowMultiple = false,
         }).ConfigureAwait(true);
         return folders.Count == 0 ? null : folders[0].Path.LocalPath;
+    }
+
+    public async Task<string?> PickFileAsync(string title, CancellationToken cancellationToken = default)
+    {
+        var provider = _owner?.StorageProvider
+            ?? throw new InvalidOperationException("The Desktop folder picker is not attached to a window.");
+        var files = await provider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+        }).ConfigureAwait(true);
+        return files.Count == 0 ? null : files[0].Path.LocalPath;
     }
 }

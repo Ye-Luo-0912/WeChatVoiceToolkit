@@ -47,6 +47,12 @@ public sealed partial class WorkflowRunHost : ObservableObject
     [ObservableProperty]
     private double? _percentComplete;
 
+    /// <summary>True when the current stage reports a bounded percent (0..100).</summary>
+    public bool HasPercent => PercentComplete is not null;
+
+    /// <summary>ProgressBar-safe percent; 0 when no bounded percent is available.</summary>
+    public double PercentCompleteOrZero => PercentComplete ?? 0;
+
     /// <summary>
     /// Safe presentation text kept for existing bindings. UI branching uses
     /// the typed code properties below and never parses this text.
@@ -319,6 +325,8 @@ public sealed partial class WorkflowRunHost : ObservableObject
         StageId = progress.Stage.Id;
         StageMessage = progress.Stage.Message;
         PercentComplete = progress.Stage.PercentComplete;
+        OnPropertyChanged(nameof(HasPercent));
+        OnPropertyChanged(nameof(PercentCompleteOrZero));
         Log?.Stage(progress.Phase, progress.Stage.Id, progress.Stage.PercentComplete);
     }
 

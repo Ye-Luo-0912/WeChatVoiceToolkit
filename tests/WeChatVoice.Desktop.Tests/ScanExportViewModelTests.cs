@@ -25,7 +25,8 @@ public sealed class ScanExportViewModelTests : IDisposable
             new TestDoubles.SilentConfirmation(),
             contactDiscovery: _contacts,
             voiceScan: _scan,
-            voiceExport: _export);
+            voiceExport: _export,
+            appDataDirectory: _root);
         Services = new DesktopServices(root, new DesktopLog(_root), new RecentWorkspaceStore(_root));
     }
 
@@ -66,6 +67,35 @@ public sealed class ScanExportViewModelTests : IDisposable
         Assert.Equal(1, viewModel.InvalidHeaderCount);
         Assert.Equal(1, viewModel.AmbiguousCount);
         Assert.Equal(WorkflowState.Completed, viewModel.RunHost.State);
+    }
+
+    [Fact]
+    public async Task ConfigureDecoder_persists_worker_path_and_updates_status()
+    {
+        Directory.CreateDirectory(_root);
+        var workerPath = Path.Combine(_root, "decoder-worker.exe");
+        File.WriteAllBytes(workerPath, [1, 2, 3]);
+        var picker = new FakeFolderPicker { NextPath = workerPath };
+        var services = new DesktopServices(
+            new WorkflowCompositionRoot(new TestDoubles.SilentConfirmation(), appDataDirectory: _root),
+            new DesktopLog(_root),
+            new RecentWorkspaceStore(_root),
+            folderPicker: picker);
+        var vm = new ScanViewModel(services, DirectInvokeAsync);
+
+        await vm.ConfigureDecoderCommand.ExecuteAsync(null);
+
+        Assert.Equal(workerPath, vm.DecoderWorkerPath);
+        Assert.Contains("解码器可用", vm.DecoderStatusText, StringComparison.Ordinal);
+        Assert.Equal(Core.Models.DecoderStatus.Available, services.Workflows.DecoderStatusReport.Status);
+    }
+
+    [Fact]
+    public void ScanViewModel_reports_missing_decoder_status_by_default()
+    {
+        var viewModel = new ScanViewModel(Services, DirectInvokeAsync);
+        Assert.Contains("未配置解码器", viewModel.DecoderStatusText, StringComparison.Ordinal);
+        Assert.False(viewModel.DurationAnalysisAvailable);
     }
 
     [Fact]

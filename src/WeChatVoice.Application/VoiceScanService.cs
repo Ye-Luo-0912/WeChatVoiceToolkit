@@ -36,6 +36,20 @@ public sealed class VoiceScanService
     public async Task<VoiceScanExecutionResult> ScanWithRecordsAsync(
         VoiceQuery query,
         CancellationToken cancellationToken = default)
+        => await ScanWithRecordsAsync(query, progress: null, cancellationToken);
+
+    /// <summary>
+    /// Executes the authoritative metadata selection once and returns both the
+    /// report and the exact immutable record list that produced it. Formal
+    /// exports use this list instead of querying the catalog a second time.
+    /// <paramref name="progress"/> reports cumulative duration-resolution
+    /// counters (resolved, attempted, failed) when <see cref="VoiceQuery.ResolveDuration"/>
+    /// is enabled; hosts use it to surface a live "解析时长 x/y" line.
+    /// </summary>
+    public async Task<VoiceScanExecutionResult> ScanWithRecordsAsync(
+        VoiceQuery query,
+        IProgress<DurationResolutionProgress>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         var shardCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -52,6 +66,8 @@ public sealed class VoiceScanService
         var exportable = 0;
         long totalPayloadBytes = 0;
         var durationKnown = 0;
+        var durationAttempted = 0;
+        var durationFailed = 0;
         var records = new List<VoiceRecord>(Math.Min(VoiceSelectionEnumerator.InitialRecordCapacity, PreparedSelectionSpool.InMemoryRecordLimit));
         PreparedSelectionSpool.PreparedSelectionSpoolWriter? spoolWriter = null;
         PreparedSelectionSpoolDescriptor? spool = null;
@@ -79,6 +95,16 @@ public sealed class VoiceScanService
                 {
                     duration = checked(duration + record.DurationMs.Value);
                     durationKnown++;
+                }
+                if (query.ResolveDuration)
+                {
+                    durationAttempted++;
+                    if (record.DurationMs is not > 0)
+                    {
+                        durationFailed++;
+                    }
+
+                    progress?.Report(new DurationResolutionProgress(durationKnown, durationAttempted, durationFailed));
                 }
                 earliest = earliest is null || record.OccurredAtUtc < earliest ? record.OccurredAtUtc : earliest;
                 latest = latest is null || record.OccurredAtUtc > latest ? record.OccurredAtUtc : latest;
@@ -210,3 +236,13 @@ public sealed record VoiceScanExecutionResult(
     VoiceScanReport Report,
     IReadOnlyList<VoiceRecord> Records,
     PreparedSelectionSpoolDescriptor? Spool = null);
+
+/// <summary>
+/// Cumulative duration-resolution counters reported during a scan that has
+/// <see cref="VoiceQuery.ResolveDuration"/> enabled. Hosts use these to render
+/// a live progress line without parsing report text.
+/// </summary>
+public readonly record struct DurationResolutionProgress(
+    int Resolved,
+    int Attempted,
+    int Failed);

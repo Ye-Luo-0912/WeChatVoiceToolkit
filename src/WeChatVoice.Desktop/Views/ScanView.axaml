@@ -7,9 +7,14 @@
                 VerticalScrollBarVisibility="Auto">
     <DockPanel Margin="28">
       <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,18,0,0">
-        <ProgressBar IsVisible="{Binding RunHost.IsRunning}" IsIndeterminate="True" />
+        <ProgressBar IsVisible="{Binding RunHost.IsRunning}"
+                     IsIndeterminate="{Binding !RunHost.HasPercent}"
+                     Minimum="0"
+                     Maximum="100"
+                     Value="{Binding RunHost.PercentCompleteOrZero}" />
         <TextBlock Text="{Binding RunHost.StageMessage}" TextWrapping="Wrap" Foreground="#93C5FD" />
         <TextBlock Text="{Binding RunHost.LastError}" Foreground="#FCA5A5" TextWrapping="Wrap" />
+        <TextBlock IsVisible="{Binding HasDurationErrors}" Text="{Binding DurationErrorSummary}" Foreground="#FBBF24" TextWrapping="Wrap" />
       </StackPanel>
 
       <StackPanel Spacing="18" MaxWidth="1080">
@@ -70,6 +75,21 @@
                   <CheckBox Content="解析语音时长（较慢）" IsChecked="{Binding ResolveDurations}" IsEnabled="{Binding DurationAnalysisAvailable}" />
                 </StackPanel>
               </Grid>
+
+              <Border Background="#0F172A"
+                      BorderBrush="#334155"
+                      BorderThickness="1"
+                      CornerRadius="8"
+                      Padding="12">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="时长解码器" FontWeight="SemiBold" Foreground="#E2E8F0" />
+                  <TextBlock Text="{Binding DecoderStatusText}" Foreground="#CBD5E1" TextWrapping="Wrap" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="选择解码器…" Command="{Binding ConfigureDecoderCommand}" />
+                    <Button Content="清除" Command="{Binding ClearDecoderConfigCommand}" />
+                  </StackPanel>
+                </StackPanel>
+              </Border>
             </StackPanel>
           </Border>
 

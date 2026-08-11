@@ -46,6 +46,20 @@ public sealed partial class ScanViewModel : PageViewModelBase
 
     public bool DurationAnalysisAvailable => Services.Workflows.DurationAnalysisAvailable;
 
+    /// <summary>A human-readable, non-sensitive decoder status line for the scan page.</summary>
+    public string DecoderStatusText
+        => Services.Workflows.DecoderStatusReport.Status switch
+        {
+            Core.Models.DecoderStatus.Available => "解码器可用：可解析语音时长。",
+            Core.Models.DecoderStatus.Missing => "未配置解码器：时长将显示为未知。可在下方选择一个已评审的解码器。",
+            Core.Models.DecoderStatus.UntrustedOrUnsupported => "解码器不受支持：请选择已评审的解码器。",
+            Core.Models.DecoderStatus.FailedSelfTest => "解码器自检失败：请检查路径或重新选择。",
+            _ => "解码器状态未知。",
+        };
+
+    [ObservableProperty]
+    private string? _decoderWorkerPath = string.Empty;
+
     [ObservableProperty]
     private string? _workspacePath;
 
@@ -108,8 +122,41 @@ public sealed partial class ScanViewModel : PageViewModelBase
     [ObservableProperty]
     private int _durationUnknownCount;
 
+    /// <summary>True when the last scan left some voice durations unresolved.</summary>
+    public bool HasDurationErrors => DurationUnknownCount > 0;
+
+    /// <summary>Explains how many voice durations could not be resolved.</summary>
+    public string DurationErrorSummary
+        => DurationUnknownCount > 0
+            ? $"注意：有 {DurationUnknownCount} 条语音未能解析时长（可能解码器不可用或部分音频损坏）。这些条目的时长将显示为未知。"
+            : string.Empty;
+
     [ObservableProperty]
     private string? _accountSummary;
+
+    [RelayCommand]
+    private async Task ConfigureDecoderAsync()
+    {
+        var path = await Services.FolderPicker.PickFileAsync("选择已评审的 SILK 解码器可执行文件").ConfigureAwait(true);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        Services.Workflows.ConfigureDecoder(path);
+        DecoderWorkerPath = path;
+        OnPropertyChanged(nameof(DecoderStatusText));
+        OnPropertyChanged(nameof(DurationAnalysisAvailable));
+    }
+
+    [RelayCommand]
+    private void ClearDecoderConfig()
+    {
+        Services.Workflows.ConfigureDecoder(null);
+        DecoderWorkerPath = string.Empty;
+        OnPropertyChanged(nameof(DecoderStatusText));
+        OnPropertyChanged(nameof(DurationAnalysisAvailable));
+    }
 
     [RelayCommand]
     private Task ScanAsync()
@@ -228,6 +275,8 @@ public sealed partial class ScanViewModel : PageViewModelBase
             TotalDurationMs = report.TotalDurationMs;
             DurationKnownCount = report.DurationKnownCount;
             DurationUnknownCount = report.DurationUnknownCount;
+            OnPropertyChanged(nameof(HasDurationErrors));
+            OnPropertyChanged(nameof(DurationErrorSummary));
             AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
             ScanSummary = $"扫描完成：可导出 {report.ExportableVoiceCount} 条 / 匹配 {report.MatchedVoiceCount} 条；总时长 {report.TotalDurationMs} ms（已解析 {report.DurationKnownCount}，未知 {report.DurationUnknownCount}）；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；重复统计：{(deepScan ? DuplicateCount.ToString() : "未执行")}";
         });

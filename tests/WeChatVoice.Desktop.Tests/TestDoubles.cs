@@ -175,6 +175,12 @@ public sealed class FakeFolderPicker : IDesktopFolderPicker
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(NextPath);
     }
+
+    public Task<string?> PickFileAsync(string title, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(NextPath);
+    }
 }
 
 public sealed class FakeContactWorkflow : IContactDiscoveryWorkflow

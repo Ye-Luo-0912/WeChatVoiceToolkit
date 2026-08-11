@@ -19,6 +19,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
 {
     private readonly TemporaryFileCleanupQueue _cleanupQueue;
     private readonly IAsyncDisposable? _durationResolver;
+    private readonly DecoderConfigurationStore _decoderConfiguration;
     private int _disposed;
 
     public WorkflowCompositionRoot(
@@ -43,6 +44,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         PreparedSelectionSpool.CleanupOrphans(cleanupQueue: _cleanupQueue);
         var storageRoots = StorageRootsFor(appDataDirectory);
         new StartupOrphanSweeper(storageRoots).Sweep(cleanupQueue: _cleanupQueue);
+        _decoderConfiguration = new DecoderConfigurationStore(storageRoots.AppDataRoot);
         var loader = new Workspaces.WorkspaceLoader();
         var adapters = BuiltInAdapters.Create();
         var resolver = new DataSetAdapterResolver(adapters);
@@ -64,6 +66,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         var configuredDecoder = voiceDurationResolver ?? CreateDurationResolver(_cleanupQueue);
         _durationResolver = configuredDecoder as IAsyncDisposable;
         DurationAnalysisAvailable = configuredDecoder is not null;
+        DecoderStatusReport = CreateDecoderStatusReport();
         Func<VerifiedLocalWorkspace, IVoiceDurationCache>? durationCacheFactory = configuredDecoder is null
             ? null
             : workspaceResult => new JsonlVoiceDurationCache(
@@ -110,6 +113,24 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
 
     public bool DurationAnalysisAvailable { get; }
 
+    /// <summary>
+    /// Non-sensitive status of the configured duration decoder. The UI uses it
+    /// to explain why duration analysis is or is not available.
+    /// </summary>
+    public Core.Models.DecoderStatusReport DecoderStatusReport { get; private set; }
+
+    /// <summary>
+    /// Persists a user-facing reviewed decoder worker path and updates the
+    /// status report. Passing null clears the configuration. The environment
+    /// variables remain the advanced/development path.
+    /// </summary>
+    public Core.Models.DecoderStatusReport ConfigureDecoder(string? workerPath)
+    {
+        _decoderConfiguration.SetWorkerPath(workerPath);
+        DecoderStatusReport = new DecoderStatusInspector(_decoderConfiguration).Report();
+        return DecoderStatusReport;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -140,9 +161,13 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         return new StorageRoots(appData, Path.Combine(Path.GetTempPath(), "WeChatVoiceToolkit"));
     }
 
-    private static IVoiceDurationResolver? CreateDurationResolver(ITemporaryFileCleanupQueue cleanupQueue)
+    private Core.Models.DecoderStatusReport CreateDecoderStatusReport()
+        => new DecoderStatusInspector(_decoderConfiguration).Report();
+
+    private IVoiceDurationResolver? CreateDurationResolver(ITemporaryFileCleanupQueue cleanupQueue)
     {
-        var workerPath = Environment.GetEnvironmentVariable("WECHATVOICE_SILK_DECODER_WORKER_PATH");
+        var inspector = new DecoderStatusInspector(_decoderConfiguration);
+        var workerPath = inspector.DiscoverWorkerPath();
         if (!string.IsNullOrWhiteSpace(workerPath) && File.Exists(workerPath))
         {
             return new DecoderVoiceDurationResolver(new ExternalSilkDecoderWorker(workerPath, cleanupQueue: cleanupQueue), cleanupQueue);
