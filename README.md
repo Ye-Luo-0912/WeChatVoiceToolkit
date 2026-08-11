@@ -76,6 +76,22 @@ is covered by workflow integration tests and Desktop/Avalonia-Headless tests.
 Choose **从微信数据源刷新** only when you want to re-check the Weixin source and
 create a new snapshot; otherwise the app reuses verified local state.
 
+Because "refresh" can mean several different workflows, the resume page also
+renders five distinct **refresh actions** (`WeChatVoice.Core.Models.RefreshActionCatalog`)
+so the user never confuses "continue" with "re-run everything":
+
+| 动作 | 复用 | 重新执行 |
+|---|---|---|
+| 继续现有项目 | 已验证快照、工作区、扫描、已导出 SILK | 无（快照/解密/UAC/导出都不重跑） |
+| 从微信数据源刷新 | 未变化的已验证状态 | 检测源变化；必要时新快照与解密 |
+| 重新扫描当前工作区 | 快照、解密、账户确认 | 语音查询与扫描 |
+| 重新分析音频（时长/质量） | 已导出 SILK 与有效缓存 | 未知/过期音频的时长与质量分析 |
+| 重建训练数据集 | 原始 SILK 导出与选择 profile | 数据集构建（SILK→WAV 派生产物） |
+
+Each action routes to the page that owns that workflow via a lightweight
+`INavigationService`; the `IProjectStateWorkflow` verify/reuse decision stays
+authoritative.
+
 ## Current commands
 
 ```powershell

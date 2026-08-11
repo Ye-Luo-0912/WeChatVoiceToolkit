@@ -34,6 +34,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
             new StorageViewModel(services),
         ];
         _selectedPage = Pages[0];
+        services.Navigation.NavigationRequested += requestedType =>
+        {
+            var target = Pages.FirstOrDefault(page => page.GetType() == requestedType);
+            if (target is not null)
+            {
+                _ = marshal(() => SelectedPage = target);
+            }
+        };
         services.OperationCoordinator.PropertyChanged += (_, eventArgs) =>
         {
             if (eventArgs.PropertyName is nameof(OperationCoordinator.IsBusy) or null)

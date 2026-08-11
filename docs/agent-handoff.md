@@ -112,10 +112,26 @@ verification failure triggers a fresh scan that is written back to the cache.
 The cache is included in the managed transient inventory and is covered by Core
 round-trip/corruption tests plus workflow reuse/miss tests.
 
+Run retention is implemented (`RunRetentionService` + `IRunRetentionWorkflow`):
+`export run-retention preview|compact` classifies runs as `KeepRecent` /
+`Referenced` / `Compactable`, keeps the most recent N complete runs, compacts
+only the journal/transaction of older unreferenced runs (never deleting
+committed manifests, CSV, artifact index, or the metadata-commit descriptor),
+preserves journal for runs whose manifest is not yet committed, and refuses to
+compact any run referenced by a dataset selection profile. Reparse-point
+protection and post-compaction re-checks are covered by tests.
+
+User-facing refresh semantics are implemented (`WeChatVoice.Core.Models.RefreshActionCatalog`):
+the Resume home page renders five distinct actions — continue / refresh-from-source
+/ re-scan / re-analyze / rebuild-dataset — each documenting what it reuses and
+what it redoes. A lightweight `INavigationService` routes each action to the
+page that owns that workflow while the `IProjectStateWorkflow` verify/reuse
+decision stays authoritative. The catalog, routing, and navigation bridge are
+covered by Core and Desktop tests.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
-work: decoder productization (Phase 3: optional packaged reviewed decoder),
-refresh semantics, and run retention.
+work: decoder productization (Phase 3: optional packaged reviewed decoder).
 Account
 self-identity evidence is already
 re-derived from the verified `encrypt_username = username` row; user

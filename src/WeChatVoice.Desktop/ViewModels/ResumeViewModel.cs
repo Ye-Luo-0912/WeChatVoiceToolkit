@@ -23,6 +23,12 @@ public sealed partial class ResumeViewModel : PageViewModelBase
 
     public override string Title => "继续上次工作";
 
+    /// <summary>
+    /// The five distinct refresh semantics. Rendering them as separate actions
+    /// keeps the user from treating "continue" and "re-run everything" the same.
+    /// </summary>
+    public IReadOnlyList<RefreshAction> RefreshActions => RefreshActionCatalog.All;
+
     public ObservableCollection<ProjectResumeEntryViewModel> Projects { get; } = [];
 
     [ObservableProperty]
@@ -128,7 +134,30 @@ public sealed partial class ResumeViewModel : PageViewModelBase
     [RelayCommand]
     private void RefreshFromSource()
     {
-        ContinueSummary = "如需获取最新微信数据，请从左侧导航选择「微信数据」重新检测源并创建新快照。";
+        Services.Navigation.NavigateTo(typeof(SourceSnapshotViewModel));
+    }
+
+    /// <summary>
+    /// Routes a refresh action card to the page that owns that workflow. The
+    /// <see cref="IProjectStateWorkflow"/> decision stays authoritative; this
+    /// only moves the user to the right page for the chosen semantic.
+    /// </summary>
+    [RelayCommand]
+    private void NavigateToAction(RefreshAction? action)
+    {
+        if (action is null)
+        {
+            return;
+        }
+
+        var pageType = action.Target switch
+        {
+            RefreshActionCatalog.RefreshSourceId => typeof(SourceSnapshotViewModel),
+            RefreshActionCatalog.ReScanId or RefreshActionCatalog.ReAnalyzeId => typeof(ScanViewModel),
+            RefreshActionCatalog.RebuildDatasetId => typeof(DatasetCurationViewModel),
+            _ => typeof(ResumeViewModel),
+        };
+        Services.Navigation.NavigateTo(pageType);
     }
 }
 

@@ -151,6 +151,16 @@
     results back afterward. The cache lives under `Data/scan-cache` and is
     included in the managed transient inventory. Cache reuse/miss and
     round-trip/corruption are covered by Core and workflow tests.
+30. User-facing refresh semantics: the Resume home page now distinguishes five
+    distinct actions (`RefreshActionCatalog`: continue / refresh-from-source /
+    re-scan / re-analyze / rebuild-dataset). Each `RefreshAction` documents its
+    own scope (what it reuses, what it redoes, and what it never touches) so
+    users never treat "continue" and "re-run everything" the same. A lightweight
+    `INavigationService` lets the Resume view model route each action to the
+    page that owns that workflow (source snapshot / scan / dataset curation),
+    while the `IProjectStateWorkflow` decision remains authoritative. The five
+    actions, their routing, and the navigation bridge are covered by Core and
+    Desktop tests.
 
 ## Next product work
 

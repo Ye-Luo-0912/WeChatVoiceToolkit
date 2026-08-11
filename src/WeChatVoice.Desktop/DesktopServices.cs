@@ -24,7 +24,8 @@ public sealed class DesktopServices : IAsyncDisposable
         IWeixinProcessProbe? weixinProcessProbe = null,
         SnapshotOutputDirectoryFactory? snapshotOutputDirectories = null,
         IDesktopFolderPicker? folderPicker = null,
-        IAudioPreviewPlayer? audioPreview = null)
+        IAudioPreviewPlayer? audioPreview = null,
+        INavigationService? navigation = null)
     {
         Workflows = workflows;
         Log = log;
@@ -32,6 +33,7 @@ public sealed class DesktopServices : IAsyncDisposable
         OperationCoordinator = operationCoordinator ?? new OperationCoordinator();
         InvokeOnUi = invokeOnUi;
         Project = new ExportProjectSession();
+        Navigation = navigation ?? new NavigationService();
         FolderPicker = folderPicker ?? new DesktopFolderPicker();
         DataSourceDiscovery = dataSourceDiscovery ?? new WeixinDataSourceDiscovery(recentWorkspaces);
         WeixinProcessProbe = weixinProcessProbe ?? new WeixinProcessProbe();
@@ -82,6 +84,8 @@ public sealed class DesktopServices : IAsyncDisposable
     public ExportProjectSession Project { get; }
 
     public IDesktopFolderPicker FolderPicker { get; }
+
+    public INavigationService Navigation { get; }
 
     public IWeixinDataSourceDiscovery DataSourceDiscovery { get; }
 
