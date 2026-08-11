@@ -22,6 +22,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         IsDevelopmentBrokerEnabled = services.Workflows.AllowDevelopmentBroker;
         Pages =
         [
+            new ResumeViewModel(services),
             new EnvironmentViewModel(services),
             new SourceSnapshotViewModel(services),
             new MaterializationViewModel(services),
@@ -30,6 +31,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             new ExportViewModel(services),
             new DatasetCurationViewModel(services),
             new HistoryDiagnosticsViewModel(services),
+            new StorageViewModel(services),
         ];
         _selectedPage = Pages[0];
         services.OperationCoordinator.PropertyChanged += (_, eventArgs) =>

@@ -171,7 +171,7 @@ public sealed class SourceSnapshotViewModelTests
         };
         await using var services = CreateServices(temporary, discovery, new FakeWeixinProcessProbe());
         var main = new MainWindowViewModel(services);
-        var sourcePage = Assert.IsType<SourceSnapshotViewModel>(main.Pages[1]);
+        var sourcePage = Assert.IsType<SourceSnapshotViewModel>(main.Pages[2]);
         services.Project.EnvironmentAssessment = new FakeEnvironmentWorkflow().Result;
 
         main.SelectedPage = sourcePage;

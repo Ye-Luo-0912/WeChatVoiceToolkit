@@ -130,12 +130,12 @@ public sealed class AvaloniaHeadlessSmokeTests
         {
             var services = setup.Services;
             var main = setup.Main;
-            var sourcePage = Assert.IsType<SourceSnapshotViewModel>(main.Pages[1]);
-            var materialization = Assert.IsType<MaterializationViewModel>(main.Pages[2]);
+            var sourcePage = Assert.IsType<SourceSnapshotViewModel>(main.Pages[2]);
+            var materialization = Assert.IsType<MaterializationViewModel>(main.Pages[3]);
             Assert.False(sourcePage.CanNavigate);
             Assert.False(materialization.CanNavigate);
 
-            var environment = Assert.IsType<EnvironmentViewModel>(main.Pages[0]);
+            var environment = Assert.IsType<EnvironmentViewModel>(main.Pages[1]);
             await environment.AssessCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowState.Completed, environment.RunHost.State);
 
@@ -160,12 +160,12 @@ public sealed class AvaloniaHeadlessSmokeTests
             await materializationRun.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowState.Completed, materialization.RunHost.State);
 
-            var contact = Assert.IsType<ContactViewModel>(main.Pages[3]);
+            var contact = Assert.IsType<ContactViewModel>(main.Pages[4]);
             await contact.LoadContactsCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
             contact.SelectedContact = contact.Contacts[1];
             Assert.Equal("contact-b", services.Project.SelectedContact?.ContactId);
 
-            var scan = Assert.IsType<ScanViewModel>(main.Pages[4]);
+            var scan = Assert.IsType<ScanViewModel>(main.Pages[5]);
             scan.FromText = "2026-01-01T00:00:00Z";
             scan.ToText = "2026-01-31T23:59:59Z";
             scan.MaximumResultsText = "100";
@@ -174,7 +174,7 @@ public sealed class AvaloniaHeadlessSmokeTests
             Assert.Equal(100, fakeScan.LastRequest?.MaximumResults);
             Assert.Equal("contact-b", services.Project.SelectionPlan?.ContactId);
 
-            var exportPage = Assert.IsType<ExportViewModel>(main.Pages[5]);
+            var exportPage = Assert.IsType<ExportViewModel>(main.Pages[6]);
             exportPage.OutputDirectory = export;
             await exportPage.ExportCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(5));
 

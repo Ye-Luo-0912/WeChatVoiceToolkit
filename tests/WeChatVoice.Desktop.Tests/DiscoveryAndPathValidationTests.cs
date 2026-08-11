@@ -155,6 +155,53 @@ public sealed class DiscoveryAndPathValidationTests : IDisposable
         Assert.False(source.StartsWith(first, StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void Workspace_default_reuses_the_deterministic_path_when_it_is_occupied()
+    {
+        var factory = new WorkspaceOutputDirectoryFactory(_root);
+        var source = CreateSource(Path.Combine(_root, "source-root"), "wxid_private_0000000000000010", "source.db");
+        var snapshotId = "snapshot-abc";
+
+        var canonical = factory.CreateDefault(source, snapshotId);
+        Directory.CreateDirectory(canonical);
+        File.WriteAllBytes(Path.Combine(canonical, "message_0.db"), [1, 2, 3]);
+
+        var occupied = factory.CreateDefault(source, snapshotId);
+
+        // The canonical destination is returned for verification/reuse; no GUID
+        // fallback is silently created.
+        Assert.Equal(canonical, occupied);
+        Assert.True(WorkspaceOutputDirectoryFactory.IsOccupied(occupied));
+    }
+
+    [Fact]
+    public void Workspace_new_copy_allocates_a_separate_empty_guid_directory()
+    {
+        var factory = new WorkspaceOutputDirectoryFactory(_root);
+        var source = CreateSource(Path.Combine(_root, "source-root"), "wxid_private_0000000000000010", "source.db");
+        var snapshotId = "snapshot-abc";
+
+        var canonical = factory.CreateDefault(source, snapshotId);
+        Directory.CreateDirectory(canonical);
+        File.WriteAllBytes(Path.Combine(canonical, "message_0.db"), [1, 2, 3]);
+
+        var copy = factory.CreateNewCopy(source, snapshotId);
+
+        Assert.NotEqual(canonical, copy);
+        Assert.False(Directory.Exists(copy));
+    }
+
+    [Fact]
+    public void Workspace_default_is_not_reported_occupied_when_empty()
+    {
+        var factory = new WorkspaceOutputDirectoryFactory(_root);
+        var source = CreateSource(Path.Combine(_root, "source-root"), "wxid_private_0000000000000010", "source.db");
+
+        var canonical = factory.CreateDefault(source, "snapshot-abc");
+
+        Assert.False(WorkspaceOutputDirectoryFactory.IsOccupied(canonical));
+    }
+
     private static string CreateSource(string root, string account, string databaseName)
     {
         var storage = Directory.CreateDirectory(Path.Combine(root, account, "db_storage")).FullName;

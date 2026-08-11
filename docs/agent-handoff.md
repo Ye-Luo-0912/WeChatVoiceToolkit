@@ -47,6 +47,31 @@ limit; Workspace catalogs hold read-only file leases; materialization state
 transitions are monotonic and locked; and Broker cancellation closes the pipe
 before attempting best-effort process cleanup.
 
+The Desktop is now **resume-first**. `IProjectStateWorkflow` /
+`ProjectStateWorkflow` (in `WeChatVoice.Workflows`) classify existing local
+project state via `ProjectStageState` (`ValidReusable` / `Recoverable` /
+`Stale` / `Invalid` / `Busy` / `Missing`) and reuse verified workspaces, adopt
+recoverable materializations, or repair a lost/corrupt Workspace JSON without
+re-snapshot, re-materialization, or re-UAC. The Desktop opens on a resume page
+that only presents the classification and the user's continue choice; the
+workspace output factory inspects the occupied canonical path before ever
+allocating a new GUID copy. Keep the reuse/recover decision in the shared
+workflow and never re-implement it in the UI. Reuse must always re-verify; file
+existence is never treated as reusable state.
+
+The managed storage lifecycle is now a shared product capability.
+`IStorageLifecycleWorkflow` / `StorageLifecycleWorkflow` plus a read-only
+`ManagedStorageInventory` classify app-owned storage under
+`%LocalAppData%/WeChatVoiceToolkit` (Snapshots, Workspaces, temp/prepared
+roots) into `StorageAssetKind` and expose Inventory / PreviewCleanup / Cleanup.
+Cleanup only removes independent Transient objects and expired-recoverable
+workspaces (routed through the workspace deletion boundary); it never touches
+active locks, reparse points, or user assets (raw exports, curated datasets).
+The Desktop "存储管理" page and the CLI `storage inventory|preview|cleanup`
+commands both consume the shared workflow. Keep inspection read-only and never
+let the Recent index become the ownership source of truth: manifest / state
+markers classify objects, and a lost catalog is rediscovered from disk.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
 work is CLI decomposition, schema-backed duration evidence, a later batch

@@ -46,6 +46,9 @@
   </Application.Styles>
 
   <Application.DataTemplates>
+    <DataTemplate DataType="{x:Type vm:ResumeViewModel}">
+      <views:ResumeView />
+    </DataTemplate>
     <DataTemplate DataType="{x:Type vm:EnvironmentViewModel}">
       <views:EnvironmentView />
     </DataTemplate>
@@ -69,6 +72,9 @@
     </DataTemplate>
     <DataTemplate DataType="{x:Type vm:HistoryDiagnosticsViewModel}">
       <views:HistoryDiagnosticsView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:StorageViewModel}">
+      <views:StorageView />
     </DataTemplate>
   </Application.DataTemplates>
 </Application>

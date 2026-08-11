@@ -50,6 +50,32 @@ Workspace JSON path. The user only needs to start materialization and confirm
 the account/UAC prompt; paths are still available under the page details for
 diagnostics.
 
+## Resume / 继续上次工作
+
+The Desktop now opens on a **resume-first** page. On activation it inspects the
+recently used workspaces through the shared `IProjectStateWorkflow`
+(`WeChatVoice.Workflows`) and classifies each one as `ValidReusable`,
+`Recoverable`, `Stale`, `Invalid`, `Busy`, or `Missing`. The UI only presents
+the classification and the user's continue choice; it never re-implements the
+verified reuse/recover decision.
+
+Continuing a project never repeats the expensive main chain:
+
+- no re-snapshot, no re-materialization, no re-UAC / key acquisition;
+- a verified workspace JSON is reloaded and reused (`ValidReusable`);
+- a recoverable materialization is adopted without re-decrypting; a lost or
+  corrupt Workspace JSON is repaired against the completed materialized root;
+- the existing canonical Workspace output directory is reused instead of
+  allocating a new GUID copy.
+
+The shared `ProjectStageState`/`ProjectStageStatus` models and the
+`ProjectStateWorkflow` (inspect + resume) live in `WeChatVoice.Workflows` so
+both the Desktop and CLI hosts share one authoritative path. Second-run reuse
+is covered by workflow integration tests and Desktop/Avalonia-Headless tests.
+
+Choose **从微信数据源刷新** only when you want to re-check the Weixin source and
+create a new snapshot; otherwise the app reuses verified local state.
+
 ## Current commands
 
 ```powershell

@@ -3,6 +3,7 @@ using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Infrastructure.Audio;
+using WeChatVoice.Infrastructure.Storage;
 using WeChatVoice.Workflows.Broker;
 using WeChatVoice.Workflows.Workflows;
 
@@ -25,6 +26,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         bool allowDevelopmentBroker = false,
         string? brokerDirectory = null,
         IEnvironmentAssessmentWorkflow? environmentAssessment = null,
+        IProjectStateWorkflow? projectState = null,
         ISnapshotWorkflow? snapshot = null,
         IMaterializationWorkflow? materialization = null,
         IWorkspaceWorkflow? workspace = null,
@@ -32,7 +34,9 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         IVoiceScanWorkflow? voiceScan = null,
         IVoiceExportWorkflow? voiceExport = null,
         IDatasetCurationWorkflow? datasetCuration = null,
-        IVoiceDurationResolver? voiceDurationResolver = null)
+        IVoiceDurationResolver? voiceDurationResolver = null,
+        IStorageLifecycleWorkflow? storageLifecycle = null,
+        string? appDataDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(accountConfirmation);
         _cleanupQueue = new TemporaryFileCleanupQueue();
@@ -53,6 +57,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         Snapshot = snapshot ?? new SnapshotWorkflow();
         Materialization = materialization ?? new MaterializationWorkflow(brokerExecutor);
         Workspace = workspace ?? new WorkspaceWorkflow(loader: loader);
+        ProjectState = projectState ?? new ProjectStateWorkflow(loader: loader, workspace: Workspace);
         ContactDiscovery = contactDiscovery ?? new ContactDiscoveryWorkflow(opener);
         var configuredDecoder = voiceDurationResolver ?? CreateDurationResolver(_cleanupQueue);
         _durationResolver = configuredDecoder as IAsyncDisposable;
@@ -69,11 +74,16 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory, deepScanCacheFactory, _cleanupQueue);
         VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory, configuredDecoder, cleanupQueue: _cleanupQueue);
         DatasetCuration = datasetCuration ?? new DatasetCurationWorkflow();
+        StorageLifecycle = storageLifecycle
+            ?? new StorageLifecycleWorkflow(
+                inventory: new ManagedStorageInventory(StorageRootsFor(appDataDirectory)));
         AccountConfirmation = accountConfirmation;
         AllowDevelopmentBroker = allowDevelopmentBroker;
     }
 
     public IEnvironmentAssessmentWorkflow EnvironmentAssessment { get; }
+
+    public IProjectStateWorkflow ProjectState { get; }
 
     public ISnapshotWorkflow Snapshot { get; }
 
@@ -88,6 +98,8 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
     public IVoiceExportWorkflow VoiceExport { get; }
 
     public IDatasetCurationWorkflow DatasetCuration { get; }
+
+    public IStorageLifecycleWorkflow StorageLifecycle { get; }
 
     public IAccountConfirmation AccountConfirmation { get; }
 
@@ -114,6 +126,16 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         {
             await _cleanupQueue.RetryPendingAsync(CancellationToken.None).ConfigureAwait(false);
         }
+    }
+
+    private static StorageRoots StorageRootsFor(string? appDataDirectory)
+    {
+        var appData = string.IsNullOrWhiteSpace(appDataDirectory)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "WeChatVoiceToolkit")
+            : Path.GetFullPath(appDataDirectory);
+        return new StorageRoots(appData, Path.Combine(Path.GetTempPath(), "WeChatVoiceToolkit"));
     }
 
     private static IVoiceDurationResolver? CreateDurationResolver(ITemporaryFileCleanupQueue cleanupQueue)

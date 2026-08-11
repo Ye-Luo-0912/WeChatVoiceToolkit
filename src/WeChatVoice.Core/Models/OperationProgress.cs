@@ -15,6 +15,8 @@ public enum OperationPhase
     ContactDiscovery,
     VoiceScan,
     VoiceExport,
+    ProjectState,
+    StorageLifecycle,
 }
 
 /// <summary>Current status of a workflow run as seen by a host.</summary>
@@ -48,6 +50,14 @@ public static class OperationStageIds
     public const string QueryingVoices = "querying-voices";
     public const string Exporting = "exporting";
     public const string Committing = "committing";
+    public const string InspectingState = "inspecting-state";
+    public const string ResumingState = "resuming-state";
+
+    // Storage lifecycle
+    public const string ScanningStorage = "scanning-storage";
+    public const string PreviewingCleanup = "previewing-cleanup";
+    public const string CleaningStorage = "cleaning-storage";
+
     public const string Completing = "completing";
 }
 

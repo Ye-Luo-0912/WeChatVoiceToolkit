@@ -45,7 +45,7 @@ public sealed class DesktopServices : IAsyncDisposable
         var recentWorkspaces = new RecentWorkspaceStore(appDataDirectory);
         // Pages pass their own UI-backed confirmation port per run; the
         // composition root only requires a port for construction.
-        var workflows = new WorkflowCompositionRoot(SilentAccountConfirmation.Instance, allowDevelopmentBroker);
+        var workflows = new WorkflowCompositionRoot(SilentAccountConfirmation.Instance, allowDevelopmentBroker, appDataDirectory: appDataDirectory);
         return new DesktopServices(workflows, log, recentWorkspaces);
     }
 

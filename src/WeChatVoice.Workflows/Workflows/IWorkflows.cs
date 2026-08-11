@@ -20,6 +20,68 @@ public interface IEnvironmentAssessmentWorkflow
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Inspects an existing local project state and either resumes it (reusing
+/// verified workspaces/materializations) or reports how it must be rebuilt.
+/// This is the shared "continue existing project" entry point; hosts never
+/// re-implement the verified reuse/recover decision.
+/// </summary>
+public interface IProjectStateWorkflow
+{
+    /// <summary>
+    /// Classifies the workspace addressed by <paramref name="request.WorkspacePath"/>
+    /// (or its sibling materialized root). Never produces disk data and never
+    /// requires elevation; it only re-verifies existing local state.
+    /// </summary>
+    Task<ProjectStageStatus> InspectAsync(
+        ProjectStateInspectRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Resumes the project addressed by <paramref name="request.WorkspacePath"/>.
+    /// Valid states are verified and reused; recoverable states are adopted;
+    /// repairable states are repaired. A state that cannot be resumed throws a
+    /// typed <see cref="AppFailureException"/> so the host can route to a
+    /// "refresh from source" flow instead.
+    /// </summary>
+    Task<ProjectResumeResult> ResumeAsync(
+        ProjectStateResumeRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Inspects and (only after an explicit preview) reclaims application-owned
+/// storage. Inventory and preview are read-only; cleanup removes only
+/// independent transient and expired-recoverable objects, never user assets or
+/// verified reusable workspaces. The <see cref="IProjectStateWorkflow"/> and
+/// the workspace deletion boundary remain the authoritative reuse/delete path.
+/// </summary>
+public interface IStorageLifecycleWorkflow
+{
+    Task<StorageInventorySummary> InventoryAsync(
+        StorageInventoryRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    Task<StorageCleanupPreview> PreviewCleanupAsync(
+        StorageCleanupRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    Task<StorageCleanupResult> CleanupAsync(
+        StorageCleanupRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+}
+
+public sealed record StorageInventoryRequest(string? AppDataRoot = null);
+
+public sealed record StorageCleanupRequest(
+    bool ForceRecoverable = false,
+    TimeSpan? RecoverableOlderThan = null);
+
 public interface ISnapshotWorkflow
 {
     Task<SnapshotWorkflowResult> RunAsync(
@@ -134,6 +196,20 @@ public sealed record EnvironmentAssessmentResult(
     BrokerTrustResult? BrokerTrustResult = null,
     WorkerBundleTrustResult? WorkerBundleTrustResult = null,
     InstallDirectorySecurityResult? InstallDirectorySecurity = null);
+
+public sealed record ProjectStateInspectRequest(string WorkspacePath, string? ExpectedAccountId = null);
+
+public sealed record ProjectStateResumeRequest(
+    string WorkspacePath,
+    string? ExpectedAccountId = null,
+    bool AutoRecover = true);
+
+public sealed record ProjectResumeResult(
+    ProjectStageState State,
+    VerifiedLocalWorkspace Workspace,
+    string WorkspacePath,
+    bool RequiresElevation,
+    bool ProducedNewDiskData);
 
 public sealed record SnapshotWorkflowRequest(
     string SourceDirectory,

@@ -1,0 +1,64 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
+             x:Class="WeChatVoice.Desktop.Views.ResumeView"
+             x:DataType="vm:ResumeViewModel">
+  <DockPanel Margin="24">
+    <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,16,0,0">
+      <ProgressBar IsVisible="{Binding RunHost.IsRunning}" IsIndeterminate="True" />
+      <TextBlock Text="{Binding RunHost.StageMessage}" />
+      <TextBlock Text="{Binding RunHost.LastError}" Foreground="#F87171" />
+    </StackPanel>
+
+    <DockPanel>
+      <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="0,0,0,12">
+        <TextBlock FontSize="20" FontWeight="SemiBold" Text="继续上次工作" />
+        <TextBlock Text="应用会先检查本地已有项目状态（已验证 / 可恢复 / 需重建），避免重复执行快照、解密与 UAC。" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding ResumeSummary}" Foreground="#94A3B8" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button Content="刷新项目状态" Command="{Binding RefreshCommand}" IsEnabled="{Binding CanStartOperation}" />
+          <Button Content="继续所选项目" Command="{Binding ContinueCommand}"
+                  IsEnabled="{Binding CanStartOperation}"
+                  IsVisible="{Binding HasProjects}" />
+          <Button Content="从微信数据源刷新" Command="{Binding RefreshFromSourceCommand}" />
+        </StackPanel>
+        <TextBlock IsVisible="{Binding HasContinueSummary}"
+                   Text="{Binding ContinueSummary}"
+                   Foreground="#93C5FD"
+                   TextWrapping="Wrap" />
+      </StackPanel>
+
+      <ListBox ItemsSource="{Binding Projects}"
+               SelectedItem="{Binding SelectedProject, Mode=TwoWay}"
+               SelectionMode="Single">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:ProjectResumeEntryViewModel">
+            <Border Background="#111827"
+                    BorderBrush="#1F2937"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="12,10">
+              <Grid ColumnDefinitions="16,*" ColumnSpacing="12">
+                <Ellipse Grid.Column="0"
+                         Width="12"
+                         Height="12"
+                         VerticalAlignment="Center"
+                         Fill="{Binding StateColor}" />
+                <StackPanel Grid.Column="1" Spacing="2">
+                  <TextBlock Text="{Binding WorkspacePath}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding StateText}" Foreground="#94A3B8" />
+                  <TextBlock IsVisible="{Binding HasReason}"
+                             Text="{Binding Reason}"
+                             Foreground="#F59E0B"
+                             TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding LastUsedUtc, StringFormat='上次使用：{0:yyyy-MM-dd HH:mm}'}"
+                             Foreground="#64748B" />
+                </StackPanel>
+              </Grid>
+            </Border>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </DockPanel>
+  </DockPanel>
+</UserControl>

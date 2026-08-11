@@ -81,6 +81,30 @@
     LocalApplicationData. Weixin running-state checks, truncated-discovery
     warnings, validated manual fallback, and cancellable page activation are
     covered by Desktop and Avalonia Headless tests.
+24. The Desktop is now **resume-first**: a shared `IProjectStateWorkflow` and
+    `ProjectStateWorkflow` (inspect + resume) in `WeChatVoice.Workflows`
+    classifies existing local project state as
+    `ProjectStageState` (`ValidReusable` / `Recoverable` / `Stale` / `Invalid` /
+    `Busy` / `Missing`) and reuses verified workspaces, adopts recoverable
+    materializations, or repairs a lost/corrupt Workspace JSON without
+    re-running Snapshot, UAC, or materialization. The Desktop opens on a
+    resume page that presents the classification and the user's continue choice
+    only; the workspace output factory inspects the occupied canonical path
+    before ever allocating a new GUID copy. Second-run reuse (no re-snapshot /
+    no re-materialization / no re-UAC) is covered by workflow integration tests
+    and Desktop/Avalonia-Headless tests.
+25. Managed storage lifecycle: a shared `IStorageLifecycleWorkflow` +
+    `StorageLifecycleWorkflow` plus a read-only `ManagedStorageInventory`
+    classifies app-owned storage (`Snapshots` / `Workspaces` / temp roots) into
+    `StorageAssetKind` (`Transient` / `RecoverableIntermediate` /
+    `ReusableIntermediate` / `UserAsset` / `DerivedUserAsset`), totals sizes,
+    and exposes a two-step preview-then-clean. Cleanup only removes independent
+    transient objects and expired-recoverable workspaces (routed through the
+    workspace deletion boundary), never skips active locks or reparse points,
+    and never auto-deletes raw exports or datasets. The Desktop "存储管理" page
+    and the CLI `storage inventory|preview|cleanup` commands both consume the
+    shared workflow; inventory/preview/preview/cleanup/reparse-point/lock tests
+    are covered in the Workflows suite.
 
 ## Next product work
 
