@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
@@ -383,5 +384,43 @@ public static class TestDoubles
     {
         public Task<AccountConfirmation> ConfirmAsync(AccountIdentityReport report, CancellationToken cancellationToken)
             => Task.FromResult(new AccountConfirmation(true, report.AccountCandidate));
+    }
+
+    /// <summary>
+    /// Deterministic decoder factory that emits a fixed 16-bit PCM WAV so that
+    /// WAV training builds and audio previews can be exercised headlessly
+    /// without a real SILK decoder.
+    /// </summary>
+    public sealed class FakeDecoderFactory : IVoiceDecoderFactory
+    {
+        public const string DecoderIdentity = "fake-decoder-v1";
+
+        public IVoiceDecoder? Create(int sampleRate)
+            => new FixedWavDecoder(sampleRate);
+    }
+
+    private sealed class FixedWavDecoder(int requestedSampleRate) : IVoiceDecoder, IVoiceDecoderIdentity
+    {
+        public string DecoderIdentity => FakeDecoderFactory.DecoderIdentity;
+
+        public async Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken)
+        {
+            var dataBytes = 480;
+            var wav = new byte[44 + dataBytes];
+            "RIFF"u8.CopyTo(wav);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(4), (uint)(wav.Length - 8));
+            "WAVE"u8.CopyTo(wav.AsSpan(8));
+            "fmt "u8.CopyTo(wav.AsSpan(12));
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(16), 16);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(20), 1);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(22), 1);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(24), (uint)requestedSampleRate);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(28), (uint)(requestedSampleRate * 2));
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(32), 2);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(34), 16);
+            "data"u8.CopyTo(wav.AsSpan(36));
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(40), (uint)dataBytes);
+            await output.WriteAsync(wav, cancellationToken).ConfigureAwait(false);
+        }
     }
 }

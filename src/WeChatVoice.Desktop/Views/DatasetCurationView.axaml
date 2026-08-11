@@ -23,11 +23,18 @@
       </StackPanel>
       <StackPanel Orientation="Horizontal" Spacing="8">
         <CheckBox Content="显示未知时长（不可选入训练集）" IsChecked="{Binding ShowUnknownDuration}" />
+        <ComboBox ItemsSource="{Binding DirectionScopes}" SelectedIndex="{Binding DirectionScopeIndex}" Width="110" />
         <TextBox Width="360" Text="{Binding ExcludedQualityFlagsText}" PlaceholderText="排除质量标志（逗号分隔）" />
         <Button Content="应用筛选 / 加载" Command="{Binding LoadCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="加载 Profile" Command="{Binding LoadProfileCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="保存 Profile" Command="{Binding SaveProfileCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="清除选择" Command="{Binding ClearSelectionsCommand}" IsEnabled="{Binding CanStartOperation}" />
+        <Button Content="停止试听" Command="{Binding StopPreviewCommand}" IsEnabled="{Binding CanStartOperation}" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock Text="WAV 构建：" VerticalAlignment="Center" />
+        <TextBox Width="90" Text="{Binding SampleRateText}" PlaceholderText="采样率" />
+        <CheckBox Content="单声道" IsChecked="{Binding Mono}" VerticalAlignment="Center" />
         <Button Content="构建训练数据集" Command="{Binding BuildDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="验证数据集" Command="{Binding VerifyDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
         <Button Content="修复数据集元数据" Command="{Binding RepairDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
@@ -47,15 +54,17 @@
       <ListBox ItemsSource="{Binding Items}" Height="430">
         <ListBox.ItemTemplate>
           <DataTemplate x:DataType="vm:DatasetCurationItemViewModel">
-            <Grid ColumnDefinitions="40,170,230,80,90,180,150,*" Margin="2">
+            <Grid ColumnDefinitions="40,170,230,80,90,90,180,150,60,*" Margin="2">
               <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected, Mode=TwoWay}" IsEnabled="{Binding CanSelect}" />
               <TextBlock Grid.Column="1" Text="{Binding ItemId}" />
               <TextBlock Grid.Column="2" Text="{Binding RelativeAudioPath}" />
               <TextBlock Grid.Column="3" Text="{Binding DurationText}" />
               <TextBlock Grid.Column="4" Text="{Binding ByteLength}" />
-              <TextBlock Grid.Column="5" Text="{Binding QualityFlags}" />
-              <TextBlock Grid.Column="6" Text="{Binding DuplicateGroupId}" />
-              <TextBlock Grid.Column="7" Text="{Binding TrainingEligibility}" />
+              <TextBlock Grid.Column="5" Text="{Binding Direction}" />
+              <TextBlock Grid.Column="6" Text="{Binding QualityFlags}" />
+              <TextBlock Grid.Column="7" Text="{Binding DuplicateGroupId}" />
+              <TextBlock Grid.Column="8" Text="{Binding TrainingEligibility}" />
+              <Button Grid.Column="9" Content="{Binding PreviewButtonText}" Command="{Binding PreviewCommand}" />
             </Grid>
           </DataTemplate>
         </ListBox.ItemTemplate>

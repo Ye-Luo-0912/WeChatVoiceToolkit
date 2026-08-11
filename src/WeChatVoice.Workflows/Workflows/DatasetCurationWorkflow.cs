@@ -30,6 +30,13 @@ public interface IDatasetCurationWorkflow
         WorkflowContext context,
         CancellationToken cancellationToken);
 
+    Task<DatasetPreviewDecodeResult> PreviewDecodeAsync(
+        string exportDirectory,
+        string itemId,
+        int sampleRate,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
     Task<DatasetBuildVerificationResult> VerifyDatasetAsync(
         DatasetBuildRequest request,
         WorkflowContext context,
@@ -207,6 +214,40 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
             }
 
             var result = await _datasetBuildService.BuildAsync(request, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            context.StateMachine.TryCancel();
+            throw;
+        }
+        catch
+        {
+            context.StateMachine.TryFail();
+            throw;
+        }
+    }
+
+    public async Task<DatasetPreviewDecodeResult> PreviewDecodeAsync(
+        string exportDirectory,
+        string itemId,
+        int sampleRate,
+        WorkflowContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(exportDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(itemId);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!context.TryStart())
+        {
+            throw new InvalidOperationException("The workflow state machine is not idle.");
+        }
+
+        try
+        {
+            context.Report(OperationPhase.VoiceExport, OperationStageIds.Completing, "解码音频预览");
+            var result = await _datasetBuildService.PreviewDecodeAsync(exportDirectory, itemId, sampleRate, cancellationToken).ConfigureAwait(false);
             context.StateMachine.TryComplete();
             return result;
         }
@@ -501,7 +542,7 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         if (entry.ExportState is ExportState.Failed
             || entry.HasDecodeError
             || !VoiceExportEntryValidation.HasValidOriginalArtifact(entry)
-            || filters.IncomingOnly && entry.Direction != VoiceDirection.Incoming)
+            || !DirectionMatches(entry.Direction, filters.DirectionScope))
         {
             return false;
         }
@@ -528,6 +569,14 @@ public sealed class DatasetCurationWorkflow : IDatasetCurationWorkflow
         var flags = entry.QualityFlags.ToHashSet(StringComparer.OrdinalIgnoreCase);
         return !filters.ExcludedQualityFlags.Any(flags.Contains);
     }
+
+    private static bool DirectionMatches(VoiceDirection direction, DatasetDirectionScope? scope)
+        => scope switch
+        {
+            DatasetDirectionScope.Incoming => direction == VoiceDirection.Incoming,
+            DatasetDirectionScope.Outgoing => direction == VoiceDirection.Outgoing,
+            _ => true,
+        };
 
     private static HashSet<string> ToIdSet(IReadOnlyList<string>? values)
         => (values ?? Array.Empty<string>())

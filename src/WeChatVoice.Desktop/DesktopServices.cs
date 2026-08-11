@@ -23,7 +23,8 @@ public sealed class DesktopServices : IAsyncDisposable
         IWeixinDataSourceDiscovery? dataSourceDiscovery = null,
         IWeixinProcessProbe? weixinProcessProbe = null,
         SnapshotOutputDirectoryFactory? snapshotOutputDirectories = null,
-        IDesktopFolderPicker? folderPicker = null)
+        IDesktopFolderPicker? folderPicker = null,
+        IAudioPreviewPlayer? audioPreview = null)
     {
         Workflows = workflows;
         Log = log;
@@ -37,6 +38,7 @@ public sealed class DesktopServices : IAsyncDisposable
         SnapshotOutputDirectories = snapshotOutputDirectories
             ?? new SnapshotOutputDirectoryFactory(recentWorkspaces.StorageDirectory);
         WorkspaceOutputDirectories = new WorkspaceOutputDirectoryFactory(recentWorkspaces.StorageDirectory);
+        AudioPreview = audioPreview ?? new WinmmAudioPreviewPlayer();
     }
 
     public static DesktopServices Create(bool allowDevelopmentBroker = false, string? appDataDirectory = null)
@@ -89,8 +91,11 @@ public sealed class DesktopServices : IAsyncDisposable
 
     public WorkspaceOutputDirectoryFactory WorkspaceOutputDirectories { get; }
 
+    public IAudioPreviewPlayer AudioPreview { get; }
+
     public async ValueTask DisposeAsync()
     {
+        AudioPreview.Dispose();
         await Workflows.DisposeAsync().ConfigureAwait(false);
     }
 }

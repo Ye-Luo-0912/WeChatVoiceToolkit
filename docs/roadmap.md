@@ -114,6 +114,24 @@
     longer on disk (`RecentWorkspaceStore.RepairDangling`) on startup. None of
     these paths delete raw exports or datasets, and all are covered by startup
     sweep, duplicate-detection, and recent-repair tests.
+27. Dataset curation is now training-ready: an `AudioBuildProfile` (sample rate,
+    mono/stereo, normalization, `Version`) carries a SHA-256
+    `ProfileFingerprint`, and a build with that profile decodes the selected
+    SILK into validated PCM WAV under `audio/*.wav` while preserving the source
+    SILK as the source of truth. A `IVoiceDecoderFactory` (with a
+    `SilkVoiceDecoderFactory` implementation) supplies profile-specific-rate
+    decoders, and the build identity combines the selection fingerprint with the
+    audio profile fingerprint so a changed profile produces a new build
+    identity rather than overwriting an old one. WAV build results record the
+    decoder identity, and verify/repair/delete now cover WAV derived artifacts
+    (repair rebuilds only derived metadata and re-verifies WAV in place).
+    Direction-aware curation (`DatasetDirectionScope` Incoming/Outgoing/Both)
+    replaces the incoming-only first-pass filter. The Desktop "数据集整理" page
+    exposes direction selection, WAV build settings (sample rate / mono), and a
+    per-item audio preview that decodes SILK to a transient WAV and plays it via
+    the Windows `winmm` API with cleanup on stop. WAV build / fingerprint /
+    verify / repair / delete and preview decode are covered by Core and Desktop
+    headless tests.
 
 ## Next product work
 

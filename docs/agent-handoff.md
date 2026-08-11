@@ -72,10 +72,31 @@ commands both consume the shared workflow. Keep inspection read-only and never
 let the Recent index become the ownership source of truth: manifest / state
 markers classify objects, and a lost catalog is rediscovered from disk.
 
+Dataset curation is now **training-ready**. `AudioBuildProfile` (sample rate,
+mono/stereo, normalization, `Version`) carries a SHA-256 `ProfileFingerprint`;
+a build with that profile decodes selected SILK into validated PCM WAV under
+`audio/*.wav` while the source SILK stays the source of truth. `IVoiceDecoderFactory`
+(implemented by `SilkVoiceDecoderFactory`) supplies profile-specific-rate
+decoders. The build identity combines the selection fingerprint with the audio
+profile fingerprint so a changed profile yields a new build identity, never an
+overwrite. WAV build results record decoder identity, and verify/repair/delete
+cover WAV derived artifacts (repair rebuilds only derived metadata and
+re-verifies WAV in place). Direction-aware curation (`DatasetDirectionScope`
+Incoming/Outgoing/Both) replaces the incoming-only first-pass filter. The
+Desktop "数据集整理" page exposes direction selection, WAV build settings
+(sample rate / mono), and a per-item audio preview that decodes SILK to a
+transient WAV and plays it via the Windows `winmm` API with cleanup on stop.
+When verifying a WAV build without re-passing the profile, `VerifyAsync` reads
+the build manifest as the authoritative build identity. All WAV build /
+fingerprint / verify / repair / delete and preview-decode paths are covered by
+Core and Desktop headless tests.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
-work is CLI decomposition, schema-backed duration evidence, a later batch
-decoder, and installer selection. Account self-identity evidence is already
+work: decoder productization (Phase 3: user-facing decoder configuration and
+persistent duration enrichment), P1 audio quality analysis, scan/prepared
+selection persistence, refresh semantics, and run retention. Account
+self-identity evidence is already
 re-derived from the verified `encrypt_username = username` row; user
 confirmation remains a separate state. The existing decoder boundary is
 optional and configured through `WECHATVOICE_SILK_DECODER_PATH`; it is not a

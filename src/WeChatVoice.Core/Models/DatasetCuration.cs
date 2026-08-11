@@ -15,6 +15,17 @@ public enum DatasetLinkMode
 }
 
 /// <summary>
+/// Direction scope for dataset curation. The product must not permanently fix
+/// "incoming first-pass" as a limitation; outgoing and both are valid scopes.
+/// </summary>
+public enum DatasetDirectionScope
+{
+    Incoming,
+    Outgoing,
+    Both,
+}
+
+/// <summary>
 /// User-controlled filters for dataset curation.  Successful export is never
 /// treated as implicit training selection; the profile's selected IDs are the
 /// only source of training selection.
@@ -28,7 +39,8 @@ public sealed record DatasetCurationFilters
         long? MaximumByteLength = null,
         bool IncludeUnknownDuration = false,
         bool IncomingOnly = true,
-        IReadOnlyList<string>? ExcludedQualityFlags = null)
+        IReadOnlyList<string>? ExcludedQualityFlags = null,
+        DatasetDirectionScope? DirectionScope = null)
     {
         ValidateRange(MinimumDurationMs, MaximumDurationMs, nameof(MinimumDurationMs), "duration");
         ValidateRange(MinimumByteLength, MaximumByteLength, nameof(MinimumByteLength), "byte length");
@@ -38,6 +50,7 @@ public sealed record DatasetCurationFilters
         this.MaximumByteLength = MaximumByteLength;
         this.IncludeUnknownDuration = IncludeUnknownDuration;
         this.IncomingOnly = IncomingOnly;
+        this.DirectionScope = DirectionScope ?? (IncomingOnly ? DatasetDirectionScope.Incoming : DatasetDirectionScope.Both);
         ExcludedQualityFlags = ExcludedQualityFlags ?? Array.Empty<string>();
         this.ExcludedQualityFlags = new ReadOnlyCollection<string>(ExcludedQualityFlags
             .Where(static value => !string.IsNullOrWhiteSpace(value))
@@ -54,7 +67,9 @@ public sealed record DatasetCurationFilters
     public bool IncludeUnknownDuration { get; }
     /// <summary>Unknown duration rows may be displayed, but are never training-eligible.</summary>
     public bool ShowUnknownDuration => IncludeUnknownDuration;
+    /// <summary>Legacy compatibility flag; prefer <see cref="DirectionScope"/>.</summary>
     public bool IncomingOnly { get; }
+    public DatasetDirectionScope? DirectionScope { get; }
     public IReadOnlyList<string> ExcludedQualityFlags { get; }
 
     private static void ValidateRange(long? minimum, long? maximum, string parameterName, string label)
@@ -240,7 +255,8 @@ public sealed record DatasetBuildRequest(
     string? ManifestPath = null,
     string? OutputDirectory = null,
     DatasetLinkMode LinkMode = DatasetLinkMode.VerifiedCopy,
-    DatasetSelectionProfile? Profile = null);
+    DatasetSelectionProfile? Profile = null,
+    AudioBuildProfile? AudioProfile = null);
 
 public sealed record DatasetDeleteRequest(
     string ExportDirectory,
@@ -266,6 +282,18 @@ public sealed record DatasetBuildRepairRequest(
     string? ProfilePath = null,
     string? ManifestPath = null);
 
+/// <summary>
+/// Result of decoding a single curated SILK artifact to a transient WAV for
+/// preview. The WAV is a derived, immediately-cleanable artifact; it is never
+/// persisted into the raw export or the curated dataset.
+/// </summary>
+public sealed record DatasetPreviewDecodeResult(
+    string ItemId,
+    string DecodedWavPath,
+    long ByteLength,
+    long? DurationMs,
+    string? DecoderIdentity);
+
 public sealed record DatasetBuildVerificationIssue(
     string Code,
     string? RelativePath,
@@ -278,7 +306,10 @@ public sealed record DatasetBuildVerificationResult(
     int ItemCount,
     long TotalDurationMs,
     long TotalByteLength,
-    IReadOnlyList<DatasetBuildVerificationIssue> Issues);
+    IReadOnlyList<DatasetBuildVerificationIssue> Issues,
+    string? BuildFingerprint = null,
+    string? AudioProfileFingerprint = null,
+    string? DecoderIdentity = null);
 
 public sealed record DatasetBuildResult(
     string OutputDirectory,
@@ -291,7 +322,10 @@ public sealed record DatasetBuildResult(
     long TotalDurationMs,
     long TotalByteLength,
     bool UsedHardLinks,
-    DatasetLinkMode LinkMode = DatasetLinkMode.VerifiedCopy);
+    DatasetLinkMode LinkMode = DatasetLinkMode.VerifiedCopy,
+    string? BuildFingerprint = null,
+    string? AudioProfileFingerprint = null,
+    string? DecoderIdentity = null);
 
 public sealed record DatasetBuildManifest
 {
@@ -306,7 +340,10 @@ public sealed record DatasetBuildManifest
         string? ProfileOutputSha256 = null,
         string Format = "wechatvoice-dataset-build-v1",
         DatasetLinkMode LinkMode = DatasetLinkMode.VerifiedCopy,
-        string? SemanticProfileHash = null)
+        string? SemanticProfileHash = null,
+        string? BuildFingerprint = null,
+        string? AudioProfileFingerprint = null,
+        string? DecoderIdentity = null)
     {
         this.SelectionFingerprint = SelectionFingerprint;
         this.SourceManifestSha256 = SourceManifestSha256;
@@ -319,6 +356,9 @@ public sealed record DatasetBuildManifest
         this.Format = Format;
         this.LinkMode = LinkMode;
         this.SemanticProfileHash = SemanticProfileHash ?? SelectionFingerprint;
+        this.BuildFingerprint = BuildFingerprint ?? SelectionFingerprint;
+        this.AudioProfileFingerprint = AudioProfileFingerprint;
+        this.DecoderIdentity = DecoderIdentity;
     }
 
     public string SelectionFingerprint { get; }
@@ -332,6 +372,12 @@ public sealed record DatasetBuildManifest
     public string Format { get; }
     public DatasetLinkMode LinkMode { get; }
     public string SemanticProfileHash { get; }
+    /// <summary>Identity of this derived build; binds the selection fingerprint to the audio profile.</summary>
+    public string BuildFingerprint { get; }
+    /// <summary>Fingerprint of the audio build profile, or null for a SILK copy build.</summary>
+    public string? AudioProfileFingerprint { get; }
+    /// <summary>Decoder identity that produced the WAV outputs, or null for a SILK copy build.</summary>
+    public string? DecoderIdentity { get; }
 }
 
 public sealed record DatasetBuildItem(

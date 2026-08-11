@@ -696,13 +696,13 @@ Rebuild training dataset
 
 ### 工作项
 
-- [ ] Dataset audio preview；
-- [ ] selected SILK -> WAV build；
-- [ ] AudioBuildProfile；
-- [ ] build fingerprint / reuse；
-- [ ] duration/quality metadata；
-- [ ] direction selection；
-- [ ] verify/repair/delete 覆盖 WAV derived artifacts。
+- [x] Dataset audio preview；
+- [x] selected SILK -> WAV build；
+- [x] AudioBuildProfile；
+- [x] build fingerprint / reuse；
+- [x] duration/quality metadata；
+- [x] direction selection；
+- [x] verify/repair/delete 覆盖 WAV derived artifacts。
 
 ### 完成定义
 

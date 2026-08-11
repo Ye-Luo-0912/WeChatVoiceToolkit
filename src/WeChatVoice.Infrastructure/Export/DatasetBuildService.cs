@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Serialization;
 
 namespace WeChatVoice.Infrastructure.Export;
@@ -14,6 +15,9 @@ namespace WeChatVoice.Infrastructure.Export;
 /// selection profile. VerifiedCopy is the default and keeps the dataset
 /// independent from the original export; LinkedView is an explicit advanced
 /// mode and is never presented as a portable independent copy.
+/// An <see cref="AudioBuildProfile"/> switches the build to a derived WAV
+/// training set (SILK decoded through the configured decoder); the original
+/// SILK files always remain the source of truth.
 /// </summary>
 public sealed class DatasetBuildService
 {
@@ -32,6 +36,13 @@ public sealed class DatasetBuildService
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
+
+    private readonly IVoiceDecoderFactory? _decoderFactory;
+
+    public DatasetBuildService(IVoiceDecoderFactory? decoderFactory = null)
+    {
+        _decoderFactory = decoderFactory;
+    }
 
     public async Task<DatasetBuildResult> BuildAsync(
         DatasetBuildRequest request,
@@ -66,8 +77,10 @@ public sealed class DatasetBuildService
         var profile = inputs.Profile;
         var entries = inputs.Entries;
         var selectedIds = profile.SelectedItemIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var audioProfile = request.AudioProfile;
+        var buildFingerprint = ComputeBuildFingerprint(profile, audioProfile);
 
-        var outputRoot = Path.GetFullPath(request.OutputDirectory ?? Path.Combine(exportRoot, "datasets", profile.SelectionFingerprint));
+        var outputRoot = Path.GetFullPath(request.OutputDirectory ?? Path.Combine(exportRoot, "datasets", buildFingerprint));
         EnsureUnderRoot(exportRoot, outputRoot);
         if (Directory.Exists(outputRoot)
             && (File.GetAttributes(outputRoot) & FileAttributes.ReparsePoint) != 0)
@@ -81,6 +94,8 @@ public sealed class DatasetBuildService
             manifestSha256,
             profileSha256,
             request.LinkMode,
+            buildFingerprint,
+            audioProfile?.ProfileFingerprint,
             cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
@@ -97,8 +112,17 @@ public sealed class DatasetBuildService
         CleanupStagingDirectories(parent, Path.GetFileName(outputRoot));
         var stagingRoot = Path.Combine(parent, "." + Path.GetFileName(outputRoot) + ".staging-" + Guid.NewGuid().ToString("N"));
         var usedHardLinks = false;
+        IVoiceDecoder? decoder = null;
+        string? decoderIdentity = null;
         try
         {
+            if (audioProfile is not null)
+            {
+                decoder = _decoderFactory?.Create(audioProfile.SampleRate)
+                    ?? throw new AppFailureException(ErrorCode.InvalidRequest, "No SILK decoder is configured; cannot build the WAV training set.");
+                decoderIdentity = decoder is IVoiceDecoderIdentity identity ? identity.DecoderIdentity : null;
+            }
+
             Directory.CreateDirectory(Path.Combine(stagingRoot, "audio"));
             var datasetItems = new List<VoiceDatasetEntry>(selectedIds.Count);
             var buildItems = new List<DatasetBuildItem>(selectedIds.Count);
@@ -112,6 +136,25 @@ public sealed class DatasetBuildService
                 }
 
                 var sourcePath = ResolveArtifactPath(exportRoot, entry.OriginalPath);
+                if (audioProfile is not null)
+                {
+                    var relativeWavPath = "audio/" + itemId + ".wav";
+                    var wavDestinationPath = ExportPathSafety.CombineUnderRoot(stagingRoot, relativeWavPath);
+                    var durationMs = await DecodeToWavAsync(decoder!, sourcePath, wavDestinationPath, entry, cancellationToken).ConfigureAwait(false);
+                    var wavMetadata = await FileHashing.ComputeMetadataAsync(wavDestinationPath, cancellationToken).ConfigureAwait(false);
+                    datasetItems.Add(new VoiceDatasetEntry(
+                        itemId,
+                        relativeWavPath,
+                        wavMetadata.Sha256,
+                        wavMetadata.ByteLength,
+                        durationMs,
+                        entry.QualityFlags,
+                        TrainingEligibility.Eligible,
+                        Selected: true));
+                    buildItems.Add(new DatasetBuildItem(itemId, relativeWavPath, wavMetadata.Sha256, wavMetadata.ByteLength, durationMs));
+                    continue;
+                }
+
                 var relativeAudioPath = "audio/" + itemId + ".silk";
                 var destinationPath = ExportPathSafety.CombineUnderRoot(stagingRoot, relativeAudioPath);
                 FileHashMetadata sourceMetadata;
@@ -175,7 +218,10 @@ public sealed class DatasetBuildService
                     datasetCsvSha256,
                     profileOutputSha256,
                     LinkMode: request.LinkMode,
-                    SemanticProfileHash: profile.SemanticProfileHash),
+                    SemanticProfileHash: profile.SemanticProfileHash,
+                    BuildFingerprint: buildFingerprint,
+                    AudioProfileFingerprint: audioProfile?.ProfileFingerprint,
+                    DecoderIdentity: decoderIdentity),
                 JsonOptions,
                 cancellationToken).ConfigureAwait(false);
             var buildManifestSha256 = await FileHashing.ComputeSha256Async(buildManifestPath, cancellationToken).ConfigureAwait(false);
@@ -210,11 +256,92 @@ public sealed class DatasetBuildService
                 datasetManifest.TotalDurationMs,
                 datasetManifest.TotalByteLength,
                 usedHardLinks,
-                request.LinkMode);
+                request.LinkMode,
+                buildFingerprint,
+                audioProfile?.ProfileFingerprint,
+                decoderIdentity);
         }
         finally
         {
             TryDeleteDirectory(stagingRoot);
+            if (decoder is IAsyncDisposable asyncDisposable)
+            {
+                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Decodes a single curated SILK artifact to a transient WAV for preview.
+    /// The WAV is written under the app temp root and is never persisted into
+    /// the raw export or a curated dataset. The caller owns its lifetime.
+    /// </summary>
+    public async Task<DatasetPreviewDecodeResult> PreviewDecodeAsync(
+        string exportDirectory,
+        string itemId,
+        int sampleRate,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(itemId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sampleRate);
+        var exportRoot = Path.GetFullPath(exportDirectory);
+        if (!Directory.Exists(exportRoot))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The export directory does not exist.");
+        }
+
+        var manifestPath = ResolveManifestPath(exportRoot, null);
+        EnsureUnderRoot(exportRoot, manifestPath);
+        if (!File.Exists(manifestPath))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The export manifest does not exist.");
+        }
+
+        var manifest = await ReadAsync<VoiceExportManifest>(manifestPath, cancellationToken).ConfigureAwait(false);
+        if (!manifest.Entries.Any())
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The export manifest is empty.");
+        }
+
+        VoiceExportEntry? match = null;
+        foreach (var entry in manifest.Entries)
+        {
+            if (string.Equals(ExportItemIdentity.ComputeItemId(entry, manifest.DatasetNamespaceKey), itemId, StringComparison.OrdinalIgnoreCase))
+            {
+                match = entry;
+                break;
+            }
+        }
+
+        if (match is null || !VoiceExportEntryValidation.HasValidOriginalArtifact(match))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The item is not a valid original artifact in the export manifest.");
+        }
+
+        var decoder = _decoderFactory?.Create(sampleRate)
+            ?? throw new AppFailureException(ErrorCode.InvalidRequest, "No SILK decoder is configured; cannot preview audio.");
+        string? decoderIdentity = decoder is IVoiceDecoderIdentity identity ? identity.DecoderIdentity : null;
+        var directory = Path.Combine(Path.GetTempPath(), "wechatvoice-preview");
+        Directory.CreateDirectory(directory);
+        var destinationPath = Path.Combine(directory, itemId + "-" + Guid.NewGuid().ToString("N") + ".wav");
+        try
+        {
+            var sourcePath = ResolveArtifactPath(exportRoot, match.OriginalPath);
+            var durationMs = await DecodeToWavAsync(decoder, sourcePath, destinationPath, match, cancellationToken).ConfigureAwait(false);
+            var metadata = new FileInfo(destinationPath);
+            return new DatasetPreviewDecodeResult(itemId, destinationPath, metadata.Length, durationMs, decoderIdentity);
+        }
+        catch
+        {
+            TryDeleteFile(destinationPath);
+            throw;
+        }
+        finally
+        {
+            if (decoder is IAsyncDisposable asyncDisposable)
+            {
+                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -325,6 +452,8 @@ public sealed class DatasetBuildService
             outputProfile.ManifestSha256,
             await FileHashing.ComputeSha256Async(outputProfilePath, cancellationToken).ConfigureAwait(false),
             linkMode: null,
+            expectedBuildFingerprint: null,
+            expectedAudioProfileFingerprint: null,
             cancellationToken).ConfigureAwait(false);
         if (verified is null
             || !string.Equals(verified.SelectionFingerprint, request.SelectionFingerprint, StringComparison.OrdinalIgnoreCase))
@@ -406,11 +535,27 @@ public sealed class DatasetBuildService
                 request.ManifestPath,
                 request.ProfilePath,
                 cancellationToken).ConfigureAwait(false);
+            var buildFingerprint = ComputeBuildFingerprint(inputs.Profile, request.AudioProfile);
             outputRoot = Path.GetFullPath(request.OutputDirectory ?? Path.Combine(
                 exportRoot,
                 "datasets",
-                inputs.Profile.SelectionFingerprint));
+                buildFingerprint));
             EnsureUnderRoot(exportRoot, outputRoot);
+            // When the caller does not supply an audio profile, the existing
+            // build manifest is the authoritative record of the build identity
+            // (a WAV build carries a combined selection+audio fingerprint).
+            // Derive the expected fingerprints from it so a valid WAV build is
+            // verified correctly without re-passing the profile.
+            var buildManifestPath = Path.Combine(outputRoot, "build-manifest.json");
+            DatasetBuildManifest? existingBuild = null;
+            if (File.Exists(buildManifestPath))
+            {
+                existingBuild = await ReadAsync<DatasetBuildManifest>(buildManifestPath, cancellationToken).ConfigureAwait(false);
+            }
+
+            var expectedBuildFingerprint = existingBuild?.BuildFingerprint ?? buildFingerprint;
+            var expectedAudioProfileFingerprint = request.AudioProfile?.ProfileFingerprint
+                ?? existingBuild?.AudioProfileFingerprint;
             var existing = await TryVerifyExistingAsync(
                 outputRoot,
                 inputs.Profile,
@@ -418,6 +563,8 @@ public sealed class DatasetBuildService
                 inputs.ManifestSha256,
                 inputs.ProfileSha256,
                 linkMode: null,
+                expectedBuildFingerprint: expectedBuildFingerprint,
+                expectedAudioProfileFingerprint: expectedAudioProfileFingerprint,
                 cancellationToken).ConfigureAwait(false);
             return existing is null
                 ? InvalidVerification(outputRoot, "dataset-invalid", null, "The curated dataset is missing or failed verification.")
@@ -450,6 +597,8 @@ public sealed class DatasetBuildService
             return InvalidVerification(outputRoot, "dataset-missing", null, "The curated dataset directory does not exist.");
         }
 
+        string? existingBuildFingerprint = null;
+        string? existingAudioProfileFingerprint = null;
         await using (var rootLock = await ExportRootLock.AcquireForOperationAsync(
             exportRoot,
             ExportRootLockMode.Exclusive,
@@ -488,13 +637,15 @@ public sealed class DatasetBuildService
             if (File.Exists(existingBuildPath))
             {
                 existingBuild = await ReadAsync<DatasetBuildManifest>(existingBuildPath, cancellationToken).ConfigureAwait(false);
+                existingBuildFingerprint = existingBuild.BuildFingerprint;
+                existingAudioProfileFingerprint = existingBuild.AudioProfileFingerprint;
             }
             if (existingBuild?.LinkMode == DatasetLinkMode.LinkedView)
             {
                 ClearReadOnlyAttributes(outputRoot);
             }
-            var selected = CreateSelectedItems(inputs);
-            var expectedAudioPaths = selected
+            var repairItems = CreateRepairAudioItems(inputs, existingBuild);
+            var expectedAudioPaths = repairItems
                 .Select(static item => item.RelativeAudioPath.Replace('/', Path.DirectorySeparatorChar))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (HasUnexpectedAudioFiles(outputRoot, expectedAudioPaths))
@@ -507,23 +658,23 @@ public sealed class DatasetBuildService
                 return InvalidVerification(outputRoot, "dataset-audio-set-invalid", null, "The curated dataset contains missing, extra, or unsafe audio files.");
             }
 
-            var datasetItems = new List<VoiceDatasetEntry>(selected.Count);
-            foreach (var selectedItem in selected)
+            var datasetItems = new List<VoiceDatasetEntry>(repairItems.Count);
+            foreach (var repairItem in repairItems)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var path = ExportPathSafety.CombineUnderRoot(outputRoot, selectedItem.RelativeAudioPath);
+                var path = ExportPathSafety.CombineUnderRoot(outputRoot, repairItem.RelativeAudioPath);
                 var metadata = await VerifyArtifactAsync(
                     path,
-                    selectedItem.Entry.OriginalByteLength,
-                    selectedItem.Entry.OriginalSha256,
+                    repairItem.ExpectedByteLength,
+                    repairItem.ExpectedSha256,
                     cancellationToken).ConfigureAwait(false);
                 datasetItems.Add(new VoiceDatasetEntry(
-                    selectedItem.ItemId,
-                    selectedItem.RelativeAudioPath,
+                    repairItem.ItemId,
+                    repairItem.RelativeAudioPath,
                     metadata.Sha256,
                     metadata.ByteLength,
-                    selectedItem.Entry.DurationMs,
-                    selectedItem.Entry.QualityFlags,
+                    repairItem.DurationMs,
+                    inputs.Entries[repairItem.ItemId].QualityFlags,
                     TrainingEligibility.Eligible,
                     Selected: true));
             }
@@ -550,10 +701,10 @@ public sealed class DatasetBuildService
                 var datasetManifestSha256 = await FileHashing.ComputeSha256Async(datasetManifestPath, cancellationToken).ConfigureAwait(false);
                 var datasetCsvSha256 = await FileHashing.ComputeSha256Async(datasetCsvPath, cancellationToken).ConfigureAwait(false);
                 var profileOutputSha256 = await FileHashing.ComputeSha256Async(profileOutputPath, cancellationToken).ConfigureAwait(false);
-                var buildItems = selected
-                    .Zip(datasetItems, static (selectedItem, datasetItem) => new DatasetBuildItem(
-                        selectedItem.ItemId,
-                        selectedItem.RelativeAudioPath,
+                var buildItems = repairItems
+                    .Zip(datasetItems, static (repairItem, datasetItem) => new DatasetBuildItem(
+                        repairItem.ItemId,
+                        repairItem.RelativeAudioPath,
                         datasetItem.Sha256,
                         datasetItem.ByteLength,
                         datasetItem.DurationMs))
@@ -570,7 +721,10 @@ public sealed class DatasetBuildService
                         datasetCsvSha256,
                         profileOutputSha256,
                         LinkMode: existingBuild?.LinkMode ?? DatasetLinkMode.VerifiedCopy,
-                        SemanticProfileHash: inputs.Profile.SemanticProfileHash),
+                        SemanticProfileHash: inputs.Profile.SemanticProfileHash,
+                        BuildFingerprint: existingBuild?.BuildFingerprint,
+                        AudioProfileFingerprint: existingBuild?.AudioProfileFingerprint,
+                        DecoderIdentity: existingBuild?.DecoderIdentity),
                     JsonOptions,
                     cancellationToken).ConfigureAwait(false);
                 var buildManifestSha256 = await FileHashing.ComputeSha256Async(buildManifestPath, cancellationToken).ConfigureAwait(false);
@@ -645,15 +799,21 @@ public sealed class DatasetBuildService
 
                 throw;
             }
-        }
 
-        return await VerifyAsync(
-            new DatasetBuildRequest(
-                request.ExportDirectory,
-                request.ProfilePath,
-                request.ManifestPath,
-                request.OutputDirectory),
-            cancellationToken).ConfigureAwait(false);
+            var verified = await TryVerifyExistingAsync(
+                outputRoot,
+                inputs.Profile,
+                inputs.ManifestPath,
+                inputs.ManifestSha256,
+                inputs.ProfileSha256,
+                linkMode: null,
+                expectedBuildFingerprint: existingBuildFingerprint,
+                expectedAudioProfileFingerprint: existingAudioProfileFingerprint,
+                cancellationToken).ConfigureAwait(false);
+            return verified is null
+                ? InvalidVerification(outputRoot, "dataset-invalid", null, "The curated dataset is missing or failed verification after repair.")
+                : ToVerification(verified);
+        }
     }
 
     public async Task RecoverPendingMetadataTransactionsAsync(
@@ -935,6 +1095,57 @@ public sealed class DatasetBuildService
         return selected;
     }
 
+    private static IReadOnlyList<RepairAudioItem> CreateRepairAudioItems(
+        BuildInputs inputs,
+        DatasetBuildManifest? existingBuild)
+    {
+        // A WAV build records the derived audio hashes in the build manifest;
+        // the source SILK entry hash no longer matches the on-disk WAV, so
+        // repair must verify against the recorded derived identity instead of
+        // the source SILK entry.
+        if (existingBuild?.AudioProfileFingerprint is not null)
+        {
+            if (existingBuild.Items is null || existingBuild.Items.Count == 0)
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "The WAV dataset has no build manifest items to repair against.");
+            }
+
+            var selectedIds = inputs.Profile.SelectedItemIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var items = new List<RepairAudioItem>(existingBuild.Items.Count);
+            foreach (var item in existingBuild.Items)
+            {
+                if (!selectedIds.Contains(item.ItemId))
+                {
+                    throw new AppFailureException(ErrorCode.InvalidRequest, "The WAV build manifest references an item outside the selection.");
+                }
+
+                if (string.IsNullOrWhiteSpace(item.RelativeAudioPath)
+                    || !item.RelativeAudioPath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new AppFailureException(ErrorCode.InvalidRequest, "The WAV build manifest contains an unsafe audio path.");
+                }
+
+                items.Add(new RepairAudioItem(
+                    item.ItemId,
+                    item.RelativeAudioPath,
+                    item.Sha256,
+                    item.ByteLength,
+                    item.DurationMs));
+            }
+
+            return items;
+        }
+
+        return CreateSelectedItems(inputs)
+            .Select(static selected => new RepairAudioItem(
+                selected.ItemId,
+                selected.RelativeAudioPath,
+                selected.Entry.OriginalSha256,
+                selected.Entry.OriginalByteLength,
+                selected.Entry.DurationMs))
+            .ToList();
+    }
+
     private static void EnsureDatasetNamespace(VoiceExportManifest manifest)
     {
         if (string.IsNullOrWhiteSpace(manifest.DatasetNamespaceKey))
@@ -963,7 +1174,10 @@ public sealed class DatasetBuildService
             result.ItemCount,
             result.TotalDurationMs,
             result.TotalByteLength,
-            Array.Empty<DatasetBuildVerificationIssue>());
+            Array.Empty<DatasetBuildVerificationIssue>(),
+            BuildFingerprint: result.BuildFingerprint,
+            AudioProfileFingerprint: result.AudioProfileFingerprint,
+            DecoderIdentity: result.DecoderIdentity);
 
     private static DatasetBuildVerificationResult InvalidVerification(
         string outputRoot,
@@ -1032,6 +1246,13 @@ public sealed class DatasetBuildService
         string RelativeAudioPath,
         VoiceExportEntry Entry);
 
+    private sealed record RepairAudioItem(
+        string ItemId,
+        string RelativeAudioPath,
+        string ExpectedSha256,
+        long ExpectedByteLength,
+        long? DurationMs);
+
     private static async Task<DatasetBuildResult?> TryVerifyExistingAsync(
         string outputRoot,
         DatasetSelectionProfile profile,
@@ -1039,6 +1260,8 @@ public sealed class DatasetBuildService
         string manifestSha256,
         string profileSha256,
         DatasetLinkMode? linkMode,
+        string? expectedBuildFingerprint,
+        string? expectedAudioProfileFingerprint,
         CancellationToken cancellationToken)
     {
         if (Directory.Exists(outputRoot)
@@ -1069,7 +1292,11 @@ public sealed class DatasetBuildService
         if (!string.Equals(build.SelectionFingerprint, profile.SelectionFingerprint, StringComparison.Ordinal)
             || !string.Equals(build.SourceManifestSha256, manifestSha256, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(build.SemanticProfileHash, profile.SemanticProfileHash, StringComparison.Ordinal)
-            || linkMode is not null && build.LinkMode != linkMode.Value)
+            || linkMode is not null && build.LinkMode != linkMode.Value
+            || expectedBuildFingerprint is not null
+                && !string.Equals(build.BuildFingerprint, expectedBuildFingerprint, StringComparison.Ordinal)
+            || expectedAudioProfileFingerprint is not null
+                && !string.Equals(build.AudioProfileFingerprint, expectedAudioProfileFingerprint, StringComparison.Ordinal))
         {
             return null;
         }
@@ -1182,7 +1409,10 @@ public sealed class DatasetBuildService
             duration,
             bytes,
             UsedHardLinks: build.LinkMode == DatasetLinkMode.LinkedView,
-            LinkMode: build.LinkMode);
+            LinkMode: build.LinkMode,
+            build.BuildFingerprint,
+            build.AudioProfileFingerprint,
+            build.DecoderIdentity);
     }
 
     private static async Task<T> ReadAsync<T>(string path, CancellationToken cancellationToken)
@@ -1192,13 +1422,55 @@ public sealed class DatasetBuildService
             ?? throw new InvalidDataException("The dataset input document is empty.");
     }
 
+    private static string ComputeBuildFingerprint(DatasetSelectionProfile profile, AudioBuildProfile? audioProfile)
+        => audioProfile is null
+            ? profile.SelectionFingerprint
+            : DatasetBuildFingerprint.Compute(profile.SelectionFingerprint, audioProfile);
+
+    private static async Task<long?> DecodeToWavAsync(
+        IVoiceDecoder decoder,
+        string sourcePath,
+        string destinationPath,
+        VoiceExportEntry entry,
+        CancellationToken cancellationToken)
+    {
+        await VerifyArtifactAsync(sourcePath, entry.OriginalByteLength, entry.OriginalSha256, cancellationToken).ConfigureAwait(false);
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        await using (var input = new FileStream(
+            sourcePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan))
+        await using (var output = new FileStream(
+            destinationPath,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            await decoder.DecodeAsync(input, output, cancellationToken).ConfigureAwait(false);
+            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!File.Exists(destinationPath) || new FileInfo(destinationPath).Length == 0)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The decoder produced no WAV output for a selected item.");
+        }
+
+        return await WavFileValidator.TryReadDurationMsAsync(destinationPath, cancellationToken).ConfigureAwait(false)
+            ?? entry.DurationMs;
+    }
+
     private static bool IsTrainingEligible(VoiceExportEntry entry, DatasetCurationFilters filters)
     {
         if (entry.ExportState == ExportState.Failed
             || entry.HasDecodeError
             || entry.DurationMs is null
             || !VoiceExportEntryValidation.HasValidOriginalArtifact(entry)
-            || filters.IncomingOnly && entry.Direction != VoiceDirection.Incoming
+            || !DirectionMatches(entry.Direction, filters.DirectionScope)
             || filters.MinimumDurationMs is { } minimumDuration && entry.DurationMs < minimumDuration
             || filters.MaximumDurationMs is { } maximumDuration && entry.DurationMs > maximumDuration
             || filters.MinimumByteLength is { } minimumBytes && entry.OriginalByteLength < minimumBytes
@@ -1211,6 +1483,14 @@ public sealed class DatasetBuildService
         return !filters.ExcludedQualityFlags.Any(flags.Contains)
             && entry.TrainingEligibility != TrainingEligibility.Rejected;
     }
+
+    private static bool DirectionMatches(VoiceDirection direction, DatasetDirectionScope? scope)
+        => scope switch
+        {
+            DatasetDirectionScope.Incoming => direction == VoiceDirection.Incoming,
+            DatasetDirectionScope.Outgoing => direction == VoiceDirection.Outgoing,
+            _ => true,
+        };
 
     private static async Task<FileHashMetadata> VerifyArtifactAsync(
         string path,

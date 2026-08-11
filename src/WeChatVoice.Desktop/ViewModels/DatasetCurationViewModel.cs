@@ -38,7 +38,40 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     [ObservableProperty] private string? _maximumByteLengthText;
     [ObservableProperty] private string? _excludedQualityFlagsText;
     [ObservableProperty] private bool _showUnknownDuration;
+    [ObservableProperty] private DatasetDirectionScope _directionScope = DatasetDirectionScope.Incoming;
+    [ObservableProperty] private int _sampleRate = AudioBuildProfile.DefaultSampleRate;
+    [ObservableProperty] private bool _mono = true;
     [ObservableProperty] private bool _selectionDirty;
+
+    /// <summary>Display labels for the direction scope combo box.</summary>
+    public IReadOnlyList<string> DirectionScopes { get; } =
+    [
+        "仅接收",
+        "仅发送",
+        "双向",
+    ];
+
+    public int DirectionScopeIndex
+    {
+        get => DirectionScope switch
+        {
+            DatasetDirectionScope.Outgoing => 1,
+            DatasetDirectionScope.Both => 2,
+            _ => 0,
+        };
+        set => DirectionScope = value switch
+        {
+            1 => DatasetDirectionScope.Outgoing,
+            2 => DatasetDirectionScope.Both,
+            _ => DatasetDirectionScope.Incoming,
+        };
+    }
+
+    public string? SampleRateText
+    {
+        get => SampleRate.ToString();
+        set => SampleRate = int.TryParse(value, out var parsed) && parsed > 0 ? parsed : SampleRate;
+    }
     [ObservableProperty] private string? _deleteConfirmationText;
     [ObservableProperty] private string? _curationSummary;
     [ObservableProperty] private string? _profileSummary;
@@ -51,6 +84,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
 
     private DatasetCurationResult? _result;
     private DatasetSelectionProfile? _profileToApply;
+    private DatasetCurationItemViewModel? _activePreview;
 
     [RelayCommand]
     private Task LoadAsync()
@@ -118,12 +152,14 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         // Capture the current UI selection on the UI thread. The workflow
         // persists this exact profile before it reads any build inputs.
         var profile = CreateCurrentProfile(result);
+        var audioProfile = CreateAudioProfile();
         return RunHost.RunAsync<DatasetBuildResult>(
             async (context, cancellationToken) => await Workflows.DatasetCuration.BuildDatasetAsync(
                 new DatasetBuildRequest(
                     exportDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required."),
                     OutputDirectory: string.IsNullOrWhiteSpace(outputDirectory) ? null : outputDirectory,
-                    Profile: profile),
+                    Profile: profile,
+                    AudioProfile: audioProfile),
                 context,
                 cancellationToken).ConfigureAwait(false),
             result =>
@@ -133,6 +169,10 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
                 BuildSummary = result.LinkMode == DatasetLinkMode.LinkedView
                     ? $"训练数据集已构建：{result.ItemCount} 条，{result.TotalDurationMs} ms，{result.TotalByteLength} bytes。警告：这是非独立硬链接视图，不是便携副本。"
                     : $"训练数据集已构建：{result.ItemCount} 条，{result.TotalDurationMs} ms，{result.TotalByteLength} bytes。";
+                if (result.AudioProfileFingerprint is not null)
+                {
+                    BuildSummary += $" 音频 Profile：{Short(result.AudioProfileFingerprint)}；Decoder：{result.DecoderIdentity ?? "未知"}。";
+                }
             });
     }
 
@@ -228,6 +268,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         MinimumByteLengthText = Format(profile.Filters.MinimumByteLength);
         MaximumByteLengthText = Format(profile.Filters.MaximumByteLength);
         ShowUnknownDuration = profile.Filters.ShowUnknownDuration;
+        DirectionScope = profile.Filters.DirectionScope ?? DatasetDirectionScope.Both;
         ExcludedQualityFlagsText = string.Join(',', profile.Filters.ExcludedQualityFlags);
         _profileToApply = profile;
         ProfileSummary = $"已加载 Profile：{profile.SelectedItemIds.Count} 条；重新加载以验证 Manifest 绑定。";
@@ -241,6 +282,13 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         UpdateTotals();
         SelectionDirty = true;
         ProfileSummary = "已清除训练集选择；导出文件未修改。";
+    }
+
+    [RelayCommand]
+    private void StopPreview()
+    {
+        StopPreviewCore();
+        ProfileSummary = "已停止试听。";
     }
 
     partial void OnExportDirectoryChanged(string? value)
@@ -276,8 +324,14 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             ParseNonNegative(MinimumByteLengthText, "minimum byte length"),
             ParseNonNegative(MaximumByteLengthText, "maximum byte length"),
             ShowUnknownDuration,
-            IncomingOnly: true,
-            (ExcludedQualityFlagsText ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            IncomingOnly: DirectionScope == DatasetDirectionScope.Incoming,
+            (ExcludedQualityFlagsText ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            DirectionScope: DirectionScope);
+
+    private AudioBuildProfile CreateAudioProfile()
+        => new(
+            SampleRate: SampleRate,
+            Mono: Mono);
 
     private void ApplyResult(DatasetCurationResult result)
     {
@@ -285,7 +339,11 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         Items.Clear();
         foreach (var item in result.Items)
         {
-            Items.Add(new DatasetCurationItemViewModel(item, OnItemChanged));
+            Items.Add(new DatasetCurationItemViewModel(
+                item,
+                OnItemChanged,
+                preview: PreviewItemAsync,
+                stopPreview: StopPreviewAsync));
         }
 
         SelectedDurationMs = result.SelectedDurationMs;
@@ -329,6 +387,74 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         UpdateTotals();
     }
 
+    private async Task PreviewItemAsync(DatasetCurationItemViewModel item, CancellationToken cancellationToken)
+    {
+        var exportDirectory = string.IsNullOrWhiteSpace(ExportDirectory)
+            ? Services.Project.ExportDirectory
+            : ExportDirectory;
+        if (string.IsNullOrWhiteSpace(exportDirectory))
+        {
+            ProfileSummary = "导出目录不能为空，无法试听。";
+            return;
+        }
+
+        StopPreviewCore();
+        var profile = CreateAudioProfile();
+        DatasetPreviewDecodeResult? decoded = null;
+        await RunHost.RunAsync(
+            async (context, token) => await Workflows.DatasetCuration.PreviewDecodeAsync(
+                exportDirectory,
+                item.ItemId,
+                profile.SampleRate,
+                context,
+                token).ConfigureAwait(false),
+            result => decoded = result).ConfigureAwait(true);
+        if (decoded is null)
+        {
+            return;
+        }
+
+        Services.AudioPreview.Play(decoded.DecodedWavPath);
+        _activePreview = item;
+        item.SetPreviewing(decoded.DecodedWavPath);
+        ProfileSummary = $"正在试听 {Short(item.ItemId)}：{decoded.DurationMs} ms，{decoded.ByteLength} bytes。";
+    }
+
+    private async Task StopPreviewAsync(DatasetCurationItemViewModel item)
+    {
+        StopPreviewCore();
+        await Task.CompletedTask.ConfigureAwait(true);
+    }
+
+    private void StopPreviewCore()
+    {
+        Services.AudioPreview.Stop();
+        if (_activePreview is not null && _activePreview.PreviewWavPath is { } path)
+        {
+            _activePreview.SetPreviewing(null);
+            TryDeletePreviewFile(path);
+        }
+
+        _activePreview = null;
+    }
+
+    private static void TryDeletePreviewFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
     private void UpdateTotals()
     {
         SelectedCount = Items.Count(static item => item.IsSelected);
@@ -359,10 +485,18 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
 public sealed partial class DatasetCurationItemViewModel : ObservableObject
 {
     private readonly Action<DatasetCurationItemViewModel> _changed;
+    private readonly Func<DatasetCurationItemViewModel, CancellationToken, Task> _preview;
+    private readonly Func<DatasetCurationItemViewModel, Task> _stopPreview;
 
-    public DatasetCurationItemViewModel(DatasetCurationItem item, Action<DatasetCurationItemViewModel> changed)
+    public DatasetCurationItemViewModel(
+        DatasetCurationItem item,
+        Action<DatasetCurationItemViewModel> changed,
+        Func<DatasetCurationItemViewModel, CancellationToken, Task>? preview = null,
+        Func<DatasetCurationItemViewModel, Task>? stopPreview = null)
     {
         _changed = changed;
+        _preview = preview ?? (static (_, _) => Task.CompletedTask);
+        _stopPreview = stopPreview ?? (static _ => Task.CompletedTask);
         ItemId = item.ItemId;
         RelativeAudioPath = item.RelativeAudioPath;
         Sha256 = item.Sha256;
@@ -392,8 +526,37 @@ public sealed partial class DatasetCurationItemViewModel : ObservableObject
     public bool CanSelect => PassesFilters && DurationMs is not null && TrainingEligibility == nameof(WeChatVoice.Core.Models.TrainingEligibility.Eligible);
     public string TrainingEligibility { get; }
 
+    /// <summary>True while this item's decoded preview is playing.</summary>
+    public bool IsPreviewing { get; private set; }
+
+    /// <summary>Transient decoded WAV owned by this item; deleted on stop/replace.</summary>
+    public string? PreviewWavPath { get; private set; }
+
+    public string PreviewButtonText => IsPreviewing ? "停止" : "试听";
+
     [ObservableProperty] private bool _isSelected;
     [ObservableProperty] private bool _isDuplicateRepresentative;
 
     partial void OnIsSelectedChanged(bool value) => _changed(this);
+
+    [RelayCommand]
+    private async Task PreviewAsync()
+    {
+        if (IsPreviewing)
+        {
+            await _stopPreview(this).ConfigureAwait(true);
+            return;
+        }
+
+        await _preview(this, default).ConfigureAwait(true);
+    }
+
+    internal void SetPreviewing(string? wavPath)
+    {
+        PreviewWavPath = wavPath;
+        IsPreviewing = wavPath is not null;
+        OnPropertyChanged(nameof(IsPreviewing));
+        OnPropertyChanged(nameof(PreviewWavPath));
+        OnPropertyChanged(nameof(PreviewButtonText));
+    }
 }

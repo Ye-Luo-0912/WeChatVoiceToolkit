@@ -20,7 +20,8 @@ public sealed class DatasetCurationHeadlessTests
         await using var services = new DesktopServices(
             new WorkflowCompositionRoot(
                 new TestDoubles.SilentConfirmation(),
-                datasetCuration: new DatasetCurationWorkflow()),
+                datasetCuration: new DatasetCurationWorkflow(
+                    datasetBuildService: new DatasetBuildService(new TestDoubles.FakeDecoderFactory()))),
             new DesktopLog(temporary.Root),
             new RecentWorkspaceStore(temporary.Root),
             invokeOnUi: InvokeOnHeadlessUiAsync);

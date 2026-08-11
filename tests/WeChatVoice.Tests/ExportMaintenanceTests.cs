@@ -1,8 +1,10 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
+using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Export;
 using WeChatVoice.Workflows.Workflows;
 
@@ -283,6 +285,164 @@ public sealed class ExportMaintenanceTests
         Assert.Equal(built.OutputDirectory, deleted.OutputDirectory);
         Assert.False(Directory.Exists(built.OutputDirectory));
         Assert.True(File.Exists(Path.Combine(export.Root, export.Entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar))));
+    }
+
+    [Fact]
+    public async Task Dataset_wav_build_creates_derived_wav_and_records_audio_profile_fingerprint()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow(
+            datasetBuildService: new DatasetBuildService(new FakeDecoderFactory()));
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+
+        var profile = new AudioBuildProfile(SampleRate: 24000);
+        var built = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root, AudioProfile: profile),
+            NewContext(),
+            CancellationToken.None);
+
+        Assert.Equal(1, built.ItemCount);
+        Assert.False(string.IsNullOrWhiteSpace(built.BuildFingerprint));
+        Assert.Equal(profile.ProfileFingerprint, built.AudioProfileFingerprint);
+        Assert.Equal(FakeDecoderFactory.DecoderIdentity, built.DecoderIdentity);
+        var wavPath = Path.Combine(built.OutputDirectory, "audio", itemId + ".wav");
+        Assert.True(File.Exists(wavPath));
+        Assert.False(File.Exists(Path.Combine(built.OutputDirectory, "audio", itemId + ".silk")));
+        var wavBytes = await File.ReadAllBytesAsync(wavPath);
+        Assert.Equal(FakeDecoderFactory.WavBytes, wavBytes);
+    }
+
+    [Fact]
+    public async Task Dataset_wav_build_reuses_output_when_selection_and_audio_profile_are_unchanged()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow(
+            datasetBuildService: new DatasetBuildService(new FakeDecoderFactory()));
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+
+        var profile = new AudioBuildProfile(SampleRate: 24000);
+        var first = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root, AudioProfile: profile),
+            NewContext(),
+            CancellationToken.None);
+        var firstBuildHash = await File.ReadAllBytesAsync(first.BuildManifestPath);
+        var second = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root, AudioProfile: profile),
+            NewContext(),
+            CancellationToken.None);
+
+        Assert.Equal(first.OutputDirectory, second.OutputDirectory);
+        Assert.Equal(firstBuildHash, await File.ReadAllBytesAsync(second.BuildManifestPath));
+
+        // A differing audio profile must not overwrite the earlier build.
+        var differentProfile = new AudioBuildProfile(SampleRate: 16000);
+        var changed = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root, AudioProfile: differentProfile),
+            NewContext(),
+            CancellationToken.None);
+        Assert.NotEqual(first.OutputDirectory, changed.OutputDirectory);
+        Assert.Equal(differentProfile.ProfileFingerprint, changed.AudioProfileFingerprint);
+    }
+
+    [Fact]
+    public async Task Dataset_wav_verify_and_repair_preserve_the_derived_audio_identity()
+    {
+        using var temporary = new TestTemporaryDirectory();
+        var export = await CreateCommittedExportAsync(temporary);
+        var curation = new DatasetCurationWorkflow(
+            datasetBuildService: new DatasetBuildService(new FakeDecoderFactory()));
+        var manifest = await ReadPrivateManifestAsync(export.Root);
+        var itemId = ExportItemIdentity.ComputeItemId(export.Entry, manifest.DatasetNamespaceKey);
+        var curated = await curation.RunAsync(
+            new DatasetCurationRequest(export.Root, SelectedItemIds: [itemId], DuplicateRepresentativeItemIds: [itemId]),
+            NewContext(),
+            CancellationToken.None);
+        await curation.SaveProfileAsync(export.Root, curated.Profile, NewContext(), CancellationToken.None);
+
+        var profile = new AudioBuildProfile(SampleRate: 24000);
+        var built = await curation.BuildDatasetAsync(
+            new DatasetBuildRequest(export.Root, AudioProfile: profile),
+            NewContext(),
+            CancellationToken.None);
+
+        // Corrupt only the derived metadata; the WAV itself must survive.
+        await File.WriteAllTextAsync(Path.Combine(built.OutputDirectory, "dataset.csv"), "broken\n");
+        var repaired = await curation.RepairDatasetAsync(
+            new DatasetBuildRepairRequest(export.Root, built.OutputDirectory),
+            NewContext(),
+            CancellationToken.None);
+        Assert.True(repaired.IsValid, string.Join(Environment.NewLine, repaired.Issues.Select(issue => issue.Code)));
+        Assert.Equal(profile.ProfileFingerprint, repaired.AudioProfileFingerprint);
+        Assert.Equal(FakeDecoderFactory.DecoderIdentity, repaired.DecoderIdentity);
+        Assert.True(File.Exists(Path.Combine(built.OutputDirectory, "audio", itemId + ".wav")));
+
+        // Deleting the WAV build must not touch the source SILK export.
+        await curation.DeleteDatasetAsync(
+            new DatasetDeleteRequest(
+                export.Root,
+                built.OutputDirectory,
+                curated.Profile.SelectionFingerprint,
+                Confirmed: true),
+            NewContext(),
+            CancellationToken.None);
+        Assert.False(Directory.Exists(built.OutputDirectory));
+        Assert.True(File.Exists(Path.Combine(export.Root, export.Entry.OriginalPath.Replace('/', Path.DirectorySeparatorChar))));
+    }
+
+    private sealed class FakeDecoderFactory : IVoiceDecoderFactory
+    {
+        public const string DecoderIdentity = "fake-decoder-v1";
+        public static readonly byte[] WavBytes = BuildWav();
+
+        public IVoiceDecoder? Create(int sampleRate)
+            => new FixedWavDecoder(sampleRate);
+
+        private static byte[] BuildWav()
+        {
+            var dataBytes = 480;
+            var wav = new byte[44 + dataBytes];
+            "RIFF"u8.CopyTo(wav);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(4), (uint)(wav.Length - 8));
+            "WAVE"u8.CopyTo(wav.AsSpan(8));
+            "fmt "u8.CopyTo(wav.AsSpan(12));
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(16), 16);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(20), 1);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(22), 1);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(24), 24000);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(28), 48000);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(32), 2);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(34), 16);
+            "data"u8.CopyTo(wav.AsSpan(36));
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(40), (uint)dataBytes);
+            return wav;
+        }
+    }
+
+    private sealed class FixedWavDecoder(int requestedSampleRate) : IVoiceDecoder, IVoiceDecoderIdentity
+    {
+        public string DecoderIdentity => FakeDecoderFactory.DecoderIdentity;
+
+        public async Task DecodeAsync(Stream input, Stream output, CancellationToken cancellationToken)
+        {
+            var wav = FakeDecoderFactory.WavBytes;
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(24), (uint)requestedSampleRate);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(28), (uint)(requestedSampleRate * 2));
+            await output.WriteAsync(wav, cancellationToken);
+        }
     }
 
     [Fact]

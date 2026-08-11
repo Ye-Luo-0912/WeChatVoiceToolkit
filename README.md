@@ -237,3 +237,11 @@ original export SILK files:
 wechatvoice dataset verify --export <export-root> --output <dataset-root>
 wechatvoice dataset repair --export <export-root> --output <dataset-root>
 ```
+
+Dataset curation is training-ready in the Desktop "数据集整理" page: direction
+selection (incoming/outgoing/both), WAV build settings (sample rate / mono),
+and a per-item audio preview. Building with an `AudioBuildProfile` decodes the
+selected SILK into validated PCM WAV under `audio/*.wav` (the source SILK is
+never modified); the build carries a combined selection+audio fingerprint, so
+a changed profile produces a new build identity instead of overwriting an old
+one. Verify/repair/delete cover WAV derived artifacts.

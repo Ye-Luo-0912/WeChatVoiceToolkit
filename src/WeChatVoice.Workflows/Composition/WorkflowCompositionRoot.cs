@@ -3,6 +3,7 @@ using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Infrastructure.Audio;
+using WeChatVoice.Infrastructure.Export;
 using WeChatVoice.Infrastructure.Storage;
 using WeChatVoice.Workflows.Broker;
 using WeChatVoice.Workflows.Workflows;
@@ -78,7 +79,10 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
             new JsonlVoicePayloadHashCache(VoicePayloadHashCachePath.ForWorkspace(workspaceResult));
         VoiceScan = voiceScan ?? new VoiceScanWorkflow(opener, contactResolver, configuredDecoder, durationCacheFactory, deepScanCacheFactory, _cleanupQueue);
         VoiceExport = voiceExport ?? new VoiceExportWorkflow(opener, contactResolver, durationCacheFactory, configuredDecoder, cleanupQueue: _cleanupQueue);
-        DatasetCuration = datasetCuration ?? new DatasetCurationWorkflow();
+        DatasetCuration = datasetCuration
+            ?? new DatasetCurationWorkflow(
+                datasetBuildService: new DatasetBuildService(
+                    new SilkVoiceDecoderFactory(_decoderConfiguration)));
         StorageLifecycle = storageLifecycle
             ?? new StorageLifecycleWorkflow(
                 inventory: new ManagedStorageInventory(storageRoots));
