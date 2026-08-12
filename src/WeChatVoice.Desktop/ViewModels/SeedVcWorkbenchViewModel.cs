@@ -15,12 +15,16 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
 {
     private readonly DesktopServices _services;
     private readonly Func<Action, Task> _invokeOnUi;
+    private readonly SeedVcSettingsStore _settingsStore;
     private SeedVcPrepareResult? _prepared;
+    private string? _datasetBuildFingerprint;
+    private bool _restoringSettings;
 
     public SeedVcWorkbenchViewModel(DesktopServices services)
     {
         _services = services;
         _invokeOnUi = services.InvokeOnUi ?? (action => Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(action).GetTask());
+        _settingsStore = new SeedVcSettingsStore(services.RecentWorkspaces.StorageDirectory);
         RunHost = new WorkflowRunHost(_invokeOnUi, services.Log, services.OperationCoordinator);
         PythonPath = "python";
         SeedVcRoot = Environment.GetEnvironmentVariable("WECHATVOICE_SEEDVC_ROOT");
@@ -71,10 +75,13 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
     public void SetDataset(string? directory)
     {
         DatasetDirectory = string.IsNullOrWhiteSpace(directory) ? null : Path.GetFullPath(directory);
-        if (_prepared is not null && !string.Equals(_prepared.DatasetBuildFingerprint, ReadDatasetFingerprint(DatasetDirectory), StringComparison.OrdinalIgnoreCase))
+        var fingerprint = ReadDatasetFingerprint(DatasetDirectory);
+        if (!string.Equals(_datasetBuildFingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
         {
             _prepared = null;
             PrepDirectory = null;
+            _datasetBuildFingerprint = fingerprint;
+            RestoreSettings(fingerprint);
         }
         if (!string.IsNullOrWhiteSpace(DatasetDirectory) && string.IsNullOrWhiteSpace(PrepDirectory))
         {
@@ -86,6 +93,32 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
         }
         OnPropertyChanged(nameof(CanPrepare));
         OnPropertyChanged(nameof(CanTrain));
+    }
+
+    private void RestoreSettings(string? fingerprint)
+    {
+        if (string.IsNullOrWhiteSpace(fingerprint)) return;
+        var saved = _settingsStore.Load(fingerprint);
+        if (saved is null) return;
+        _restoringSettings = true;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(saved.SeedVcRoot)) SeedVcRoot = saved.SeedVcRoot;
+            if (!string.IsNullOrWhiteSpace(saved.PythonPath)) PythonPath = saved.PythonPath;
+            AnchorDirectory = saved.AnchorDirectory;
+            PrepDirectory = IsReusablePreparation(saved.PrepDirectory, fingerprint) ? saved.PrepDirectory : null;
+            CheckpointPath = IsUsableFile(saved.CheckpointPath) ? saved.CheckpointPath : null;
+            if (PrepDirectory is not null) StatusMessage = "已恢复上次验证过的 Seed‑VC 准备结果。";
+        }
+        finally { _restoringSettings = false; }
+    }
+
+    private void PersistSettings()
+    {
+        if (_restoringSettings || string.IsNullOrWhiteSpace(_datasetBuildFingerprint)) return;
+        _settingsStore.Save(new SeedVcSettings(
+            _datasetBuildFingerprint!, SeedVcRoot, PythonPath, AnchorDirectory,
+            PrepDirectory, LastTrain?.RunDirectory, CheckpointPath));
     }
 
     [RelayCommand]
@@ -145,6 +178,7 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
             {
                 _prepared = result;
                 PrepDirectory = result.OutputDirectory;
+                PersistSettings();
                 StatusMessage = result.Reused ? "已复用已验证的 Seed‑VC 准备结果。" : "Seed‑VC 训练数据准备完成。";
                 OnPropertyChanged(nameof(PreparedSummary)); OnPropertyChanged(nameof(CanTrain));
             });
@@ -160,6 +194,7 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
             {
                 LastTrain = result;
                 if (result.Checkpoints.Count > 0) CheckpointPath = Path.Combine(result.RunDirectory, result.Checkpoints[^1].RelativePath.Replace('/', Path.DirectorySeparatorChar));
+                PersistSettings();
                 StatusMessage = TrainSummary;
                 OnPropertyChanged(nameof(TrainSummary)); OnPropertyChanged(nameof(CanInfer));
             });
@@ -171,7 +206,7 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
         if (!CanInfer) { StatusMessage = "请输入源音频、参考音频和 checkpoint。"; return Task.CompletedTask; }
         return RunHost.RunAsync<SeedVcInferResult>(
             async (context, token) => await _services.Workflows.SeedVc.InferAsync(new SeedVcInferRequest(SeedVcRoot!, SourceAudioPath!, ReferenceAudioPath!, CheckpointPath!, PythonPath: PythonPath, OutputDirectory: InferOutputPath), context, token).ConfigureAwait(false),
-            result => { LastInfer = result; StatusMessage = InferSummary; OnPropertyChanged(nameof(InferSummary)); });
+            result => { LastInfer = result; PersistSettings(); StatusMessage = InferSummary; OnPropertyChanged(nameof(InferSummary)); });
     }
 
     [RelayCommand]
@@ -182,10 +217,10 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
     }
 
-    partial void OnSeedVcRootChanged(string? value) => OnPropertyChanged(nameof(CanTrain));
-    partial void OnPythonPathChanged(string? value) { }
-    partial void OnPrepDirectoryChanged(string? value) => OnPropertyChanged(nameof(CanTrain));
-    partial void OnCheckpointPathChanged(string? value) => OnPropertyChanged(nameof(CanInfer));
+    partial void OnSeedVcRootChanged(string? value) { OnPropertyChanged(nameof(CanTrain)); OnPropertyChanged(nameof(CanInfer)); PersistSettings(); }
+    partial void OnPythonPathChanged(string? value) => PersistSettings();
+    partial void OnPrepDirectoryChanged(string? value) { OnPropertyChanged(nameof(CanTrain)); PersistSettings(); }
+    partial void OnCheckpointPathChanged(string? value) { OnPropertyChanged(nameof(CanInfer)); PersistSettings(); }
     partial void OnSourceAudioPathChanged(string? value) => OnPropertyChanged(nameof(CanInfer));
     partial void OnReferenceAudioPathChanged(string? value) => OnPropertyChanged(nameof(CanInfer));
 
@@ -227,6 +262,25 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
         return null;
+    }
+
+    private static bool IsUsableFile(string? path)
+        => !string.IsNullOrWhiteSpace(path) && File.Exists(path) && new FileInfo(path).Length > 0;
+
+    private static bool IsReusablePreparation(string? path, string fingerprint)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return false;
+        var manifest = Path.Combine(path, "manifests", "prep-manifest.json");
+        if (!File.Exists(manifest)) return false;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifest));
+            return document.RootElement.TryGetProperty("datasetBuildFingerprint", out var value)
+                && string.Equals(value.GetString(), fingerprint, StringComparison.OrdinalIgnoreCase)
+                && VerifyPreparationFiles(path, document.RootElement);
+        }
+        catch (IOException) { return false; }
+        catch (System.Text.Json.JsonException) { return false; }
     }
 
     private static bool VerifyPreparationFiles(string root, System.Text.Json.JsonElement manifest)

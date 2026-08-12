@@ -138,6 +138,12 @@ bundled `tools/seedvc/seedvc_infer.py` bridge and writes `infer-manifest.json`,
 `infer.log`, and a RIFF/WAV-validated `converted.wav` under the application-local
 `SeedVcRuns` directory.
 
+The Desktop page stores Seed-VC tool paths and verified derived paths in the
+application-local `seedvc-settings.json`, keyed by Dataset Build fingerprint.
+After restarting the app, an unchanged dataset can resume from the previous
+preparation/checkpoint without repeating the earlier workflow. Changed source
+data or changed anchor input invalidates that reuse automatically.
+
 The CLI owns the one-shot UAC Broker exchange; `WeChatVoice.KeyBroker` is not a
 stdin tool and never exposes key material.
 
