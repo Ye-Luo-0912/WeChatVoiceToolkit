@@ -11,14 +11,15 @@ public sealed class SeedVcDoctorService
     public async Task<SeedVcDoctorReport> CheckAsync(SeedVcDoctorRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        var toolchain = new SeedVcToolchainResolver().Resolve(request.SeedVcRoot, request.PythonPath, request.ConfigPath, request.FfmpegPath);
         var issues = new List<string>();
-        var root = string.IsNullOrWhiteSpace(request.SeedVcRoot) ? null : Path.GetFullPath(request.SeedVcRoot);
+        var root = string.IsNullOrWhiteSpace(toolchain.SeedVcRoot) ? null : Path.GetFullPath(toolchain.SeedVcRoot);
         if (root is null || !Directory.Exists(root))
         {
             issues.Add("seedvc-root-missing");
         }
 
-        var python = ResolvePython(request.PythonPath);
+        var python = ResolvePython(toolchain.PythonPath);
         string? pythonVersion = null;
         string? torchVersion = null;
         bool? cuda = null;
@@ -38,12 +39,12 @@ public sealed class SeedVcDoctorService
             if (probe.CudaAvailable != true) issues.Add("cuda-unavailable");
         }
 
-        var config = string.IsNullOrWhiteSpace(request.ConfigPath)
+        var config = string.IsNullOrWhiteSpace(toolchain.ConfigPath)
             ? root is null ? null : Path.Combine(root, "configs", "presets", "config_dit_mel_seed_uvit_whisper_small_wavenet.yml")
-            : Path.GetFullPath(request.ConfigPath);
+            : Path.GetFullPath(toolchain.ConfigPath);
         if (config is null || !File.Exists(config)) issues.Add("seedvc-config-missing");
         if (root is not null && !File.Exists(Path.Combine(root, "train.py"))) issues.Add("train-script-missing");
-        var ffmpeg = FfmpegLocator.Discover();
+        var ffmpeg = FfmpegLocator.Discover(toolchain.FfmpegPath);
         if (ffmpeg is null) issues.Add("ffmpeg-missing");
 
         return new SeedVcDoctorReport(
@@ -57,7 +58,12 @@ public sealed class SeedVcDoctorService
             config,
             ffmpeg,
             issues,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow)
+        {
+            GlobalConfigPath = toolchain.GlobalConfigPath,
+            LinuxHost = toolchain.LinuxHost,
+            LinuxSeedVcRoot = toolchain.LinuxSeedVcRoot,
+        };
     }
 
     private static string? ResolvePython(string? requested)

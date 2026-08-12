@@ -121,8 +121,26 @@ public sealed class FfmpegWavNormalizer
 /// <summary>Returns a full FFmpeg path from PATH without starting a process.</summary>
 public static class FfmpegLocator
 {
-    public static string? Discover()
+    public static string? Discover(string? requested = null)
     {
+        if (!string.IsNullOrWhiteSpace(requested))
+        {
+            if (Path.IsPathRooted(requested) || requested.Contains(Path.DirectorySeparatorChar) || requested.Contains(Path.AltDirectorySeparatorChar))
+            {
+                var full = Path.GetFullPath(requested);
+                return File.Exists(full) ? full : null;
+            }
+
+            var requestedName = requested.Trim();
+            var names = OperatingSystem.IsWindows() && !requestedName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                ? new[] { requestedName, requestedName + ".exe" }
+                : new[] { requestedName };
+            var requestedPath = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .SelectMany(directory => names.Select(name => Path.Combine(directory, name)))
+                .FirstOrDefault(File.Exists);
+            if (requestedPath is not null) return Path.GetFullPath(requestedPath);
+        }
+
         var path = Environment.GetEnvironmentVariable("PATH");
         var candidates = new List<string>();
         if (!string.IsNullOrWhiteSpace(path))

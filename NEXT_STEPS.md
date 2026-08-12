@@ -12,6 +12,12 @@
 > Seed-VC checkout. Do not interpret this as permission to add model weights
 > or real audio to the repository.
 
+> Cross-platform configuration: Seed-VC/Python/FFmpeg and optional Linux SSH
+> target settings are global in `toolchain.json` (`~/.config/wechatvoice` on
+> Linux, `%APPDATA%/WeChatVoiceToolkit` on Windows). Use `seedvc config show`
+> and `seedvc config set`; CLI arguments and `WECHATVOICE_*` variables override
+> the global values. SSH keys remain owned by OpenSSH.
+
 ## 0. 当前阶段判断
 
 当前底层主链已经具备较强的正确性、安全性和恢复能力：

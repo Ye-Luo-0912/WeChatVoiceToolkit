@@ -183,6 +183,13 @@ run/checkpoint state, and conversion playback controls are implemented.
 Python/CUDA remains an external dependency; no model weights or user audio are
 stored in the repository.
 
+The cross-platform toolchain surface is global and reusable. `seedvc config
+show/set` writes one per-user `toolchain.json`; Linux uses XDG config semantics
+and may store an OpenSSH alias plus remote paths without copying credentials.
+CLI arguments and `WECHATVOICE_*` variables override that file. Remote
+execution is intentionally a separate follow-up workflow; the current local
+training path already consumes the same resolved configuration.
+
 ### Remaining Seed-VC work
 
 1. Run the documented manual RTX 3060 Ti acceptance path with the user's

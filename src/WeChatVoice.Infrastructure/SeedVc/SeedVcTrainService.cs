@@ -28,7 +28,10 @@ public sealed class SeedVcTrainService
     {
         ArgumentNullException.ThrowIfNull(request);
         var prepRoot = Path.GetFullPath(request.PrepDirectory);
-        var seedRoot = Path.GetFullPath(request.SeedVcRoot);
+        var toolchain = new SeedVcToolchainResolver().Resolve(request.SeedVcRoot, request.PythonPath, request.ConfigPath);
+        var seedRoot = string.IsNullOrWhiteSpace(toolchain.SeedVcRoot)
+            ? throw new AppFailureException(ErrorCode.InvalidRequest, "Seed-VC root is not configured. Run 'seedvc config set --seedvc-root <path>' or pass --seedvc-root.")
+            : Path.GetFullPath(toolchain.SeedVcRoot);
         if (!Directory.Exists(prepRoot) || !File.Exists(Path.Combine(prepRoot, "manifests", "prep-manifest.json")))
         {
             throw new AppFailureException(ErrorCode.InvalidRequest, "The Seed-VC preparation directory is missing or incomplete.");
@@ -40,7 +43,7 @@ public sealed class SeedVcTrainService
 
         var prepManifest = await ReadAsync<SeedVcPrepareManifest>(Path.Combine(prepRoot, "manifests", "prep-manifest.json"), cancellationToken).ConfigureAwait(false);
         if (prepManifest.KeptCount == 0) throw new AppFailureException(ErrorCode.InvalidRequest, "The prepared Seed-VC dataset contains no usable audio.");
-        var config = ResolveConfig(seedRoot, request.ConfigPath);
+        var config = ResolveConfig(seedRoot, toolchain.ConfigPath);
         if (!File.Exists(config)) throw new AppFailureException(ErrorCode.InvalidRequest, "The selected Seed-VC training config does not exist.");
         if (request.BatchSize is < 1 or > 8) throw new ArgumentOutOfRangeException(nameof(request.BatchSize));
         if (request.MaxSteps is < 1 or > 1_000_000) throw new ArgumentOutOfRangeException(nameof(request.MaxSteps));
@@ -91,7 +94,7 @@ public sealed class SeedVcTrainService
             null,
             null,
             null,
-            string.IsNullOrWhiteSpace(request.PythonPath) ? "python" : request.PythonPath!,
+            toolchain.PythonPath,
             "train.py",
             arguments,
             started,
@@ -102,7 +105,7 @@ public sealed class SeedVcTrainService
             previous?.Checkpoints ?? Array.Empty<SeedVcCheckpoint>());
         await WriteJsonAsync(manifestPath, initial, cancellationToken).ConfigureAwait(false);
 
-        var python = ResolvePython(request.PythonPath);
+        var python = ResolvePython(toolchain.PythonPath);
         var startInfo = new ProcessStartInfo
         {
             FileName = python,

@@ -114,11 +114,13 @@ dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wech
 dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --backend weixin-windows-4 --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- workspace adopt --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- materialization recover --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
-dotnet run --project src/WeChatVoice.Cli -- seedvc doctor --seedvc-root D:\tools\seed-vc
+dotnet run --project src/WeChatVoice.Cli -- seedvc config set --seedvc-root D:\tools\seed-vc --python python --ffmpeg ffmpeg
+dotnet run --project src/WeChatVoice.Cli -- seedvc config show
+dotnet run --project src/WeChatVoice.Cli -- seedvc doctor
 dotnet run --project src/WeChatVoice.Cli -- seedvc prepare --dataset .\exports\peer\datasets\<build-fingerprint> --anchor D:\recordings\phone --out .\seedvc-prep\<fingerprint>
-dotnet run --project src/WeChatVoice.Cli -- seedvc train --prep .\seedvc-prep\<fingerprint> --seedvc-root D:\tools\seed-vc --batch-size 1 --max-steps 1000
-dotnet run --project src/WeChatVoice.Cli -- seedvc train --prep .\seedvc-prep\<fingerprint> --seedvc-root D:\tools\seed-vc --run-name voice-3060ti --no-resume
-dotnet run --project src/WeChatVoice.Cli -- seedvc infer --seedvc-root D:\tools\seed-vc --source .\source.wav --reference .\reference.wav --checkpoint D:\runs\latest.pth
+dotnet run --project src/WeChatVoice.Cli -- seedvc train --prep .\seedvc-prep\<fingerprint> --batch-size 1 --max-steps 1000
+dotnet run --project src/WeChatVoice.Cli -- seedvc train --prep .\seedvc-prep\<fingerprint> --run-name voice-3060ti --no-resume
+dotnet run --project src/WeChatVoice.Cli -- seedvc infer --source .\source.wav --reference .\reference.wav --checkpoint D:\runs\latest.pth
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
 ```
 
@@ -143,6 +145,46 @@ upstream `runs/<run-name>/` checkpoints stay together. Re-running the same
 run name verifies the preparation and config hashes first; a completed run
 with a valid checkpoint is returned without starting Python. Use
 `--no-resume` to fail instead of reusing an existing run.
+
+### Global toolchain and Linux training host
+
+Seed-VC, Python, FFmpeg and an optional Linux training host use one shared
+configuration surface. Precedence is: command-line argument, `WECHATVOICE_*`
+environment variable, per-user global file, then platform PATH/defaults.
+
+The file is `~/.config/wechatvoice/toolchain.json` on Linux (respecting
+`XDG_CONFIG_HOME`), `%APPDATA%\WeChatVoiceToolkit\toolchain.json` on Windows,
+and the standard per-user application-data directory on macOS. It stores only
+paths and an OpenSSH host alias, never passwords, private keys or key material:
+
+```bash
+dotnet run --project src/WeChatVoice.Cli -- seedvc config set \
+  --linux-host chatapp-linux \
+  --linux-user yeluo \
+  --linux-port 22 \
+  --linux-seedvc-root /home/yeluo/seed-vc \
+  --linux-python /home/yeluo/.venv/bin/python \
+  --linux-ffmpeg /usr/bin/ffmpeg
+dotnet run --project src/WeChatVoice.Cli -- seedvc config show
+```
+
+`--linux-host` is an OpenSSH alias from `~/.ssh/config`, for example:
+
+```sshconfig
+Host chatapp-linux
+    HostName 192.168.5.49
+    User yeluo
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519_chatapp_linux
+    IdentitiesOnly yes
+```
+
+When the application itself runs on Linux, `linux-seedvc-root`,
+`linux-python`, and `linux-ffmpeg` become the local defaults automatically.
+When it runs on Windows, they remain a remote target description for the next
+reviewed SSH workflow and do not replace the Windows toolchain. Existing
+commands can always temporarily override the global values with
+`--seedvc-root`, `--python`, and `--ffmpeg`.
 
 The Desktop page stores Seed-VC tool paths and verified derived paths in the
 application-local `seedvc-settings.json`, keyed by Dataset Build fingerprint.

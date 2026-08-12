@@ -104,3 +104,13 @@ derives `Msg_<md5(username)>`, maps direction from exact observed values, and
 requires conversation plus local ID, server ID, and creation time for media
 association. Payloads are exposed as owning read-only streams so SQLite
 connections are released when the caller disposes the stream.
+
+Seed-VC toolchain locations are resolved by the shared
+`SeedVcToolchainResolver`, not by host-specific defaults. The global
+configuration is `~/.config/wechatvoice/toolchain.json` on Linux (or the
+platform application-data equivalent), with explicit precedence of CLI,
+`WECHATVOICE_*` environment variables, global file, and PATH defaults. The
+same document may contain an OpenSSH host alias plus remote Linux paths; it
+never contains passwords, private keys, or raw key material. CLI and Desktop
+therefore present one reusable configuration surface while keeping the
+current training process local until a reviewed remote workflow is enabled.

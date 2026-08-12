@@ -4,6 +4,7 @@ using WeChatVoice.Core.Ports;
 using WeChatVoice.Infrastructure.Adapters;
 using WeChatVoice.Infrastructure.Audio;
 using WeChatVoice.Infrastructure.Export;
+using WeChatVoice.Infrastructure.SeedVc;
 using WeChatVoice.Infrastructure.Storage;
 using WeChatVoice.Workflows.Broker;
 using WeChatVoice.Workflows.Workflows;
@@ -46,6 +47,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         _cleanupQueue = new TemporaryFileCleanupQueue();
         PreparedSelectionSpool.CleanupOrphans(cleanupQueue: _cleanupQueue);
         var storageRoots = StorageRootsFor(appDataDirectory);
+        var toolchain = new SeedVcToolchainResolver().Resolve();
         new StartupOrphanSweeper(storageRoots).Sweep(cleanupQueue: _cleanupQueue);
         _decoderConfiguration = new DecoderConfigurationStore(storageRoots.AppDataRoot);
         var loader = new Workspaces.WorkspaceLoader();
@@ -86,7 +88,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
             ?? new DatasetCurationWorkflow(
                 datasetBuildService: new DatasetBuildService(
                     new SilkVoiceDecoderFactory(_decoderConfiguration),
-                    FfmpegLocator.Discover() is { } ffmpegPath
+                    FfmpegLocator.Discover(toolchain.FfmpegPath) is { } ffmpegPath
                         ? new FfmpegWavNormalizer(ffmpegPath)
                         : null));
         StorageLifecycle = storageLifecycle

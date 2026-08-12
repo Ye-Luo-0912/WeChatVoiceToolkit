@@ -167,7 +167,8 @@ public sealed record SeedVcPrepareResult(
 public sealed record SeedVcDoctorRequest(
     string? SeedVcRoot = null,
     string? PythonPath = null,
-    string? ConfigPath = null);
+    string? ConfigPath = null,
+    string? FfmpegPath = null);
 
 public sealed record SeedVcDoctorReport(
     bool IsReady,
@@ -183,11 +184,15 @@ public sealed record SeedVcDoctorReport(
     DateTimeOffset CheckedAtUtc)
 {
     public bool SeedVcCheckoutFound => !Issues.Contains("seedvc-root-missing", StringComparer.Ordinal);
+    public string? GlobalConfigPath { get; init; }
+    public string? LinuxHost { get; init; }
+    public string? LinuxSeedVcRoot { get; init; }
+    public bool LinuxTargetConfigured => !string.IsNullOrWhiteSpace(LinuxHost);
 }
 
 public sealed record SeedVcTrainRequest(
     string PrepDirectory,
-    string SeedVcRoot,
+    string? SeedVcRoot = null,
     string? PythonPath = null,
     string? ConfigPath = null,
     string? OutputDirectory = null,
@@ -234,7 +239,7 @@ public sealed record SeedVcTrainResult(
 
 /// <summary>One explicit Seed-VC voice-conversion invocation.</summary>
 public sealed record SeedVcInferRequest(
-    string SeedVcRoot,
+    string? SeedVcRoot,
     string SourceAudioPath,
     string ReferenceAudioPath,
     string CheckpointPath,

@@ -33,13 +33,16 @@ public sealed class SeedVcInferService
         if (request.LengthAdjust is < 0.5 or > 2) throw new ArgumentOutOfRangeException(nameof(request.LengthAdjust));
         if (request.InferenceCfgRate is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(request.InferenceCfgRate));
 
-        var root = Path.GetFullPath(request.SeedVcRoot);
+        var toolchain = new SeedVcToolchainResolver().Resolve(request.SeedVcRoot, request.PythonPath, request.ConfigPath);
+        var root = string.IsNullOrWhiteSpace(toolchain.SeedVcRoot)
+            ? throw new AppFailureException(ErrorCode.InvalidRequest, "Seed-VC root is not configured. Run 'seedvc config set --seedvc-root <path>' or pass --seedvc-root.")
+            : Path.GetFullPath(toolchain.SeedVcRoot);
         var source = RequireFile(request.SourceAudioPath, "source audio");
         var reference = RequireFile(request.ReferenceAudioPath, "reference audio");
         var checkpoint = RequireFile(request.CheckpointPath, "checkpoint");
-        var config = string.IsNullOrWhiteSpace(request.ConfigPath)
+        var config = string.IsNullOrWhiteSpace(toolchain.ConfigPath)
             ? Path.Combine(root, "configs", "presets", "config_dit_mel_seed_uvit_whisper_small_wavenet.yml")
-            : Path.GetFullPath(request.ConfigPath!);
+            : Path.GetFullPath(toolchain.ConfigPath!);
         config = RequireFile(config, "config");
         var script = File.Exists(Path.Combine(root, "seedvc_infer.py"))
             ? Path.Combine(root, "seedvc_infer.py")
@@ -91,11 +94,11 @@ public sealed class SeedVcInferService
             referenceHash,
             checkpointHash,
             configHash,
-            request.PythonPath ?? "python", Path.GetFileName(script), args,
+            toolchain.PythonPath, Path.GetFileName(script), args,
             previous?.StartedAtUtc ?? DateTimeOffset.UtcNow, null, SeedVcInferStatus.Failed, null, "converted.wav", null, null, "infer.log");
         await WriteJsonAsync(manifestPath, initial, cancellationToken).ConfigureAwait(false);
 
-        var python = ResolvePython(request.PythonPath);
+        var python = ResolvePython(toolchain.PythonPath);
         var startInfo = new ProcessStartInfo { FileName = python, WorkingDirectory = root, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         foreach (var arg in args) startInfo.ArgumentList.Add(arg);
         var status = SeedVcInferStatus.Failed;

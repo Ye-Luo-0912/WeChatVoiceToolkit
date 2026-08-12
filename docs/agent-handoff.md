@@ -143,6 +143,15 @@ inputs, and the last conversion keyed by Dataset Build fingerprint. The
 remaining acceptance is manual GPU validation with the user's Seed-VC
 checkout; no model weights or real audio belong in Git.
 
+Global toolchain configuration is shared by all hosts through
+`SeedVcToolchainResolver`. On Linux it defaults to
+`$XDG_CONFIG_HOME/wechatvoice/toolchain.json` or
+`~/.config/wechatvoice/toolchain.json`; Windows and macOS use their standard
+per-user application-data directories. Use `seedvc config show/set` for
+Seed-VC, Python, FFmpeg and an optional OpenSSH host alias. SSH credentials
+stay in the user's `~/.ssh/config` and agent; do not persist private keys or
+passwords in toolkit configuration.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
 work: decoder productization (Phase 3: optional packaged reviewed decoder).

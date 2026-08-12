@@ -71,6 +71,11 @@ user-supplied, lawfully accessible WeChat data source.
 - New code must fit the existing composition root and lifecycle contracts. Do
   not add hidden global state, duplicate registries, implicit provider changes,
   or compatibility shims unless a concrete migration requirement exists.
+- Cross-platform tool paths are resolved through the shared
+  `SeedVcToolchainResolver`: CLI override, `WECHATVOICE_*` environment
+  variable, per-user global `toolchain.json`, then PATH/defaults. Linux SSH
+  configuration stores only an OpenSSH host alias and remote paths; never copy
+  private keys, passwords, or key material into application settings.
 - WeChatVoice.Workflows is the composition boundary shared by the CLI and the
   Desktop host. Product flows live there as workflows (EnvironmentAssessment,
   Snapshot, Materialization, Workspace, ContactDiscovery, VoiceScan,

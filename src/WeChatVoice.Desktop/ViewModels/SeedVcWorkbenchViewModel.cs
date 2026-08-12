@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Desktop.Infrastructure;
+using WeChatVoice.Infrastructure.SeedVc;
 
 namespace WeChatVoice.Desktop.ViewModels;
 
@@ -17,6 +18,7 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
     private readonly DesktopServices _services;
     private readonly Func<Action, Task> _invokeOnUi;
     private readonly SeedVcSettingsStore _settingsStore;
+    private readonly SeedVcToolchainResolver _toolchainResolver;
     private SeedVcPrepareResult? _prepared;
     private string? _datasetBuildFingerprint;
     private string? _lastRunDirectory;
@@ -28,9 +30,11 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
         _services = services;
         _invokeOnUi = services.InvokeOnUi ?? (action => Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(action).GetTask());
         _settingsStore = new SeedVcSettingsStore(services.RecentWorkspaces.StorageDirectory);
+        _toolchainResolver = new SeedVcToolchainResolver();
         RunHost = new WorkflowRunHost(_invokeOnUi, services.Log, services.OperationCoordinator);
-        PythonPath = "python";
-        SeedVcRoot = Environment.GetEnvironmentVariable("WECHATVOICE_SEEDVC_ROOT");
+        var toolchain = _toolchainResolver.Resolve();
+        PythonPath = toolchain.PythonPath;
+        SeedVcRoot = toolchain.SeedVcRoot;
     }
 
     public WorkflowRunHost RunHost { get; }
