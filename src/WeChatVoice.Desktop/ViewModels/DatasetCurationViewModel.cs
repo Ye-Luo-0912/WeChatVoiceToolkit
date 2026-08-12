@@ -32,6 +32,12 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
 
     public bool HasCandidates => Items.Count > 0;
 
+    public int CandidateCount => Items.Count;
+
+    public int EligibleCount => Items.Count(static item => item.CanSelect);
+
+    public string SelectedDurationSummary => $"{SelectedDurationMs} ms";
+
     public bool HasEligibleCandidates => Items.Any(static item => item.CanSelect);
 
     public bool HasSelection => SelectedCount > 0;
@@ -561,7 +567,9 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         _profileToApply = null;
         SelectionDirty = false;
         OnPropertyChanged(nameof(HasCandidates));
+        OnPropertyChanged(nameof(CandidateCount));
         OnPropertyChanged(nameof(HasEligibleCandidates));
+        OnPropertyChanged(nameof(EligibleCount));
         OnPropertyChanged(nameof(CandidateReadinessHint));
         OnPropertyChanged(nameof(BuiltDatasetSummary));
     }
@@ -690,6 +698,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         SelectedByteLength = Items.Where(static item => item.IsSelected).Sum(static item => Math.Max(0, item.ByteLength));
         OnPropertyChanged(nameof(HasSelection));
         OnPropertyChanged(nameof(CanBuildDataset));
+        OnPropertyChanged(nameof(SelectedDurationSummary));
     }
 
     private static long? ParseNonNegative(string? text, string label)

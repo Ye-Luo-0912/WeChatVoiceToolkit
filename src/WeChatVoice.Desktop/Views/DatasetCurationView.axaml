@@ -17,11 +17,11 @@
         </StackPanel>
         <StackPanel Grid.Column="1" Spacing="2">
           <TextBlock Text="语音" Foreground="#94A3B8" />
-          <TextBlock Text="{Binding Items.Count}" FontSize="22" FontWeight="Bold" />
+          <TextBlock Text="{Binding CandidateCount}" FontSize="22" FontWeight="Bold" />
         </StackPanel>
         <StackPanel Grid.Column="2" Spacing="2">
           <TextBlock Text="可训练" Foreground="#94A3B8" />
-          <TextBlock Text="{Binding HasEligibleCandidates, StringFormat='就绪：{0}'}" FontSize="16" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding EligibleCount}" FontSize="22" FontWeight="Bold" Foreground="#34D399" />
         </StackPanel>
         <StackPanel Grid.Column="3" Spacing="2">
           <TextBlock Text="已选" Foreground="#94A3B8" />
@@ -29,7 +29,7 @@
         </StackPanel>
         <StackPanel Grid.Column="4" Spacing="2">
           <TextBlock Text="总时长" Foreground="#94A3B8" />
-          <TextBlock Text="{Binding SelectedDurationMs}" FontSize="16" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding SelectedDurationSummary}" FontSize="16" FontWeight="SemiBold" />
         </StackPanel>
       </Grid>
     </Border>
