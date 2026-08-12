@@ -164,7 +164,7 @@
 
 ## Next product work
 
-### Seed-VC fine-tuning (P0 in progress)
+### Seed-VC fine-tuning (P0 complete)
 
 The Dataset Build is now the input boundary for Seed-VC. The shared workflow
 and CLI expose `seedvc doctor`, `seedvc prepare`, and `seedvc train`.
@@ -174,7 +174,8 @@ phone anchors with an explicit weight, and persists a content/profile
 fingerprint so a verified result is reused. Training remains an external
 Seed-VC checkout: the host passes a fixed argv list to `train.py`, captures a
 bounded local log, and records run provenance/checkpoint hashes. The next
-increment is the Desktop P1 wizard and a reviewed inference/preview port.
+increment is the Desktop P1 wizard and a reviewed inference/preview port;
+neither is silently implied by the P0 CLI commands.
 
 1. Recover voice duration from a verified message metadata field only if the
    user supplies schema evidence and test data for that field. Until then,
