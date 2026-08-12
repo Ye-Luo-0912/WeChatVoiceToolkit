@@ -11,36 +11,61 @@
       <TextBlock Text="{Binding RunHost.LastError}" Foreground="Red" />
     </StackPanel>
 
-    <StackPanel Spacing="16">
-      <TextBlock FontSize="20" FontWeight="SemiBold" Text="语音导出（原始 SILK）" />
-      <TextBlock Text="只导出原始 SILK，不生成 WAV。每个源 BLOB 只读取一次：复制、哈希、与已有文件比对后原子提交；重复运行会跳过已验证文件。" TextWrapping="Wrap" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="340" IsReadOnly="True" PlaceholderText="当前 Workspace JSON（由项目会话提供）" Text="{Binding WorkspacePath}" />
-        <TextBox Width="260" PlaceholderText="导出根目录" Text="{Binding OutputDirectory}" />
-        <Button Content="选择导出目录" Command="{Binding BrowseOutputCommand}" />
-      </StackPanel>
-      <TextBlock Text="{Binding ContactSelectionSummary}" TextWrapping="Wrap" />
-      <TextBlock Text="{Binding SelectionPlanSummary}" TextWrapping="Wrap" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBlock Width="180" Text="仅对方发来的语音（incoming）" />
-        <Button Content="导出" Command="{Binding ExportCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
-        <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
-      </StackPanel>
-      <TextBlock Text="{Binding ExportSummary}" FontWeight="SemiBold" />
-      <TextBlock Text="{Binding VerificationSummary}" TextWrapping="Wrap" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <Button Content="验证导出" Command="{Binding VerifyExportCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="修复 Manifest/CSV/索引" Command="{Binding RepairExportCommand}" IsEnabled="{Binding CanStartOperation}" />
-      </StackPanel>
-      <StackPanel Orientation="Horizontal" Spacing="24">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <StackPanel Spacing="14" MaxWidth="980">
+      <TextBlock FontSize="24" FontWeight="SemiBold" Text="语音导出" />
+      <TextBlock Foreground="#94A3B8" Text="把当前扫描结果保存为原始 SILK。目录由工具自动管理，重复导出会自动跳过已验证文件。" TextWrapping="Wrap" />
+
+      <Border Background="#111827" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="16">
+        <StackPanel Spacing="8">
+          <TextBlock FontSize="16" FontWeight="SemiBold" Text="1 · 导出内容" />
+          <TextBlock Text="{Binding ContactSelectionSummary}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding SelectionPlanSummary}" Foreground="#93C5FD" TextWrapping="Wrap" />
+          <TextBlock Text="仅导出对方发来的语音（incoming），不生成 WAV。" Foreground="#94A3B8" />
+        </StackPanel>
+      </Border>
+
+      <Border Background="#111827" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="16">
+        <StackPanel Spacing="8">
+          <TextBlock FontSize="16" FontWeight="SemiBold" Text="2 · 保存位置" />
+          <TextBlock Text="{Binding OutputDirectorySummary}" TextWrapping="Wrap" />
+          <TextBox IsReadOnly="True" Text="{Binding OutputDirectory}" />
+          <Button Content="更改保存位置（可选）" Command="{Binding BrowseOutputCommand}" HorizontalAlignment="Left" />
+        </StackPanel>
+      </Border>
+
+      <Border Background="#172554" BorderBrush="#3B82F6" BorderThickness="1" CornerRadius="10" Padding="16">
+        <StackPanel Spacing="8">
+          <TextBlock FontSize="16" FontWeight="SemiBold" Text="3 · 开始导出" />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="开始导出" Command="{Binding ExportCommand}" IsEnabled="{Binding CanExport}" />
+            <Button Content="取消" Command="{Binding RunHost.CancelCommand}" IsVisible="{Binding RunHost.CanCancel}" />
+            <Button Content="重试" Command="{Binding RunHost.RetryCommand}" IsVisible="{Binding RunHost.CanRetry}" />
+          </StackPanel>
+          <TextBlock Text="导出完成后，进入“数据集整理”选择训练样本。" Foreground="#BFDBFE" />
+        </StackPanel>
+      </Border>
+
+      <Border IsVisible="{Binding HasExportResult}" Background="#0F172A" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="16">
+        <StackPanel Spacing="8">
+          <TextBlock FontSize="16" FontWeight="SemiBold" Text="导出结果" />
+          <TextBlock Text="{Binding ExportSummary}" />
+          <TextBlock Text="{Binding VerificationSummary}" Foreground="#93C5FD" TextWrapping="Wrap" />
+          <StackPanel Orientation="Horizontal" Spacing="24">
         <TextBlock Text="{Binding ExportedCount, StringFormat='新增：{0} 条'}" />
         <TextBlock Text="{Binding SkippedCount, StringFormat='跳过：{0} 条'}" />
         <TextBlock Text="{Binding FailureCount, StringFormat='失败：{0} 条'}" />
         <TextBlock Text="{Binding TrainingEntryCount, StringFormat='训练条目：{0} 条'}" />
         <TextBlock Text="{Binding TotalTrainingDurationMs, StringFormat='训练总时长：{0} ms'}" />
-      </StackPanel>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="验证导出" Command="{Binding VerifyExportCommand}" IsEnabled="{Binding CanStartOperation}" />
+            <Button Content="修复索引（不修改 SILK）" Command="{Binding RepairExportCommand}" IsEnabled="{Binding CanStartOperation}" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
 
+      <Border IsVisible="{Binding HasFailures}" Background="#3F1D1D" BorderBrush="#EF4444" BorderThickness="1" CornerRadius="10" Padding="16">
       <StackPanel Spacing="8">
         <TextBlock FontWeight="SemiBold" Text="失败明细（不包含敏感内容）" />
         <ListBox ItemsSource="{Binding Failures}" MaxHeight="160">
@@ -55,11 +80,15 @@
           </ListBox.ItemTemplate>
         </ListBox>
       </StackPanel>
+      </Border>
 
+      <Expander Header="高级：崩溃恢复 Journal" IsExpanded="False">
       <StackPanel Orientation="Horizontal" Spacing="8">
         <TextBox Width="420" PlaceholderText="可选：runs/&lt;run-id&gt;.jsonl Journal 路径（崩溃恢复）" Text="{Binding JournalPath}" />
         <Button Content="恢复 Journal" Command="{Binding RecoverCommand}" CommandParameter="{Binding JournalPath}" IsEnabled="{Binding CanStartOperation}" />
       </StackPanel>
+      </Expander>
     </StackPanel>
+    </ScrollViewer>
   </DockPanel>
 </UserControl>

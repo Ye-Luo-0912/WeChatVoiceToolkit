@@ -24,12 +24,41 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     public override string Title => "数据集整理";
 
     public override bool CanNavigate
-        => Services.Project.LastExportRun is not null
-            && !string.IsNullOrWhiteSpace(Services.Project.ExportDirectory);
+        => Services.Project.LastExportRun is not null || HasReusableExport;
 
     public override string? NavigationHint => CanNavigate
         ? null
         : "请先完成一次 SILK 导出，再进入数据集整理";
+
+    public bool HasCandidates => Items.Count > 0;
+
+    public bool HasEligibleCandidates => Items.Any(static item => item.CanSelect);
+
+    public bool HasSelection => SelectedCount > 0;
+
+    public bool CanBuildDataset => CanStartOperation && _result is not null && HasSelection;
+
+    public string DatasetOutputHint
+        => string.IsNullOrWhiteSpace(DatasetOutputDirectory)
+            ? "默认：导出目录\\datasets\\<构建指纹>（无需手动填写）"
+            : $"数据集保存位置：{DatasetOutputDirectory}";
+
+    public string CandidateReadinessHint
+        => _result is null
+            ? "进入本页后会自动读取最近一次导出的 SILK。"
+            : HasEligibleCandidates
+                ? "可以直接点击“全选可训练”，也可以逐条试听后勾选。"
+                : "当前没有可直接训练的样本。未知时长需要先在“语音扫描”启用时长分析并重新扫描；原始 SILK 不会被修改。";
+
+    private bool HasReusableExport
+    {
+        get
+        {
+            var root = Services.Project.ExportDirectory;
+            return !string.IsNullOrWhiteSpace(root)
+                && File.Exists(Path.Combine(root, ExportManifestLayout.PortableManifestFileName));
+        }
+    }
 
     [ObservableProperty] private string? _exportDirectory;
     [ObservableProperty] private string? _datasetOutputDirectory;
@@ -86,6 +115,17 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     private DatasetCurationResult? _result;
     private DatasetSelectionProfile? _profileToApply;
     private DatasetCurationItemViewModel? _activePreview;
+
+    public override async Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
+    {
+        await base.OnNavigatedToAsync(cancellationToken).ConfigureAwait(false);
+        ExportDirectory = Services.Project.ExportDirectory;
+        DatasetOutputDirectory = Services.Project.DatasetOutputDirectory;
+        if (CanNavigate && _result is null && !RunHost.IsRunning)
+        {
+            await LoadAsync().ConfigureAwait(false);
+        }
+    }
 
     [RelayCommand]
     private Task LoadAsync()
@@ -290,6 +330,23 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         UpdateTotals();
         SelectionDirty = true;
         ProfileSummary = "已清除训练集选择；导出文件未修改。";
+        OnPropertyChanged(nameof(HasSelection));
+        OnPropertyChanged(nameof(CanBuildDataset));
+    }
+
+    [RelayCommand]
+    private void SelectAllEligible()
+    {
+        foreach (var item in Items.Where(static item => item.CanSelect))
+        {
+            item.IsSelected = true;
+        }
+
+        UpdateTotals();
+        SelectionDirty = true;
+        ProfileSummary = $"已选择 {SelectedCount} 条可训练语音；重复组会自动保留一个代表项。";
+        OnPropertyChanged(nameof(HasSelection));
+        OnPropertyChanged(nameof(CanBuildDataset));
     }
 
     [RelayCommand]
@@ -306,6 +363,9 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             _result = null;
             _profileToApply = null;
             Items.Clear();
+            OnPropertyChanged(nameof(HasCandidates));
+            OnPropertyChanged(nameof(HasEligibleCandidates));
+            OnPropertyChanged(nameof(CandidateReadinessHint));
         }
     }
 
@@ -322,11 +382,15 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             or nameof(ExportProjectSession.LastExportRun))
         {
             ExportDirectory = Services.Project.ExportDirectory;
+            OnPropertyChanged(nameof(CanNavigate));
+            OnPropertyChanged(nameof(HasReusableExport));
+            OnPropertyChanged(nameof(DatasetOutputHint));
         }
 
         if (propertyName == nameof(ExportProjectSession.DatasetOutputDirectory))
         {
             DatasetOutputDirectory = Services.Project.DatasetOutputDirectory;
+            OnPropertyChanged(nameof(DatasetOutputHint));
         }
     }
 
@@ -362,10 +426,15 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         SelectedDurationMs = result.SelectedDurationMs;
         SelectedByteLength = result.SelectedByteLength;
         SelectedCount = result.Items.Count(static item => item.IsSelected);
-        CurationSummary = $"候选 {result.Items.Count(static item => item.PassesFilters)} 条；重复组 {result.DuplicateGroups.Count}；当前训练集 {SelectedCount} 条。成功导出不会自动进入训练集。";
+        var filteredCount = result.Items.Count(static item => item.PassesFilters);
+        var unknownDurationCount = result.Items.Count(static item => item.DurationMs is null);
+        CurationSummary = $"已读取 {result.Items.Count} 条 SILK：{filteredCount} 条符合筛选，{unknownDurationCount} 条时长未知，当前已选 {SelectedCount} 条。";
         ProfileSummary = $"Manifest 已绑定：{Short(result.ManifestSha256)}；Selection Fingerprint：{Short(result.SelectionFingerprint)}。";
         _profileToApply = null;
         SelectionDirty = false;
+        OnPropertyChanged(nameof(HasCandidates));
+        OnPropertyChanged(nameof(HasEligibleCandidates));
+        OnPropertyChanged(nameof(CandidateReadinessHint));
     }
 
     private void OnItemChanged(DatasetCurationItemViewModel changed)
@@ -398,6 +467,8 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         }
 
         UpdateTotals();
+        OnPropertyChanged(nameof(HasSelection));
+        OnPropertyChanged(nameof(CanBuildDataset));
     }
 
     private async Task PreviewItemAsync(DatasetCurationItemViewModel item, CancellationToken cancellationToken)
@@ -473,6 +544,8 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         SelectedCount = Items.Count(static item => item.IsSelected);
         SelectedDurationMs = Items.Where(static item => item.IsSelected).Sum(static item => Math.Max(0, item.DurationMs ?? 0));
         SelectedByteLength = Items.Where(static item => item.IsSelected).Sum(static item => Math.Max(0, item.ByteLength));
+        OnPropertyChanged(nameof(HasSelection));
+        OnPropertyChanged(nameof(CanBuildDataset));
     }
 
     private static long? ParseNonNegative(string? text, string label)

@@ -26,6 +26,13 @@ public sealed partial class ExportViewModel : PageViewModelBase
         : base(services, invokeOnUi)
     {
         WorkspacePath = services.Project.WorkspacePath;
+        RunHost.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(WorkflowRunHost.State) or nameof(WorkflowRunHost.IsRunning))
+            {
+                OnPropertyChanged(nameof(CanExport));
+            }
+        };
     }
 
     public override string Title => "语音导出";
@@ -41,6 +48,17 @@ public sealed partial class ExportViewModel : PageViewModelBase
         : Services.Project.SelectedContact is null
             ? "请先在联系人页显式选择联系人"
             : "请先完成包含可导出语音的扫描";
+
+    public bool CanExport => CanStartOperation && CanNavigate;
+
+    public bool HasExportResult => !string.IsNullOrWhiteSpace(ExportSummary);
+
+    public bool HasFailures => Failures.Count > 0;
+
+    public string OutputDirectorySummary
+        => string.IsNullOrWhiteSpace(OutputDirectory)
+            ? "将自动保存到应用数据目录"
+            : $"自动保存位置：{OutputDirectory}";
 
     public override Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
     {
@@ -151,6 +169,8 @@ public sealed partial class ExportViewModel : PageViewModelBase
             TrainingEntryCount = manifest.TrainingEntryCount;
             Failures = manifest.Failures;
             FailureCount = manifest.Failures.Count;
+            OnPropertyChanged(nameof(HasExportResult));
+            OnPropertyChanged(nameof(HasFailures));
             ExportSummary = manifest.RunStatus switch
             {
                 ExportRunStatus.Completed => $"导出完成：新增 {ExportedCount} 条，跳过 {SkippedCount} 条",
@@ -265,6 +285,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
         }
 
         Services.Project.LastExportRun = null;
+        OnPropertyChanged(nameof(OutputDirectorySummary));
     }
 
     private void ApplyOutputDefaults()
@@ -351,6 +372,15 @@ public sealed partial class ExportViewModel : PageViewModelBase
         {
             OnPropertyChanged(nameof(ContactSelectionSummary));
             OnPropertyChanged(nameof(SelectionPlanSummary));
+            OnPropertyChanged(nameof(CanExport));
+            ApplyOutputDefaults();
+        }
+
+        if (propertyName is nameof(ExportProjectSession.WorkspacePath)
+            or nameof(ExportProjectSession.ExportDirectory))
+        {
+            OnPropertyChanged(nameof(CanExport));
+            OnPropertyChanged(nameof(OutputDirectorySummary));
         }
     }
 

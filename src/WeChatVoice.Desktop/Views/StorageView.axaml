@@ -4,35 +4,64 @@
              xmlns:core="using:WeChatVoice.Core.Models"
              x:Class="WeChatVoice.Desktop.Views.StorageView"
              x:DataType="vm:StorageViewModel">
-  <DockPanel Margin="24">
-    <StackPanel DockPanel.Dock="Top" Spacing="8" Margin="0,0,0,12">
-      <TextBlock FontSize="20" FontWeight="SemiBold" Text="存储管理" />
-      <TextBlock Text="{Binding SummaryText}" TextWrapping="Wrap" Foreground="#CBD5E1" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <Button Content="刷新占用" Command="{Binding RefreshInventoryCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="清理预检" Command="{Binding PreviewCleanupCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="执行清理（再次点击确认）" Command="{Binding CleanupCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="检测重复快照" Command="{Binding PreviewDuplicateCleanupCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="清理重复快照（保留最新）" Command="{Binding CleanupDuplicateCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="检测旧快照" Command="{Binding PreviewOldSnapshotCleanupCommand}" IsEnabled="{Binding CanStartOperation}" />
-        <Button Content="清理旧快照（每账号保留最新）" Command="{Binding CleanupOldSnapshotsCommand}" IsEnabled="{Binding CanStartOperation}" />
-      </StackPanel>
-      <TextBlock Text="{Binding CleanupSummary}" Foreground="#A33A00" TextWrapping="Wrap" />
-    </StackPanel>
+  <ScrollViewer Margin="24" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <StackPanel Spacing="14" MaxWidth="1100">
+      <TextBlock FontSize="24" FontWeight="SemiBold" Text="存储管理" />
+      <TextBlock Text="查看应用占用，清理只会影响临时文件和重复快照。原始 SILK、训练数据集和已验证 Workspace 始终保留。" TextWrapping="Wrap" Foreground="#CBD5E1" />
 
-    <DockPanel>
-      <TextBlock DockPanel.Dock="Top" FontWeight="SemiBold" Text="应用自有存储对象（导出与数据集只统计，不会被自动删除）" Margin="0,0,0,6" />
-      <ListBox ItemsSource="{Binding Assets}" MaxHeight="420">
-        <ListBox.ItemTemplate>
-          <DataTemplate x:DataType="core:StorageAssetRecord">
-            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
-              <TextBlock Text="{Binding KindLabel}" Foreground="#93C5FD" />
-              <TextBlock Grid.Column="1" Text="{Binding Path}" TextWrapping="Wrap" />
-              <TextBlock Grid.Column="2" Text="{Binding TotalBytes, StringFormat='{}{0} bytes'}" />
-            </Grid>
-          </DataTemplate>
-        </ListBox.ItemTemplate>
-      </ListBox>
-    </DockPanel>
-  </DockPanel>
+      <Border Background="#111827" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="16">
+        <StackPanel Spacing="8">
+          <TextBlock FontSize="16" FontWeight="SemiBold" Text="占用概览" />
+          <TextBlock Text="{Binding SummaryText}" TextWrapping="Wrap" />
+          <Button Content="刷新占用" Command="{Binding RefreshInventoryCommand}" IsEnabled="{Binding CanStartOperation}" HorizontalAlignment="Left" />
+        </StackPanel>
+      </Border>
+
+      <Border Background="#172554" BorderBrush="#3B82F6" BorderThickness="1" CornerRadius="10" Padding="16">
+        <StackPanel Spacing="8">
+          <TextBlock FontSize="16" FontWeight="SemiBold" Text="安全清理" />
+          <TextBlock Text="先预检，再确认执行。工具会列出可回收对象，不会删除用户资产。" Foreground="#BFDBFE" TextWrapping="Wrap" />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="清理预检" Command="{Binding PreviewCleanupCommand}" IsEnabled="{Binding CanStartOperation}" />
+            <Button Content="执行清理" Command="{Binding CleanupCommand}" IsEnabled="{Binding CanStartOperation}" />
+          </StackPanel>
+          <TextBlock Text="{Binding CleanupSummary}" Foreground="#FBBF24" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <Expander Header="高级：快照维护" IsExpanded="False">
+        <StackPanel Spacing="8" Margin="0,8,0,0">
+          <TextBlock Text="用于释放重复或过期快照；每项操作都会先预检。" Foreground="#94A3B8" />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="检测重复快照" Command="{Binding PreviewDuplicateCleanupCommand}" IsEnabled="{Binding CanStartOperation}" />
+            <Button Content="清理重复快照（保留最新）" Command="{Binding CleanupDuplicateCommand}" IsEnabled="{Binding CanStartOperation}" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="检测旧快照" Command="{Binding PreviewOldSnapshotCleanupCommand}" IsEnabled="{Binding CanStartOperation}" />
+            <Button Content="清理旧快照（每账号保留最新）" Command="{Binding CleanupOldSnapshotsCommand}" IsEnabled="{Binding CanStartOperation}" />
+          </StackPanel>
+        </StackPanel>
+      </Expander>
+
+      <Border Background="#111827" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="16">
+        <StackPanel Spacing="8">
+          <TextBlock FontSize="16" FontWeight="SemiBold" Text="应用自有存储对象" />
+          <TextBlock Text="导出与数据集只统计，不会被自动删除。" Foreground="#94A3B8" />
+          <ListBox ItemsSource="{Binding Assets}" MaxHeight="430">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="core:StorageAssetRecord">
+                <Border Background="#0F172A" BorderBrush="#334155" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,6">
+                  <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*,Auto" RowSpacing="4" ColumnSpacing="10">
+                    <TextBlock Text="{Binding KindLabel}" Foreground="#93C5FD" />
+                    <TextBlock Grid.Column="2" Text="{Binding TotalBytes, StringFormat='{}{0} bytes'}" Foreground="#CBD5E1" />
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding Path}" TextWrapping="Wrap" Foreground="#94A3B8" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
 </UserControl>
