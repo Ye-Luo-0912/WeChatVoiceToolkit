@@ -16,6 +16,11 @@ public sealed record SeedVcSettings(
     string? PrepDirectory = null,
     string? LastRunDirectory = null,
     string? CheckpointPath = null,
+    string? RunName = null,
+    string? SourceAudioPath = null,
+    string? ReferenceAudioPath = null,
+    string? InferOutputPath = null,
+    string? LastInferDirectory = null,
     DateTimeOffset? LastUsedUtc = null);
 
 public sealed class SeedVcSettingsStore

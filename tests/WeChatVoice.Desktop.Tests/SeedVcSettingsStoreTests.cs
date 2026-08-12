@@ -9,7 +9,7 @@ public sealed class SeedVcSettingsStoreTests
     {
         using var temporary = new TemporaryDirectory();
         var store = new SeedVcSettingsStore(temporary.Root);
-        store.Save(new SeedVcSettings("dataset-a", SeedVcRoot: "D:/seed-vc", PrepDirectory: "D:/prep-a"));
+        store.Save(new SeedVcSettings("dataset-a", SeedVcRoot: "D:/seed-vc", PrepDirectory: "D:/prep-a", RunName: "voice-run"));
         store.Save(new SeedVcSettings("dataset-a", SeedVcRoot: "D:/seed-vc-2", CheckpointPath: "D:/run/ft_model.pth"));
         store.Save(new SeedVcSettings("dataset-b", SeedVcRoot: "D:/other"));
 
@@ -18,6 +18,8 @@ public sealed class SeedVcSettingsStoreTests
         Assert.NotNull(a);
         Assert.Equal("D:/seed-vc-2", a.SeedVcRoot);
         Assert.Equal("D:/run/ft_model.pth", a.CheckpointPath);
+        store.Save(a with { RunName = "voice-run-2" });
+        Assert.Equal("voice-run-2", reopened.Load("dataset-a")!.RunName);
         Assert.Null(reopened.Load("missing"));
     }
 

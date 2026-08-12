@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Models;
@@ -18,6 +19,8 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
     private readonly SeedVcSettingsStore _settingsStore;
     private SeedVcPrepareResult? _prepared;
     private string? _datasetBuildFingerprint;
+    private string? _lastRunDirectory;
+    private string? _lastInferDirectory;
     private bool _restoringSettings;
 
     public SeedVcWorkbenchViewModel(DesktopServices services)
@@ -67,6 +70,8 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
     public SeedVcTrainResult? LastTrain { get; private set; }
     public SeedVcInferResult? LastInfer { get; private set; }
     public SeedVcDoctorReport? LastDoctor { get; private set; }
+    public string? LastRunDirectory => _lastRunDirectory;
+    public string? LastInferDirectory => _lastInferDirectory;
 
     public bool CanPrepare => !string.IsNullOrWhiteSpace(DatasetDirectory) && !RunHost.IsRunning && !_services.OperationCoordinator.IsBusy;
     public bool CanTrain => !string.IsNullOrWhiteSpace(PrepDirectory) && !string.IsNullOrWhiteSpace(SeedVcRoot) && !RunHost.IsRunning && !_services.OperationCoordinator.IsBusy;
@@ -108,6 +113,18 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
             AnchorDirectory = saved.AnchorDirectory;
             PrepDirectory = IsReusablePreparation(saved.PrepDirectory, fingerprint) ? saved.PrepDirectory : null;
             CheckpointPath = IsUsableFile(saved.CheckpointPath) ? saved.CheckpointPath : null;
+            RunName = saved.RunName;
+            SourceAudioPath = IsUsableFile(saved.SourceAudioPath) ? saved.SourceAudioPath : null;
+            ReferenceAudioPath = IsUsableFile(saved.ReferenceAudioPath) ? saved.ReferenceAudioPath : null;
+            InferOutputPath = !string.IsNullOrWhiteSpace(saved.InferOutputPath) ? saved.InferOutputPath : null;
+            _lastRunDirectory = Directory.Exists(saved.LastRunDirectory) ? saved.LastRunDirectory : null;
+            LastTrain = TryReadTrainResult(_lastRunDirectory);
+            _lastInferDirectory = Directory.Exists(saved.LastInferDirectory) ? saved.LastInferDirectory : null;
+            LastInfer = TryReadInferResult(_lastInferDirectory);
+            OnPropertyChanged(nameof(LastRunDirectory));
+            OnPropertyChanged(nameof(LastInferDirectory));
+            OnPropertyChanged(nameof(TrainSummary));
+            OnPropertyChanged(nameof(InferSummary));
             if (PrepDirectory is not null) StatusMessage = "已恢复上次验证过的 Seed‑VC 准备结果。";
         }
         finally { _restoringSettings = false; }
@@ -118,7 +135,8 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
         if (_restoringSettings || string.IsNullOrWhiteSpace(_datasetBuildFingerprint)) return;
         _settingsStore.Save(new SeedVcSettings(
             _datasetBuildFingerprint!, SeedVcRoot, PythonPath, AnchorDirectory,
-            PrepDirectory, LastTrain?.RunDirectory, CheckpointPath));
+            PrepDirectory, LastTrain?.RunDirectory ?? _lastRunDirectory, CheckpointPath, RunName,
+            SourceAudioPath, ReferenceAudioPath, InferOutputPath, LastInfer?.RunDirectory ?? _lastInferDirectory));
     }
 
     [RelayCommand]
@@ -193,6 +211,8 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
             result =>
             {
                 LastTrain = result;
+                _lastRunDirectory = result.RunDirectory;
+                OnPropertyChanged(nameof(LastRunDirectory));
                 if (result.Checkpoints.Count > 0) CheckpointPath = Path.Combine(result.RunDirectory, result.Checkpoints[^1].RelativePath.Replace('/', Path.DirectorySeparatorChar));
                 PersistSettings();
                 StatusMessage = TrainSummary;
@@ -206,13 +226,34 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
         if (!CanInfer) { StatusMessage = "请输入源音频、参考音频和 checkpoint。"; return Task.CompletedTask; }
         return RunHost.RunAsync<SeedVcInferResult>(
             async (context, token) => await _services.Workflows.SeedVc.InferAsync(new SeedVcInferRequest(SeedVcRoot!, SourceAudioPath!, ReferenceAudioPath!, CheckpointPath!, PythonPath: PythonPath, OutputDirectory: InferOutputPath), context, token).ConfigureAwait(false),
-            result => { LastInfer = result; PersistSettings(); StatusMessage = InferSummary; OnPropertyChanged(nameof(InferSummary)); });
+            result =>
+            {
+                LastInfer = result;
+                _lastInferDirectory = result.RunDirectory;
+                OnPropertyChanged(nameof(LastInferDirectory));
+                PersistSettings();
+                StatusMessage = InferSummary;
+                OnPropertyChanged(nameof(InferSummary));
+            });
     }
+
+    [RelayCommand]
+    private void PlayInferenceResult()
+    {
+        if (LastInfer?.Status == SeedVcInferStatus.Completed && IsUsableFile(LastInfer.OutputPath))
+        {
+            _services.AudioPreview.Play(LastInfer.OutputPath);
+            StatusMessage = "正在播放最近一次 Seed‑VC 转换结果。";
+        }
+    }
+
+    [RelayCommand]
+    private void StopInferencePreview() => _services.AudioPreview.Stop();
 
     [RelayCommand]
     private void OpenRunDirectory()
     {
-        var path = LastTrain?.RunDirectory ?? _prepared?.OutputDirectory;
+        var path = LastTrain?.RunDirectory ?? _lastRunDirectory ?? _prepared?.OutputDirectory;
         if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
     }
@@ -221,8 +262,10 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
     partial void OnPythonPathChanged(string? value) => PersistSettings();
     partial void OnPrepDirectoryChanged(string? value) { OnPropertyChanged(nameof(CanTrain)); PersistSettings(); }
     partial void OnCheckpointPathChanged(string? value) { OnPropertyChanged(nameof(CanInfer)); PersistSettings(); }
-    partial void OnSourceAudioPathChanged(string? value) => OnPropertyChanged(nameof(CanInfer));
-    partial void OnReferenceAudioPathChanged(string? value) => OnPropertyChanged(nameof(CanInfer));
+    partial void OnSourceAudioPathChanged(string? value) { OnPropertyChanged(nameof(CanInfer)); PersistSettings(); }
+    partial void OnReferenceAudioPathChanged(string? value) { OnPropertyChanged(nameof(CanInfer)); PersistSettings(); }
+    partial void OnInferOutputPathChanged(string? value) => PersistSettings();
+    partial void OnRunNameChanged(string? value) => PersistSettings();
 
     private static string? ReadDatasetFingerprint(string? directory)
     {
@@ -266,6 +309,48 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
 
     private static bool IsUsableFile(string? path)
         => !string.IsNullOrWhiteSpace(path) && File.Exists(path) && new FileInfo(path).Length > 0;
+
+    private static SeedVcTrainResult? TryReadTrainResult(string? runDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(runDirectory)) return null;
+        try
+        {
+            var manifestPath = Path.Combine(runDirectory, "run-manifest.json");
+            if (!File.Exists(manifestPath)) return null;
+            var manifest = JsonSerializer.Deserialize<SeedVcTrainManifest>(File.ReadAllText(manifestPath));
+            if (manifest is null) return null;
+            return new SeedVcTrainResult(
+                Path.GetFullPath(runDirectory),
+                manifestPath,
+                Path.Combine(runDirectory, manifest.LogRelativePath.Replace('/', Path.DirectorySeparatorChar)),
+                manifest.RunId,
+                manifest.Status,
+                manifest.ExitCode,
+                manifest.Checkpoints);
+        }
+        catch (IOException) { return null; }
+        catch (JsonException) { return null; }
+    }
+
+    private static SeedVcInferResult? TryReadInferResult(string? runDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(runDirectory)) return null;
+        try
+        {
+            var manifestPath = Path.Combine(runDirectory, "infer-manifest.json");
+            if (!File.Exists(manifestPath)) return null;
+            var manifest = JsonSerializer.Deserialize<SeedVcInferManifest>(File.ReadAllText(manifestPath));
+            if (manifest is null) return null;
+            var outputPath = Path.Combine(runDirectory, manifest.OutputRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            return new SeedVcInferResult(
+                Path.GetFullPath(runDirectory), manifestPath,
+                Path.Combine(runDirectory, manifest.LogRelativePath.Replace('/', Path.DirectorySeparatorChar)),
+                outputPath, manifest.RunId, manifest.Status, manifest.ExitCode,
+                manifest.OutputByteLength, manifest.OutputSha256);
+        }
+        catch (IOException) { return null; }
+        catch (JsonException) { return null; }
+    }
 
     private static bool IsReusablePreparation(string? path, string fingerprint)
     {
@@ -313,5 +398,6 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
             _prepared = null;
             OnPropertyChanged(nameof(PreparedSummary));
         }
+        PersistSettings();
     }
 }

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 
@@ -54,11 +55,25 @@ public sealed class SeedVcTrainService
         Directory.CreateDirectory(outputRoot);
         var logPath = Path.Combine(outputRoot, "train.log");
         var manifestPath = Path.Combine(outputRoot, "run-manifest.json");
-        var runId = Guid.NewGuid().ToString("N");
         var configHash = await ComputeSha256Async(config, cancellationToken).ConfigureAwait(false);
         var relativeConfig = Path.GetRelativePath(seedRoot, config).Replace(Path.DirectorySeparatorChar, '/');
-        var arguments = BuildArguments(seedRoot, prepRoot, config, runName, request);
-        var started = DateTimeOffset.UtcNow;
+        var runtimeConfig = await CreateRuntimeConfigAsync(config, outputRoot, cancellationToken).ConfigureAwait(false);
+        var arguments = BuildArguments(seedRoot, prepRoot, runtimeConfig, runName, request);
+        var previous = await ReadExistingManifestAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        if (previous is not null)
+        {
+            if (!request.Resume)
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "This Seed-VC run already exists. Choose a new run name or enable resume.");
+            }
+            if (!string.Equals(previous.PrepFingerprint, prepManifest.PrepFingerprint, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(previous.ConfigSha256, configHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "The existing Seed-VC run uses a different preparation dataset or config. Choose a new run name.");
+            }
+        }
+        var runId = previous?.RunId ?? Guid.NewGuid().ToString("N");
+        var started = previous?.StartedAtUtc ?? DateTimeOffset.UtcNow;
         var initial = new SeedVcTrainManifest(
             runId,
             runName,
@@ -76,20 +91,23 @@ public sealed class SeedVcTrainService
             SeedVcTrainStatus.Running,
             null,
             "train.log",
-            Array.Empty<SeedVcCheckpoint>());
+            previous?.Checkpoints ?? Array.Empty<SeedVcCheckpoint>());
         await WriteJsonAsync(manifestPath, initial, cancellationToken).ConfigureAwait(false);
 
-        var python = string.IsNullOrWhiteSpace(request.PythonPath) ? "python" : Path.GetFullPath(request.PythonPath);
+        var python = ResolvePython(request.PythonPath);
         var startInfo = new ProcessStartInfo
         {
             FileName = python,
+            // Seed-VC writes config.log_dir relative to the current working
+            // directory. Running from the app-owned run directory keeps all
+            // checkpoints and caches together with our manifest.
             WorkingDirectory = seedRoot,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        startInfo.ArgumentList.Add("train.py");
+        startInfo.ArgumentList.Add(Path.Combine(seedRoot, "train.py"));
         foreach (var argument in arguments.Skip(1)) startInfo.ArgumentList.Add(argument);
 
         var status = SeedVcTrainStatus.Failed;
@@ -98,7 +116,7 @@ public sealed class SeedVcTrainService
         {
             progress?.Report(new OperationProgress(OperationPhase.VoiceExport, OperationStatus.Running, new OperationStage(OperationStageIds.Exporting, "启动 Seed-VC 微调")));
             using var process = Process.Start(startInfo) ?? throw new AppFailureException(ErrorCode.WorkflowFailed, "Python could not be started.");
-            await using var log = new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await using var log = new FileStream(logPath, request.Resume && previous is not null ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             await using var writer = new StreamWriter(log, new UTF8Encoding(false));
             var stdout = PumpAsync(process.StandardOutput, writer, "[stdout] ", cancellationToken);
             var stderr = PumpAsync(process.StandardError, writer, "[stderr] ", cancellationToken);
@@ -136,7 +154,7 @@ public sealed class SeedVcTrainService
     private static string[] BuildArguments(string seedRoot, string prepRoot, string config, string runName, SeedVcTrainRequest request)
         => [
             "train.py",
-            "--config", Path.GetRelativePath(seedRoot, config),
+            "--config", config,
             "--dataset-dir", prepRoot,
             "--run-name", runName,
             "--batch-size", request.BatchSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -167,6 +185,45 @@ public sealed class SeedVcTrainService
             list.Add(new SeedVcCheckpoint(Path.GetRelativePath(outputRoot, path).Replace(Path.DirectorySeparatorChar, '/'), info.Length, await ComputeSha256Async(path, cancellationToken).ConfigureAwait(false)));
         }
         return list.OrderBy(static checkpoint => checkpoint.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private static async Task<string> CreateRuntimeConfigAsync(string sourceConfig, string outputRoot, CancellationToken cancellationToken)
+    {
+        var text = await File.ReadAllTextAsync(sourceConfig, cancellationToken).ConfigureAwait(false);
+        // Upstream appends --run-name to log_dir. Point it at the parent so
+        // the selected run directory itself contains the checkpoints.
+        var logDirectory = (Directory.GetParent(outputRoot)?.FullName ?? outputRoot).Replace('\\', '/').Replace("\"", "\\\"");
+        var replacement = $"log_dir: \"{logDirectory}\"";
+        var rewritten = Regex.Replace(text, "^\\s*log_dir\\s*:\\s*.*$", replacement, RegexOptions.Multiline);
+        if (string.Equals(text, rewritten, StringComparison.Ordinal)) rewritten = replacement + Environment.NewLine + text;
+        var runtimePath = Path.Combine(outputRoot, "train-config.yml");
+        await File.WriteAllTextAsync(runtimePath, rewritten, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+        return runtimePath;
+    }
+
+    private static string ResolvePython(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return "python";
+        return Path.IsPathRooted(requested) || requested.Contains(Path.DirectorySeparatorChar) || requested.Contains(Path.AltDirectorySeparatorChar)
+            ? Path.GetFullPath(requested)
+            : requested;
+    }
+
+    private static async Task<SeedVcTrainManifest?> ReadExistingManifestAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            return await ReadAsync<SeedVcTrainManifest>(path, cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException ex)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The existing Seed-VC run manifest is invalid; choose a new run name or remove the broken run directory.", ex);
+        }
+        catch (InvalidDataException ex)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The existing Seed-VC run manifest is invalid; choose a new run name or remove the broken run directory.", ex);
+        }
     }
 
     private static string ResolveConfig(string seedRoot, string? requested)
