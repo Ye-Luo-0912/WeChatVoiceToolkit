@@ -152,6 +152,21 @@ public sealed class ScanExportViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Export_page_allocates_default_directory_from_verified_selection()
+    {
+        Services.Project.Workspace = TestDoubles.Verified();
+        Services.Project.WorkspacePath = "C:\\workspace.json";
+        Services.Project.SelectedContact = new ContactRecord("contact-a", "wxid_a", "A", "Remark A");
+
+        var viewModel = new ExportViewModel(Services, DirectInvokeAsync);
+        await viewModel.OnNavigatedToAsync();
+
+        Assert.False(string.IsNullOrWhiteSpace(viewModel.OutputDirectory));
+        Assert.Equal(viewModel.OutputDirectory, Services.Project.ExportDirectory);
+        Assert.Contains("Data\\Exports", viewModel.OutputDirectory, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Recover_without_a_journal_uses_typed_run_host_error()
     {
         var viewModel = new ExportViewModel(Services, DirectInvokeAsync);

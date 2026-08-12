@@ -14,6 +14,8 @@ namespace WeChatVoice.Desktop.ViewModels;
 /// </summary>
 public sealed partial class ExportViewModel : PageViewModelBase
 {
+    private string? _automaticOutputDirectory;
+
     public ExportViewModel(DesktopServices services)
         : this(services, invokeOnUi: null)
     {
@@ -39,6 +41,13 @@ public sealed partial class ExportViewModel : PageViewModelBase
         : Services.Project.SelectedContact is null
             ? "请先在联系人页显式选择联系人"
             : "请先完成包含可导出语音的扫描";
+
+    public override Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
+    {
+        WorkspacePath = Services.Project.WorkspacePath;
+        ApplyOutputDefaults();
+        return Task.CompletedTask;
+    }
 
     [ObservableProperty]
     private string? _workspacePath;
@@ -80,7 +89,9 @@ public sealed partial class ExportViewModel : PageViewModelBase
     private Task ExportAsync()
     {
         var workspacePath = string.IsNullOrWhiteSpace(WorkspacePath) ? Services.Project.WorkspacePath : WorkspacePath;
-        var outputDirectory = OutputDirectory;
+        var outputDirectory = string.IsNullOrWhiteSpace(OutputDirectory)
+            ? Services.Project.ExportDirectory
+            : OutputDirectory;
         var plan = Services.Project.SelectionPlan;
         var scan = Services.Project.Scan;
         var contact = Services.Project.SelectedContact;
@@ -111,7 +122,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
 
             if (string.IsNullOrWhiteSpace(workspacePath) || string.IsNullOrWhiteSpace(outputDirectory))
             {
-                throw new WeChatVoice.Core.Errors.AppFailureException(WeChatVoice.Core.Errors.ErrorCode.InvalidRequest, "Workspace and output directories are required.");
+                throw new AppFailureException(ErrorCode.InvalidRequest, "导出目录尚未准备好，请返回联系人或扫描页后重新进入导出。 ");
             }
 
             if (!string.IsNullOrWhiteSpace(sessionWorkspacePath)
@@ -247,7 +258,41 @@ public sealed partial class ExportViewModel : PageViewModelBase
     }
 
     partial void OnOutputDirectoryChanged(string? value)
-        => Services.Project.LastExportRun = null;
+    {
+        if (!string.Equals(value, _automaticOutputDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            _automaticOutputDirectory = null;
+        }
+
+        Services.Project.LastExportRun = null;
+    }
+
+    private void ApplyOutputDefaults()
+    {
+        var workspace = Services.Project.Workspace;
+        var contact = Services.Project.SelectedContact;
+        if (workspace is null || contact is null)
+        {
+            return;
+        }
+
+        var recent = Services.RecentWorkspaces.Load().FirstOrDefault(entry =>
+            string.Equals(entry.WorkspacePath, Services.Project.WorkspacePath, StringComparison.OrdinalIgnoreCase));
+        var existing = recent?.LastExportDirectory ?? Services.Project.ExportDirectory;
+        if (!string.IsNullOrWhiteSpace(existing))
+        {
+            OutputDirectory = existing;
+            Services.Project.ExportDirectory = existing;
+            _automaticOutputDirectory = existing;
+            return;
+        }
+
+        var output = new ExportOutputDirectoryFactory(Services.RecentWorkspaces.StorageDirectory)
+            .CreateDefault(workspace.Workspace.WorkspaceId, contact.ContactId);
+        OutputDirectory = output;
+        Services.Project.ExportDirectory = output;
+        _automaticOutputDirectory = output;
+    }
 
     [RelayCommand]
     private async Task BrowseOutputAsync()
@@ -287,6 +332,14 @@ public sealed partial class ExportViewModel : PageViewModelBase
         if (propertyName == nameof(ExportProjectSession.WorkspacePath))
         {
             WorkspacePath = Services.Project.WorkspacePath;
+        }
+
+        if (propertyName is nameof(ExportProjectSession.Workspace)
+            or nameof(ExportProjectSession.SelectedContact)
+            or nameof(ExportProjectSession.Scan)
+            or nameof(ExportProjectSession.SelectionPlan))
+        {
+            ApplyOutputDefaults();
         }
 
         if (propertyName is nameof(ExportProjectSession.SelectedContact)
