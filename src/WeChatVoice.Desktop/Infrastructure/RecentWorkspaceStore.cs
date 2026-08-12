@@ -328,6 +328,14 @@ public sealed class RecentWorkspaceStore
             && Directory.Exists(entry.SnapshotDirectory));
     }
 
+    public RecentSnapshotEntry? FindSnapshotById(string snapshotId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotId);
+        return LoadSnapshots().FirstOrDefault(entry =>
+            string.Equals(entry.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase)
+            && Directory.Exists(entry.SnapshotDirectory));
+    }
+
     private void Save(IReadOnlyList<RecentWorkspaceEntry> entries)
     {
         try

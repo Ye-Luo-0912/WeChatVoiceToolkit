@@ -15,6 +15,7 @@ public sealed partial class MainWindow : Window
     {
         if (DataContext is ViewModels.MainWindowViewModel viewModel)
         {
+            await viewModel.RestoreRecentProjectAsync().ConfigureAwait(true);
             await viewModel.ActivateSelectedPageAsync().ConfigureAwait(true);
         }
     }

@@ -30,6 +30,28 @@ public sealed partial class ContactViewModel : PageViewModelBase
 
     public override string? NavigationHint => CanNavigate ? null : "请先完成物料化或加载 Workspace";
 
+    public override async Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
+    {
+        await base.OnNavigatedToAsync(cancellationToken).ConfigureAwait(false);
+        if (Services.Project.Workspace is null || Contacts.Count > 0 || RunHost.IsRunning)
+        {
+            return;
+        }
+
+        await LoadContactsAsync().ConfigureAwait(false);
+        var recent = Services.RecentWorkspaces.Load().FirstOrDefault(entry =>
+            string.Equals(entry.WorkspacePath, Services.Project.WorkspacePath, StringComparison.OrdinalIgnoreCase));
+        var persisted = Contacts.FirstOrDefault(contact =>
+            (!string.IsNullOrWhiteSpace(recent?.LastContactId)
+                && string.Equals(contact.ContactId, recent.LastContactId, StringComparison.Ordinal))
+            || (!string.IsNullOrWhiteSpace(recent?.LastContactUsername)
+                && string.Equals(contact.Username, recent.LastContactUsername, StringComparison.Ordinal)));
+        if (persisted is not null)
+        {
+            SelectedContact = persisted;
+        }
+    }
+
     [ObservableProperty]
     private string? _workspacePath;
 

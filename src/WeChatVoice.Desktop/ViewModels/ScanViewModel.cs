@@ -44,6 +44,39 @@ public sealed partial class ScanViewModel : PageViewModelBase
             ? $"当前联系人：{contact.DisplayName}  ·  内部 username：{contact.Username}"
             : "尚未选择联系人";
 
+    public override async Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
+    {
+        await base.OnNavigatedToAsync(cancellationToken).ConfigureAwait(false);
+        if (!CanNavigate || Services.Project.Scan is not null || RunHost.IsRunning)
+        {
+            return;
+        }
+
+        var recent = Services.RecentWorkspaces.Load().FirstOrDefault(entry =>
+            string.Equals(entry.WorkspacePath, Services.Project.WorkspacePath, StringComparison.OrdinalIgnoreCase));
+        ApplyRecentQuery(recent?.LastScanQuery);
+        await ScanAsync().ConfigureAwait(false);
+    }
+
+    private void ApplyRecentQuery(RecentScanQuery? query)
+    {
+        if (query is null)
+        {
+            return;
+        }
+
+        DirectionText = query.Direction ?? VoiceDirection.Incoming.ToString();
+        FromText = query.FromUtc;
+        ToText = query.ToUtc;
+        MaximumResultsText = query.MaximumResults?.ToString();
+        DeepScan = query.DeepScan;
+        ResolveDurations = query.ResolveDurations;
+        MinimumDurationMsText = query.MinimumDurationMs?.ToString();
+        MaximumDurationMsText = query.MaximumDurationMs?.ToString();
+        MinimumPayloadBytesText = query.MinimumPayloadBytes?.ToString();
+        MaximumPayloadBytesText = query.MaximumPayloadBytes?.ToString();
+    }
+
     public bool DurationAnalysisAvailable => Services.Workflows.DurationAnalysisAvailable;
 
     /// <summary>A human-readable, non-sensitive decoder status line for the scan page.</summary>

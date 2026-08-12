@@ -109,6 +109,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
         return NavigationTask;
     }
 
+    public Task RestoreRecentProjectAsync(CancellationToken cancellationToken = default)
+        => Pages.OfType<ResumeViewModel>().Single().EnsureRecentProjectLoadedAsync(cancellationToken);
+
     public void CancelNavigation()
     {
         lock (_navigationSync)

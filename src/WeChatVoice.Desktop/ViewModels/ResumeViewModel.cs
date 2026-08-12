@@ -51,8 +51,18 @@ public sealed partial class ResumeViewModel : PageViewModelBase
 
     public override async Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
     {
-        await RefreshAsync().ConfigureAwait(false);
+        await EnsureRecentProjectLoadedAsync(cancellationToken).ConfigureAwait(false);
         await base.OnNavigatedToAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Restores the newest verified project into the application session. This
+    /// is callable by the shell before any page is opened, so navigating
+    /// directly to Contacts/Scan/Export does not require visiting this page.
+    /// </summary>
+    public async Task EnsureRecentProjectLoadedAsync(CancellationToken cancellationToken = default)
+    {
+        await RefreshAsync().ConfigureAwait(false);
         if (!_autoResumeAttempted && Projects.FirstOrDefault(static item => item.CanContinue) is not null)
         {
             _autoResumeAttempted = true;
@@ -129,6 +139,7 @@ public sealed partial class ResumeViewModel : PageViewModelBase
                 Services.Project.WorkspacePath = result.WorkspacePath;
                 Services.Project.ExportDirectory = selected.LastExportDirectory;
                 Services.Project.DatasetOutputDirectory = selected.LastDatasetDirectory;
+                RestoreSnapshotReference(result.Workspace);
                 Services.Project.ClearVoiceSelection(clearContact: true);
                 Services.RecentWorkspaces.Add(result.Workspace, result.WorkspacePath);
 
@@ -180,6 +191,49 @@ public sealed partial class ResumeViewModel : PageViewModelBase
         {
             ContinueSummary = $"已自动继续最近项目：已复用 Workspace、联系人、扫描结果和输出目录。";
             NavigateToLastPage(selected.LastPage);
+        }
+    }
+
+    private void RestoreSnapshotReference(VerifiedLocalWorkspace workspace)
+    {
+        var snapshotId = workspace.Workspace.Provenance?.SourceSnapshotId;
+        if (string.IsNullOrWhiteSpace(snapshotId))
+        {
+            return;
+        }
+
+        var recent = Services.RecentWorkspaces.FindSnapshotById(snapshotId);
+        if (recent is null)
+        {
+            return;
+        }
+
+        var manifestPath = Path.Combine(recent.SnapshotDirectory, ".wechatvoice", "snapshot-manifest.json");
+        try
+        {
+            if (!File.Exists(manifestPath))
+            {
+                return;
+            }
+
+            var manifest = System.Text.Json.JsonSerializer.Deserialize<SnapshotManifest>(File.ReadAllText(manifestPath));
+            if (manifest is null
+                || !string.Equals(manifest.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(Path.GetFullPath(manifest.SnapshotDirectory), Path.GetFullPath(recent.SnapshotDirectory), StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            Services.Project.Snapshot = new SnapshotWorkflowResult(
+                manifest,
+                SnapshotSourceIdentity.TryDerive(manifest.SourceDirectory, manifest.Files),
+                manifestPath);
+            Services.Project.SnapshotDirectory = recent.SnapshotDirectory;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+        {
+            // Workspace reuse remains valid even if the optional historical
+            // snapshot index is unavailable.
         }
     }
 
