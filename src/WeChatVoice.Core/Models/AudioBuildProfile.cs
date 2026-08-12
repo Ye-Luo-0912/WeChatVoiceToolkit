@@ -14,7 +14,12 @@ namespace WeChatVoice.Core.Models;
 public sealed record AudioBuildProfile
 {
     public const string CurrentVersion = "audio-build-v1";
-    public const int DefaultSampleRate = 24000;
+    /// <summary>
+    /// Default training rate.  SILK is decoded to mono, signed 16-bit PCM WAV
+    /// at 48 kHz so the result is immediately usable by common speech
+    /// training pipelines.  The original SILK remains untouched.
+    /// </summary>
+    public const int DefaultSampleRate = 48000;
 
     public AudioBuildProfile(
         int SampleRate = DefaultSampleRate,

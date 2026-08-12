@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using WeChatVoice.Core.Errors;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Core.Ports;
+using WeChatVoice.Infrastructure.Audio;
 using WeChatVoice.Infrastructure.Serialization;
 
 namespace WeChatVoice.Infrastructure.Export;
@@ -38,10 +39,12 @@ public sealed class DatasetBuildService
     };
 
     private readonly IVoiceDecoderFactory? _decoderFactory;
+    private readonly FfmpegWavNormalizer? _ffmpegNormalizer;
 
-    public DatasetBuildService(IVoiceDecoderFactory? decoderFactory = null)
+    public DatasetBuildService(IVoiceDecoderFactory? decoderFactory = null, FfmpegWavNormalizer? ffmpegNormalizer = null)
     {
         _decoderFactory = decoderFactory;
+        _ffmpegNormalizer = ffmpegNormalizer;
     }
 
     public async Task<DatasetBuildResult> BuildAsync(
@@ -140,7 +143,7 @@ public sealed class DatasetBuildService
                 {
                     var relativeWavPath = "audio/" + itemId + ".wav";
                     var wavDestinationPath = ExportPathSafety.CombineUnderRoot(stagingRoot, relativeWavPath);
-                    var durationMs = await DecodeToWavAsync(decoder!, sourcePath, wavDestinationPath, entry, cancellationToken).ConfigureAwait(false);
+                    var durationMs = await DecodeToWavAsync(decoder!, sourcePath, wavDestinationPath, entry, audioProfile, _ffmpegNormalizer, cancellationToken).ConfigureAwait(false);
                     var wavMetadata = await FileHashing.ComputeMetadataAsync(wavDestinationPath, cancellationToken).ConfigureAwait(false);
                     datasetItems.Add(new VoiceDatasetEntry(
                         itemId,
@@ -329,7 +332,7 @@ public sealed class DatasetBuildService
         try
         {
             var sourcePath = ResolveArtifactPath(exportRoot, match.OriginalPath);
-            var decoded = await DecodeToWavAsync(decoder, sourcePath, destinationPath, match, cancellationToken).ConfigureAwait(false);
+            var decoded = await DecodeToWavAsync(decoder, sourcePath, destinationPath, match, new AudioBuildProfile(sampleRate), _ffmpegNormalizer, cancellationToken).ConfigureAwait(false);
             var metadata = new FileInfo(destinationPath);
             return new DatasetPreviewDecodeResult(itemId, destinationPath, metadata.Length, decoded.DurationMs, decoderIdentity);
         }
@@ -1442,6 +1445,8 @@ public sealed class DatasetBuildService
         string sourcePath,
         string destinationPath,
         VoiceExportEntry entry,
+        AudioBuildProfile audioProfile,
+        FfmpegWavNormalizer? ffmpegNormalizer,
         CancellationToken cancellationToken)
     {
         await VerifyArtifactAsync(sourcePath, entry.OriginalByteLength, entry.OriginalSha256, cancellationToken).ConfigureAwait(false);
@@ -1463,6 +1468,11 @@ public sealed class DatasetBuildService
         {
             await decoder.DecodeAsync(input, output, cancellationToken).ConfigureAwait(false);
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (ffmpegNormalizer is not null)
+        {
+            await ffmpegNormalizer.NormalizeAsync(destinationPath, audioProfile.SampleRate, audioProfile.Mono, cancellationToken).ConfigureAwait(false);
         }
 
         if (!File.Exists(destinationPath) || new FileInfo(destinationPath).Length == 0)

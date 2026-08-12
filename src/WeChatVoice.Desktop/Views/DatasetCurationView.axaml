@@ -3,97 +3,81 @@
              xmlns:vm="using:WeChatVoice.Desktop.ViewModels"
              x:Class="WeChatVoice.Desktop.Views.DatasetCurationView"
              x:DataType="vm:DatasetCurationViewModel">
-  <DockPanel Margin="24">
-    <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,12,0,0">
-      <ProgressBar IsVisible="{Binding RunHost.IsRunning}" Value="{Binding RunHost.PercentComplete}" Minimum="0" Maximum="100" />
-      <TextBlock Text="{Binding RunHost.StageMessage}" />
-      <TextBlock Text="{Binding RunHost.LastError}" Foreground="Red" />
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="28" RowSpacing="18">
+    <StackPanel Grid.Row="0" Spacing="4">
+      <TextBlock Text="语音播放器" FontSize="30" FontWeight="Bold" Foreground="#F8FAFC" />
+      <TextBlock Text="已导出的语音 · 校验、试听并生成训练集" Foreground="#94A3B8" FontSize="15" />
     </StackPanel>
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-    <StackPanel Spacing="14" MaxWidth="1200">
-      <TextBlock FontSize="24" FontWeight="SemiBold" Text="数据集整理" />
-      <TextBlock Foreground="#94A3B8" Text="从已导出的 SILK 中筛选训练样本。原始 SILK 永远不会被修改。推荐顺序：加载候选 → 勾选样本 → 构建 WAV 数据集。" TextWrapping="Wrap" />
-
-      <Border Background="#111827" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="16">
-        <StackPanel Spacing="8">
-          <TextBlock FontSize="16" FontWeight="SemiBold" Text="1 · 筛选候选语音" />
-          <TextBlock Text="{Binding ExportDirectory}" TextWrapping="Wrap" Foreground="#94A3B8" />
-          <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="8">
-            <TextBox Grid.Column="0" Text="{Binding MinimumDurationMsText}" PlaceholderText="最短时长 ms" />
-            <TextBox Grid.Column="1" Text="{Binding MaximumDurationMsText}" PlaceholderText="最长时长 ms" />
-            <TextBox Grid.Column="2" Text="{Binding MinimumByteLengthText}" PlaceholderText="最小大小 bytes" />
-            <TextBox Grid.Column="3" Text="{Binding MaximumByteLengthText}" PlaceholderText="最大大小 bytes" />
-          </Grid>
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <ComboBox ItemsSource="{Binding DirectionScopes}" SelectedIndex="{Binding DirectionScopeIndex}" Width="120" />
-            <CheckBox Content="显示未知时长（不可训练）" IsChecked="{Binding ShowUnknownDuration}" />
-            <TextBox Width="280" Text="{Binding ExcludedQualityFlagsText}" PlaceholderText="排除质量标志（可选）" />
-            <Button Content="加载候选" Command="{Binding LoadCommand}" IsEnabled="{Binding CanStartOperation}" />
-            <Button Content="加载上次筛选" Command="{Binding LoadProfileCommand}" IsEnabled="{Binding CanStartOperation}" />
-          </StackPanel>
+    <Border Grid.Row="1" Background="#111C32" BorderBrush="#263A5A" BorderThickness="1" CornerRadius="14" Padding="18">
+      <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="28">
+        <StackPanel Spacing="3">
+          <TextBlock Text="当前导出" Foreground="#94A3B8" />
+          <TextBlock Text="{Binding ExportDirectory}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
         </StackPanel>
+        <StackPanel Grid.Column="1" Spacing="2">
+          <TextBlock Text="语音" Foreground="#94A3B8" />
+          <TextBlock Text="{Binding Items.Count}" FontSize="22" FontWeight="Bold" />
+        </StackPanel>
+        <StackPanel Grid.Column="2" Spacing="2">
+          <TextBlock Text="可训练" Foreground="#94A3B8" />
+          <TextBlock Text="{Binding HasEligibleCandidates, StringFormat='就绪：{0}'}" FontSize="16" FontWeight="SemiBold" />
+        </StackPanel>
+        <StackPanel Grid.Column="3" Spacing="2">
+          <TextBlock Text="已选" Foreground="#94A3B8" />
+          <TextBlock Text="{Binding SelectedCount}" FontSize="22" FontWeight="Bold" Foreground="#60A5FA" />
+        </StackPanel>
+        <StackPanel Grid.Column="4" Spacing="2">
+          <TextBlock Text="总时长" Foreground="#94A3B8" />
+          <TextBlock Text="{Binding SelectedDurationMs}" FontSize="16" FontWeight="SemiBold" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="12">
+      <Border Grid.Row="0" Background="#172554" BorderBrush="#3B82F6" BorderThickness="1" CornerRadius="14" Padding="16">
+        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="10">
+          <StackPanel Spacing="4">
+            <TextBlock Text="训练集" FontSize="18" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding TrainingFormatSummary}" Foreground="#BFDBFE" />
+            <TextBlock Text="{Binding PlaybackSummary}" Foreground="#93C5FD" />
+            <TextBlock Text="{Binding BuiltDatasetSummary}" Foreground="#93C5FD" TextTrimming="CharacterEllipsis" />
+          </StackPanel>
+          <Button Grid.Column="1" Content="重新读取" Command="{Binding LoadCommand}" IsEnabled="{Binding CanStartOperation}" />
+          <Button Grid.Column="2" Content="全选可训练" Command="{Binding PrepareTrainingCommand}" IsEnabled="{Binding HasEligibleCandidates}" />
+          <Button Grid.Column="3" Content="一键生成训练集" Command="{Binding BuildTrainingSetCommand}" IsEnabled="{Binding CanStartOperation}" Background="#2563EB" FontWeight="SemiBold" />
+        </Grid>
       </Border>
 
-      <Border Background="#172554" BorderBrush="#3B82F6" BorderThickness="1" CornerRadius="10" Padding="16">
-        <StackPanel Spacing="8">
-          <TextBlock FontSize="16" FontWeight="SemiBold" Text="2 · 选择训练样本" />
-          <TextBlock Text="{Binding CurationSummary}" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding CandidateReadinessHint}" TextWrapping="Wrap" Foreground="#93C5FD" />
-          <StackPanel Orientation="Horizontal" Spacing="10">
-            <TextBlock Text="{Binding DecoderHint}" Foreground="#FBBF24" VerticalAlignment="Center" />
-            <Button Content="配置解码器" Command="{Binding ConfigureDecoderCommand}" />
+      <Border Grid.Row="1" Background="#0B1327" BorderBrush="#334155" BorderThickness="1" CornerRadius="14" Padding="14">
+        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+          <Border Width="44" Height="44" CornerRadius="22" Background="#2563EB">
+            <TextBlock Text="▶" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+            <TextBlock Text="试听控制" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding ProfileSummary}" Foreground="#94A3B8" TextTrimming="CharacterEllipsis" />
           </StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <Button Content="全选可训练" Command="{Binding SelectAllEligibleCommand}" IsEnabled="{Binding HasEligibleCandidates}" />
-            <Button Content="清除选择" Command="{Binding ClearSelectionsCommand}" IsEnabled="{Binding HasCandidates}" />
-            <Button Content="保存筛选" Command="{Binding SaveProfileCommand}" IsEnabled="{Binding HasCandidates}" />
-            <Button Content="停止试听" Command="{Binding StopPreviewCommand}" IsEnabled="{Binding CanStartOperation}" />
-          </StackPanel>
-          <TextBlock Text="{Binding SelectedCount, StringFormat='已选 {0} 条 · 时长 {1}'}" />
-          <TextBlock Text="{Binding SelectedDurationMs, StringFormat='训练总时长：{0} ms'}" Foreground="#93C5FD" />
-        </StackPanel>
+          <Button Grid.Column="2" Content="停止" Command="{Binding StopPreviewCommand}" VerticalAlignment="Center" />
+        </Grid>
       </Border>
 
-      <Border Background="#111827" BorderBrush="#334155" BorderThickness="1" CornerRadius="10" Padding="16">
-        <StackPanel Spacing="8">
-          <TextBlock FontSize="16" FontWeight="SemiBold" Text="3 · 构建训练数据集" />
-          <TextBlock Text="{Binding DatasetOutputHint}" TextWrapping="Wrap" Foreground="#94A3B8" />
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBox Width="100" Text="{Binding SampleRateText}" PlaceholderText="采样率" />
-            <CheckBox Content="单声道" IsChecked="{Binding Mono}" VerticalAlignment="Center" />
-            <Button Content="构建 WAV 数据集" Command="{Binding BuildDatasetCommand}" IsEnabled="{Binding CanBuildDataset}" />
-            <Button Content="验证" Command="{Binding VerifyDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
-            <Button Content="修复元数据" Command="{Binding RepairDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
-          </StackPanel>
-          <TextBlock Text="{Binding BuildSummary}" TextWrapping="Wrap" />
-        </StackPanel>
-      </Border>
-
-      <Expander Header="高级：删除派生数据集" IsExpanded="False">
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Width="180" Text="{Binding DeleteConfirmationText}" PlaceholderText="输入 DELETE" />
-        <Button Content="删除派生数据集" Command="{Binding DeleteDatasetCommand}" IsEnabled="{Binding CanStartOperation}" />
-      </StackPanel>
-      </Expander>
-      <TextBlock Text="{Binding ProfileSummary}" TextWrapping="Wrap" Foreground="#93C5FD" />
-      <TextBlock Text="当前选择尚未保存；构建时会自动保存" IsVisible="{Binding SelectionDirty}" Foreground="DarkOrange" />
-
-      <ListBox ItemsSource="{Binding Items}" Height="430" IsVisible="{Binding HasCandidates}">
+      <ListBox Grid.Row="2" ItemsSource="{Binding Items}" IsVisible="{Binding HasCandidates}" Background="#0F172A" BorderBrush="#263A5A" BorderThickness="1" Padding="8">
         <ListBox.ItemTemplate>
           <DataTemplate x:DataType="vm:DatasetCurationItemViewModel">
-            <Border Background="#111827" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,6">
-              <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="40,*,Auto" RowSpacing="5">
+            <Border Background="#111C32" BorderBrush="#263A5A" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,0,0,8">
+              <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="14" RowSpacing="4">
                 <CheckBox Grid.RowSpan="2" Grid.Column="0" IsChecked="{Binding IsSelected, Mode=TwoWay}" IsEnabled="{Binding CanSelect}" VerticalAlignment="Center" />
-                <StackPanel Grid.Row="0" Grid.Column="1" Spacing="2">
-                  <TextBlock Text="{Binding RelativeAudioPath}" TextTrimming="CharacterEllipsis" />
-                  <TextBlock Text="{Binding ItemId}" Foreground="#94A3B8" FontSize="12" />
+                <StackPanel Grid.Column="1" Spacing="3">
+                  <TextBlock Text="{Binding RelativeAudioPath}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
+                  <StackPanel Orientation="Horizontal" Spacing="12">
+                    <TextBlock Text="{Binding DurationText, StringFormat='时长 {0} ms'}" Foreground="#94A3B8" />
+                    <TextBlock Text="{Binding ByteLength, StringFormat='大小 {0} bytes'}" Foreground="#94A3B8" />
+                  </StackPanel>
                 </StackPanel>
-                <Button Grid.RowSpan="2" Grid.Column="2" Content="{Binding PreviewButtonText}" Command="{Binding PreviewCommand}" IsEnabled="{Binding CanPreview}" VerticalAlignment="Center" />
+                <Button Grid.RowSpan="2" Grid.Column="2" Content="{Binding PreviewButtonText}" Command="{Binding PreviewCommand}" IsEnabled="{Binding CanPreview}" VerticalAlignment="Center" MinWidth="78" />
                 <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="16">
-                  <TextBlock Text="{Binding DurationText, StringFormat='时长：{0} ms'}" Foreground="#93C5FD" />
-                  <TextBlock Text="{Binding ByteLength, StringFormat='大小：{0} bytes'}" Foreground="#CBD5E1" />
-                  <TextBlock Text="{Binding Direction}" Foreground="#CBD5E1" />
+                  <TextBlock Text="{Binding Direction}" Foreground="#60A5FA" />
                   <TextBlock Text="{Binding TrainingEligibility}" Foreground="#FBBF24" />
                   <TextBlock Text="{Binding QualityFlags}" Foreground="#94A3B8" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
@@ -102,7 +86,25 @@
           </DataTemplate>
         </ListBox.ItemTemplate>
       </ListBox>
+
+      <Border Grid.Row="2" IsVisible="{Binding !HasCandidates}" Background="#111C32" BorderBrush="#263A5A" BorderThickness="1" CornerRadius="14" Padding="32">
+        <StackPanel HorizontalAlignment="Center" Spacing="8">
+          <TextBlock Text="还没有可播放的语音" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" />
+          <TextBlock Text="完成一次原始 SILK 导出后，这里会自动出现语音列表。" Foreground="#94A3B8" HorizontalAlignment="Center" />
+        </StackPanel>
+      </Border>
+
+      <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="10">
+        <Button Content="停止播放" Command="{Binding StopPreviewCommand}" IsEnabled="{Binding CanStartOperation}" />
+        <Button Content="校验训练集" Command="{Binding VerifyDatasetCommand}" IsEnabled="{Binding HasBuiltDataset}" />
+        <TextBlock Text="{Binding BuildSummary}" Foreground="#93C5FD" VerticalAlignment="Center" TextWrapping="Wrap" />
+      </StackPanel>
+    </Grid>
+
+    <StackPanel Grid.Row="3" Spacing="5">
+      <ProgressBar IsVisible="{Binding RunHost.IsRunning}" IsIndeterminate="{Binding !RunHost.HasPercent}" Minimum="0" Maximum="100" Value="{Binding RunHost.PercentCompleteOrZero}" />
+      <TextBlock Text="{Binding RunHost.StageMessage}" Foreground="#93C5FD" />
+      <TextBlock Text="{Binding RunHost.LastError}" Foreground="#FCA5A5" TextWrapping="Wrap" />
     </StackPanel>
-    </ScrollViewer>
-  </DockPanel>
+  </Grid>
 </UserControl>

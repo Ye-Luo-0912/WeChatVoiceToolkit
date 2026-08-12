@@ -84,7 +84,10 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         DatasetCuration = datasetCuration
             ?? new DatasetCurationWorkflow(
                 datasetBuildService: new DatasetBuildService(
-                    new SilkVoiceDecoderFactory(_decoderConfiguration)));
+                    new SilkVoiceDecoderFactory(_decoderConfiguration),
+                    FfmpegLocator.Discover() is { } ffmpegPath
+                        ? new FfmpegWavNormalizer(ffmpegPath)
+                        : null));
         StorageLifecycle = storageLifecycle
             ?? new StorageLifecycleWorkflow(
                 inventory: new ManagedStorageInventory(storageRoots));

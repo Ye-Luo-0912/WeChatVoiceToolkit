@@ -197,7 +197,7 @@ For high-volume duration work, a reviewed decoder may expose the resident
 worker process alive, sends one bounded JSONL request at a time, and exchanges
 only temporary input/output paths. Worker stdout is protocol-only and stderr is
 bounded. The worker executable must support `--worker --protocol
-wechatvoice-decoder-jsonl-v1 --sample-rate 24000`.
+wechatvoice-decoder-jsonl-v1 --sample-rate 48000`.
 
 Scan results are persisted and reused across restarts: a `ScanCacheService`
 binds each prepared selection to the verified workspace identity and the query
@@ -273,10 +273,10 @@ wechatvoice dataset verify --export <export-root> --output <dataset-root>
 wechatvoice dataset repair --export <export-root> --output <dataset-root>
 ```
 
-Dataset curation is training-ready in the Desktop "数据集整理" page: direction
-selection (incoming/outgoing/both), WAV build settings (sample rate / mono),
-and a per-item audio preview. Building with an `AudioBuildProfile` decodes the
-selected SILK into validated PCM WAV under `audio/*.wav` (the source SILK is
-never modified); the build carries a combined selection+audio fingerprint, so
-a changed profile produces a new build identity instead of overwriting an old
-one. Verify/repair/delete cover WAV derived artifacts.
+Dataset curation is a single player-style workbench in the Desktop "数据集整理"
+page. It automatically reuses the last export and selection profile; the normal
+path is preview, select, and “一键生成训练集”. The default output is validated
+ mono PCM WAV at 48 kHz / 16-bit (about 768 kbps). If FFmpeg is discoverable in
+PATH or the user's WinGet FFmpeg package, it is used after decoding with fixed
+arguments to normalize the WAV; the source SILK is never modified. Verify and
+repair remain available for the derived training set.

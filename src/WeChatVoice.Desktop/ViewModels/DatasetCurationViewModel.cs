@@ -8,9 +8,9 @@ using WeChatVoice.Desktop.Infrastructure;
 namespace WeChatVoice.Desktop.ViewModels;
 
 /// <summary>
-/// Explicit dataset curation page.  It starts with no training selections;
-/// filters only narrow the candidate view and a user click is required before
-/// an item contributes to training totals.
+/// Single-workbench dataset page.  Existing export state is loaded on entry;
+/// the normal path is load, preview, select, and build one high-quality WAV
+/// training set without re-entering paths or repeating the export workflow.
 /// </summary>
 public sealed partial class DatasetCurationViewModel : PageViewModelBase
 {
@@ -37,6 +37,22 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     public bool HasSelection => SelectedCount > 0;
 
     public bool CanBuildDataset => CanStartOperation && _result is not null && HasSelection;
+
+    public bool HasBuiltDataset => !string.IsNullOrWhiteSpace(DatasetOutputDirectory)
+        && Directory.Exists(DatasetOutputDirectory);
+
+    public string BuiltDatasetSummary
+        => HasBuiltDataset
+            ? $"训练集已就绪：{DatasetOutputDirectory}"
+            : "尚未生成训练集；选择样本后点击“一键生成训练集”。";
+
+    public string TrainingFormatSummary
+        => $"默认输出：WAV PCM · {SampleRate / 1000} kHz · 16-bit · {(Mono ? "单声道" : "双声道")}（适合训练）";
+
+    public string PlaybackSummary
+        => Services.Workflows.DecoderStatusReport.Status == DecoderStatus.Available
+            ? "试听已就绪：点击列表右侧“试听”；内置解码器会自动工作。"
+            : "试听暂不可用：请检查内置解码器文件。";
 
     public string DatasetOutputHint
         => string.IsNullOrWhiteSpace(DatasetOutputDirectory)
@@ -111,6 +127,11 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         get => SampleRate.ToString();
         set => SampleRate = int.TryParse(value, out var parsed) && parsed > 0 ? parsed : SampleRate;
     }
+
+    partial void OnSampleRateChanged(int value)
+    {
+        OnPropertyChanged(nameof(TrainingFormatSummary));
+    }
     [ObservableProperty] private string? _deleteConfirmationText;
     [ObservableProperty] private string? _curationSummary;
     [ObservableProperty] private string? _profileSummary;
@@ -134,9 +155,23 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         UpdatePreviewAvailability();
         if (CanNavigate && _result is null && !RunHost.IsRunning)
         {
-            await LoadAsync().ConfigureAwait(false);
+            // A resumed session may have a persisted profile but no in-memory
+            // result. Rehydrate it through the normal workflow host so UI
+            // state and operation errors stay consistent.
+            if (!string.IsNullOrWhiteSpace(ExportDirectory)
+                && File.Exists(DatasetSelectionProfileStorePath(ExportDirectory)))
+            {
+                await LoadProfileAsync().ConfigureAwait(true);
+            }
+            else
+            {
+                await LoadAsync().ConfigureAwait(true);
+            }
         }
     }
+
+    private static string DatasetSelectionProfileStorePath(string exportDirectory)
+        => Path.Combine(Path.GetFullPath(exportDirectory), "selection-profile.json");
 
     [RelayCommand]
     private Task LoadAsync()
@@ -160,6 +195,58 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
                 context,
                 cancellationToken).ConfigureAwait(false),
             ApplyResult);
+    }
+
+    /// <summary>Loads the current export and automatically selects all eligible
+    /// non-duplicate samples.  This is the normal one-click path.</summary>
+    [RelayCommand]
+    private async Task PrepareTrainingAsync()
+    {
+        if (_result is null)
+        {
+            await LoadAsync().ConfigureAwait(true);
+        }
+
+        if (!HasCandidates)
+        {
+            return;
+        }
+
+        SelectAllEligible();
+    }
+
+    /// <summary>Normal user path: load, select all eligible items, and build
+    /// the default 48 kHz WAV dataset without exposing implementation steps.</summary>
+    [RelayCommand]
+    private async Task BuildTrainingSetAsync()
+    {
+        if (_result is null)
+        {
+            await LoadAsync().ConfigureAwait(true);
+        }
+
+        if (!HasCandidates)
+        {
+            BuildSummary = "没有可用的已导出语音。请先完成语音导出。";
+            return;
+        }
+
+        if (!HasSelection)
+        {
+            SelectAllEligible();
+        }
+
+        if (!HasSelection)
+        {
+            BuildSummary = "没有满足训练条件的语音；请先完成时长分析或调整扫描范围。";
+            return;
+        }
+
+        await BuildDatasetAsync().ConfigureAwait(true);
+        if (!RunHost.IsRunning && HasBuiltDataset)
+        {
+            await VerifyDatasetAsync().ConfigureAwait(true);
+        }
     }
 
     [RelayCommand]
@@ -193,7 +280,6 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         var exportDirectory = string.IsNullOrWhiteSpace(ExportDirectory)
             ? Services.Project.ExportDirectory
             : ExportDirectory;
-        var outputDirectory = DatasetOutputDirectory;
         var result = _result;
         if (result is null)
         {
@@ -208,8 +294,13 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         return RunHost.RunAsync<DatasetBuildResult>(
             async (context, cancellationToken) => await Workflows.DatasetCuration.BuildDatasetAsync(
                 new DatasetBuildRequest(
-                    exportDirectory ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required."),
-                    OutputDirectory: string.IsNullOrWhiteSpace(outputDirectory) ? null : outputDirectory,
+                    exportDirectory
+                        ?? throw new AppFailureException(ErrorCode.InvalidRequest, "Export directory is required."),
+                    // The build fingerprint determines the output folder. Do
+                    // not reuse a stale path from an older selection/profile;
+                    // this is what makes repeated runs idempotent and avoids
+                    // the former InvalidRequest loop after a profile change.
+                    OutputDirectory: null,
                     Profile: profile,
                     AudioProfile: audioProfile),
                 context,
@@ -231,6 +322,8 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
                 {
                     BuildSummary += $" 音频 Profile：{Short(result.AudioProfileFingerprint)}；Decoder：{result.DecoderIdentity ?? "未知"}。";
                 }
+                OnPropertyChanged(nameof(HasBuiltDataset));
+                OnPropertyChanged(nameof(BuiltDatasetSummary));
             });
     }
 
@@ -273,6 +366,13 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             ? Services.Project.ExportDirectory
             : ExportDirectory;
         var outputDirectory = DatasetOutputDirectory;
+        if (string.IsNullOrWhiteSpace(outputDirectory) && _result is not null)
+        {
+            outputDirectory = Path.Combine(
+                Path.GetFullPath(exportDirectory!),
+                "datasets",
+                DatasetBuildFingerprint.Compute(_result.SelectionFingerprint, CreateAudioProfile()));
+        }
         return RunHost.RunAsync<DatasetBuildVerificationResult>(
             async (context, cancellationToken) => await Workflows.DatasetCuration.VerifyDatasetAsync(
                 new DatasetBuildRequest(
@@ -322,6 +422,14 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             loaded => profile = loaded).ConfigureAwait(true);
         if (profile is null) return;
 
+        ApplyProfileFilters(profile);
+        _profileToApply = profile;
+        ProfileSummary = $"已加载 Profile：{profile.SelectedItemIds.Count} 条；重新加载以验证 Manifest 绑定。";
+        await LoadAsync().ConfigureAwait(true);
+    }
+
+    private void ApplyProfileFilters(DatasetSelectionProfile profile)
+    {
         MinimumDurationMsText = Format(profile.Filters.MinimumDurationMs);
         MaximumDurationMsText = Format(profile.Filters.MaximumDurationMs);
         MinimumByteLengthText = Format(profile.Filters.MinimumByteLength);
@@ -329,9 +437,6 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         ShowUnknownDuration = profile.Filters.ShowUnknownDuration;
         DirectionScope = profile.Filters.DirectionScope ?? DatasetDirectionScope.Both;
         ExcludedQualityFlagsText = string.Join(',', profile.Filters.ExcludedQualityFlags);
-        _profileToApply = profile;
-        ProfileSummary = $"已加载 Profile：{profile.SelectedItemIds.Count} 条；重新加载以验证 Manifest 绑定。";
-        await LoadAsync().ConfigureAwait(true);
     }
 
     [RelayCommand]
@@ -382,6 +487,13 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             OnPropertyChanged(nameof(HasEligibleCandidates));
             OnPropertyChanged(nameof(CandidateReadinessHint));
         }
+    }
+
+    partial void OnDatasetOutputDirectoryChanged(string? value)
+    {
+        OnPropertyChanged(nameof(HasBuiltDataset));
+        OnPropertyChanged(nameof(BuiltDatasetSummary));
+        OnPropertyChanged(nameof(DatasetOutputHint));
     }
 
     partial void OnMinimumDurationMsTextChanged(string? value) => SelectionDirty = true;
@@ -451,6 +563,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         OnPropertyChanged(nameof(HasCandidates));
         OnPropertyChanged(nameof(HasEligibleCandidates));
         OnPropertyChanged(nameof(CandidateReadinessHint));
+        OnPropertyChanged(nameof(BuiltDatasetSummary));
     }
 
     private void UpdatePreviewAvailability()
