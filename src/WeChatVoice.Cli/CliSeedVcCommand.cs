@@ -83,7 +83,33 @@ internal static partial class CliApplication
             catch (Exception exception) { WriteError(exception); return 1; }
         });
 
-        command.Subcommands.Add(doctor); command.Subcommands.Add(prepare); command.Subcommands.Add(train);
+        var infer = new Command("infer", "Convert a source recording to the trained speaker voice.");
+        var inferRoot = new Option<string>("--seedvc-root") { Required = true };
+        var source = new Option<string>("--source") { Required = true };
+        var reference = new Option<string>("--reference") { Required = true };
+        var checkpoint = new Option<string>("--checkpoint") { Required = true };
+        var inferConfig = new Option<string?>("--config");
+        var inferPython = new Option<string?>("--python");
+        var inferOut = new Option<string?>("--out");
+        var inferRun = new Option<string?>("--run-name");
+        var diffusion = new Option<int>("--diffusion-steps") { DefaultValueFactory = _ => 50 };
+        infer.Options.Add(inferRoot); infer.Options.Add(source); infer.Options.Add(reference); infer.Options.Add(checkpoint); infer.Options.Add(inferConfig); infer.Options.Add(inferPython); infer.Options.Add(inferOut); infer.Options.Add(inferRun); infer.Options.Add(diffusion);
+        infer.SetAction(async (parseResult, cancellationToken) =>
+        {
+            try
+            {
+                await using var workflowRoot = CreateRoot();
+                var result = await workflowRoot.SeedVc.InferAsync(
+                    new SeedVcInferRequest(parseResult.GetValue(inferRoot)!, parseResult.GetValue(source)!, parseResult.GetValue(reference)!, parseResult.GetValue(checkpoint)!, parseResult.GetValue(inferConfig), parseResult.GetValue(inferPython), parseResult.GetValue(inferOut), parseResult.GetValue(inferRun), parseResult.GetValue(diffusion)),
+                    new WorkflowContext(workflowRoot.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)), cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return result.Status == SeedVcInferStatus.Completed ? 0 : 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 130; }
+            catch (Exception exception) { WriteError(exception); return 1; }
+        });
+
+        command.Subcommands.Add(doctor); command.Subcommands.Add(prepare); command.Subcommands.Add(train); command.Subcommands.Add(infer);
         return command;
     }
 }

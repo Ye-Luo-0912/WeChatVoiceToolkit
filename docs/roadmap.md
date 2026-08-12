@@ -173,9 +173,10 @@ normalizes to mono PCM, splits long recordings into 1–30 second clips, keeps
 phone anchors with an explicit weight, and persists a content/profile
 fingerprint so a verified result is reused. Training remains an external
 Seed-VC checkout: the host passes a fixed argv list to `train.py`, captures a
-bounded local log, and records run provenance/checkpoint hashes. The next
-increment is the Desktop P1 wizard and a reviewed inference/preview port;
-neither is silently implied by the P0 CLI commands.
+bounded local log, and records run provenance/checkpoint hashes. The Desktop
+panel and explicit-argv inference bridge are now implemented; remaining work
+is folder pickers and checkpoint preview polish, while Python/CUDA remains an
+external dependency.
 
 1. Recover voice duration from a verified message metadata field only if the
    user supplies schema evidence and test data for that field. Until then,

@@ -16,4 +16,8 @@
     <PackageReference Include="SQLitePCLRaw.provider.winsqlite3" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\..\tools\seedvc\seedvc_infer.py" Link="seedvc_infer.py" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

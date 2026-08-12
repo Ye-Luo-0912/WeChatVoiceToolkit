@@ -30,6 +30,9 @@ artifacts/
 .env
 .env.*
 tools/
+!tools/
+!tools/seedvc/
+!tools/seedvc/seedvc_infer.py
 
 # Seed-VC local preparation, runs, logs, and checkpoints
 /seedvc-prep/

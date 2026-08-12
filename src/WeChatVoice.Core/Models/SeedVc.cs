@@ -26,6 +26,13 @@ public enum SeedVcTrainStatus
     Cancelled,
 }
 
+public enum SeedVcInferStatus
+{
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 /// <summary>
 /// Deterministic, local-only preparation policy for Seed-VC fine-tuning.
 /// The policy intentionally stays independent from Python and CUDA versions.
@@ -224,3 +231,49 @@ public sealed record SeedVcTrainResult(
     SeedVcTrainStatus Status,
     int? ExitCode,
     IReadOnlyList<SeedVcCheckpoint> Checkpoints);
+
+/// <summary>One explicit Seed-VC voice-conversion invocation.</summary>
+public sealed record SeedVcInferRequest(
+    string SeedVcRoot,
+    string SourceAudioPath,
+    string ReferenceAudioPath,
+    string CheckpointPath,
+    string? ConfigPath = null,
+    string? PythonPath = null,
+    string? OutputDirectory = null,
+    string? RunName = null,
+    int DiffusionSteps = 50,
+    double LengthAdjust = 1.0,
+    double InferenceCfgRate = 0.7,
+    bool Fp16 = true);
+
+public sealed record SeedVcInferManifest(
+    string RunId,
+    string RunName,
+    string SourceSha256,
+    string ReferenceSha256,
+    string CheckpointSha256,
+    string? ConfigSha256,
+    string PythonCommand,
+    string ScriptRelativePath,
+    IReadOnlyList<string> Arguments,
+    DateTimeOffset StartedAtUtc,
+    DateTimeOffset? FinishedAtUtc,
+    SeedVcInferStatus Status,
+    int? ExitCode,
+    string OutputRelativePath,
+    long? OutputByteLength,
+    string? OutputSha256,
+    string LogRelativePath,
+    string Format = "wechatvoice-seedvc-infer-v1");
+
+public sealed record SeedVcInferResult(
+    string RunDirectory,
+    string ManifestPath,
+    string LogPath,
+    string OutputPath,
+    string RunId,
+    SeedVcInferStatus Status,
+    int? ExitCode,
+    long? OutputByteLength,
+    string? OutputSha256);

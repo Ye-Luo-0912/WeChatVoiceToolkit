@@ -54,7 +54,13 @@ public sealed class SeedVcPrepareService
         }
 
         var prepFingerprint = ComputePrepFingerprint(datasetFingerprint, profile, anchorHashes.Select(static pair => pair.Hash));
-        var outputRoot = Path.GetFullPath(request.OutputDirectory ?? Path.Combine(datasetRoot, "seedvc-prep", prepFingerprint));
+        // Keep derived preparation data outside the verified Dataset build.
+        // This makes the dataset immutable and allows the same preparation to
+        // be reused after a Desktop restart without asking the user for a
+        // second path.
+        var outputRoot = Path.GetFullPath(request.OutputDirectory ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "WeChatVoiceToolkit", "SeedVcPrep", prepFingerprint));
         EnsureNotInsideDataset(datasetRoot, outputRoot);
         var manifestPath = Path.Combine(outputRoot, "manifests", "prep-manifest.json");
         var journalPath = Path.Combine(outputRoot, "manifests", "sources.jsonl");

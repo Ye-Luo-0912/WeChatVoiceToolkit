@@ -19,7 +19,10 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
     {
         ExportDirectory = services.Project.ExportDirectory;
         DatasetOutputDirectory = services.Project.DatasetOutputDirectory;
+        SeedVc = new SeedVcWorkbenchViewModel(services);
     }
+
+    public SeedVcWorkbenchViewModel SeedVc { get; }
 
     public override string Title => "数据集整理";
 
@@ -157,6 +160,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         await base.OnNavigatedToAsync(cancellationToken).ConfigureAwait(false);
         ExportDirectory = Services.Project.ExportDirectory;
         DatasetOutputDirectory = Services.Project.DatasetOutputDirectory;
+        SeedVc.SetDataset(DatasetOutputDirectory);
         OnPropertyChanged(nameof(DecoderHint));
         UpdatePreviewAvailability();
         if (CanNavigate && _result is null && !RunHost.IsRunning)
@@ -314,6 +318,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             result =>
             {
                 DatasetOutputDirectory = result.OutputDirectory;
+                SeedVc.SetDataset(result.OutputDirectory);
                 Services.Project.DatasetOutputDirectory = result.OutputDirectory;
                 Services.StoragePathRegistry.Register(result.OutputDirectory, StorageAssetKind.DerivedUserAsset);
                 if (!string.IsNullOrWhiteSpace(Services.Project.WorkspacePath))
@@ -523,6 +528,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         if (propertyName == nameof(ExportProjectSession.DatasetOutputDirectory))
         {
             DatasetOutputDirectory = Services.Project.DatasetOutputDirectory;
+            SeedVc.SetDataset(DatasetOutputDirectory);
             OnPropertyChanged(nameof(DatasetOutputHint));
         }
     }

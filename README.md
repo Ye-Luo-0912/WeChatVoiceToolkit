@@ -117,6 +117,7 @@ dotnet run --project src/WeChatVoice.Cli -- materialization recover --output .\d
 dotnet run --project src/WeChatVoice.Cli -- seedvc doctor --seedvc-root D:\tools\seed-vc
 dotnet run --project src/WeChatVoice.Cli -- seedvc prepare --dataset .\exports\peer\datasets\<build-fingerprint> --anchor D:\recordings\phone --out .\seedvc-prep\<fingerprint>
 dotnet run --project src/WeChatVoice.Cli -- seedvc train --prep .\seedvc-prep\<fingerprint> --seedvc-root D:\tools\seed-vc --batch-size 1 --max-steps 1000
+dotnet run --project src/WeChatVoice.Cli -- seedvc infer --seedvc-root D:\tools\seed-vc --source .\source.wav --reference .\reference.wav --checkpoint D:\runs\latest.pth
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
 ```
 
@@ -130,7 +131,12 @@ Optional phone recordings are treated as anchors and are copied according to
 with an explicit argument list, Windows `--num-workers 0`, a default
 3060-Ti-friendly batch size of 1, and a local `run-manifest.json`/`train.log`.
 No Python environment is modified and no audio or checkpoint is committed to
-the repository.
+the repository. The Desktop 数据集整理 page exposes the same sequence as one
+reusable panel: check environment → prepare (reuse when fingerprints match) →
+train/resume → checkpoint → optional inference preview. `seedvc infer` uses the
+bundled `tools/seedvc/seedvc_infer.py` bridge and writes `infer-manifest.json`,
+`infer.log`, and a RIFF/WAV-validated `converted.wav` under the application-local
+`SeedVcRuns` directory.
 
 The CLI owns the one-shot UAC Broker exchange; `WeChatVoice.KeyBroker` is not a
 stdin tool and never exposes key material.

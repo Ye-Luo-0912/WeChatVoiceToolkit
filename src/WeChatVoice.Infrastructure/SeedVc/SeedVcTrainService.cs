@@ -68,7 +68,7 @@ public sealed class SeedVcTrainService
             null,
             null,
             null,
-            "python",
+            string.IsNullOrWhiteSpace(request.PythonPath) ? "python" : request.PythonPath!,
             "train.py",
             arguments,
             started,

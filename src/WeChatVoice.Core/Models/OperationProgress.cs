@@ -70,6 +70,7 @@ public static class OperationStageIds
     public const string PreparingSeedVc = "preparing-seedvc";
     public const string CheckingSeedVc = "checking-seedvc";
     public const string TrainingSeedVc = "training-seedvc";
+    public const string InferringSeedVc = "inferring-seedvc";
 }
 
 /// <summary>

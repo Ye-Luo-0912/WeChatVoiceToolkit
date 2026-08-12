@@ -34,7 +34,7 @@
       </Grid>
     </Border>
 
-    <Grid Grid.Row="2" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="12">
+    <Grid Grid.Row="2" RowDefinitions="Auto,Auto,*,Auto,Auto" RowSpacing="12">
       <Border Grid.Row="0" Background="#172554" BorderBrush="#3B82F6" BorderThickness="1" CornerRadius="14" Padding="16">
         <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="10">
           <StackPanel Spacing="4">
@@ -99,6 +99,59 @@
         <Button Content="校验训练集" Command="{Binding VerifyDatasetCommand}" IsEnabled="{Binding HasBuiltDataset}" />
         <TextBlock Text="{Binding BuildSummary}" Foreground="#93C5FD" VerticalAlignment="Center" TextWrapping="Wrap" />
       </StackPanel>
+
+      <Border Grid.Row="4" Background="#111C32" BorderBrush="#263A5A" BorderThickness="1" CornerRadius="14" Padding="14">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+          <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+            <StackPanel Spacing="3">
+              <TextBlock Text="Seed‑VC 音色训练" FontSize="18" FontWeight="SemiBold" />
+              <TextBlock Text="复用当前训练集；可选加入手机朗读锚点" Foreground="#94A3B8" />
+            </StackPanel>
+            <Button Grid.Column="1" Content="检查环境" Command="{Binding SeedVc.DoctorCommand}" />
+            <Button Grid.Column="2" Content="打开目录" Command="{Binding SeedVc.OpenRunDirectoryCommand}" />
+          </Grid>
+          <Grid Grid.Row="1" ColumnDefinitions="*,*,Auto" ColumnSpacing="8">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+              <TextBox PlaceholderText="Seed‑VC 安装目录（可留空使用环境变量）" Text="{Binding SeedVc.SeedVcRoot, Mode=TwoWay}" />
+              <Button Grid.Column="1" Content="选择" Command="{Binding SeedVc.PickSeedVcRootCommand}" />
+            </Grid>
+            <Grid Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="6">
+              <TextBox PlaceholderText="手机朗读目录（可选）" Text="{Binding SeedVc.AnchorDirectory, Mode=TwoWay}" />
+              <Button Grid.Column="1" Content="选择" Command="{Binding SeedVc.PickAnchorDirectoryCommand}" />
+            </Grid>
+            <Button Grid.Column="2" Content="准备数据" Command="{Binding SeedVc.PrepareCommand}" IsEnabled="{Binding SeedVc.CanPrepare}" Background="#2563EB" />
+          </Grid>
+          <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
+            <TextBox PlaceholderText="Python（默认 python）" Text="{Binding SeedVc.PythonPath, Mode=TwoWay}" />
+            <TextBox Grid.Column="1" Width="90" PlaceholderText="Batch" Text="{Binding SeedVc.BatchSize, Mode=TwoWay}" />
+            <TextBox Grid.Column="2" Width="100" PlaceholderText="Steps" Text="{Binding SeedVc.MaxSteps, Mode=TwoWay}" />
+            <Button Grid.Column="3" Content="开始 / 继续训练" Command="{Binding SeedVc.TrainCommand}" IsEnabled="{Binding SeedVc.CanTrain}" Background="#2563EB" />
+          </Grid>
+          <StackPanel Grid.Row="3" Spacing="3">
+            <TextBlock Text="{Binding SeedVc.PreparedSummary}" Foreground="#93C5FD" />
+            <TextBlock Text="{Binding SeedVc.TrainSummary}" Foreground="#93C5FD" />
+            <TextBlock Text="{Binding SeedVc.StatusMessage}" Foreground="#FBBF24" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding SeedVc.RunHost.StageMessage}" Foreground="#94A3B8" />
+            <TextBlock Text="{Binding SeedVc.RunHost.LastError}" Foreground="#FCA5A5" TextWrapping="Wrap" />
+          </StackPanel>
+          <Grid Grid.Row="4" ColumnDefinitions="*,*,*,Auto" ColumnSpacing="8">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+              <TextBox PlaceholderText="checkpoint（训练完成后自动填写）" Text="{Binding SeedVc.CheckpointPath, Mode=TwoWay}" />
+              <Button Grid.Column="1" Content="选择" Command="{Binding SeedVc.PickCheckpointCommand}" />
+            </Grid>
+            <Grid Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="6">
+              <TextBox PlaceholderText="源音频 WAV" Text="{Binding SeedVc.SourceAudioPath, Mode=TwoWay}" />
+              <Button Grid.Column="1" Content="选择" Command="{Binding SeedVc.PickSourceAudioCommand}" />
+            </Grid>
+            <Grid Grid.Column="2" ColumnDefinitions="*,Auto" ColumnSpacing="6">
+              <TextBox PlaceholderText="参考音频 WAV" Text="{Binding SeedVc.ReferenceAudioPath, Mode=TwoWay}" />
+              <Button Grid.Column="1" Content="选择" Command="{Binding SeedVc.PickReferenceAudioCommand}" />
+            </Grid>
+            <Button Grid.Column="3" Content="试听转换" Command="{Binding SeedVc.InferCommand}" IsEnabled="{Binding SeedVc.CanInfer}" />
+          </Grid>
+          <TextBlock Grid.Row="5" Text="{Binding SeedVc.InferSummary}" Foreground="#93C5FD" TextWrapping="Wrap" />
+        </Grid>
+      </Border>
     </Grid>
 
     <StackPanel Grid.Row="3" Spacing="5">
