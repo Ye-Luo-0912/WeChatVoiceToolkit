@@ -1,4 +1,5 @@
 using WeChatVoice.Desktop.Infrastructure;
+using WeChatVoice.Infrastructure.Storage;
 using WeChatVoice.Workflows.Composition;
 
 namespace WeChatVoice.Desktop;
@@ -41,6 +42,7 @@ public sealed class DesktopServices : IAsyncDisposable
             ?? new SnapshotOutputDirectoryFactory(recentWorkspaces.StorageDirectory);
         WorkspaceOutputDirectories = new WorkspaceOutputDirectoryFactory(recentWorkspaces.StorageDirectory);
         AudioPreview = audioPreview ?? new WinmmAudioPreviewPlayer();
+        StoragePathRegistry = new ManagedStoragePathRegistry(recentWorkspaces.StorageDirectory);
     }
 
     public static DesktopServices Create(bool allowDevelopmentBroker = false, string? appDataDirectory = null)
@@ -54,7 +56,21 @@ public sealed class DesktopServices : IAsyncDisposable
         // Pages pass their own UI-backed confirmation port per run; the
         // composition root only requires a port for construction.
         var workflows = new WorkflowCompositionRoot(SilentAccountConfirmation.Instance, allowDevelopmentBroker, appDataDirectory: appDataDirectory);
-        return new DesktopServices(workflows, log, recentWorkspaces);
+        var services = new DesktopServices(workflows, log, recentWorkspaces);
+        foreach (var entry in recentWorkspaces.Load())
+        {
+            if (!string.IsNullOrWhiteSpace(entry.LastExportDirectory))
+            {
+                services.StoragePathRegistry.Register(entry.LastExportDirectory, Core.Models.StorageAssetKind.UserAsset);
+            }
+
+            if (!string.IsNullOrWhiteSpace(entry.LastDatasetDirectory))
+            {
+                services.StoragePathRegistry.Register(entry.LastDatasetDirectory, Core.Models.StorageAssetKind.DerivedUserAsset);
+            }
+        }
+
+        return services;
     }
 
     private sealed class SilentAccountConfirmation : Core.Ports.IAccountConfirmation
@@ -96,6 +112,8 @@ public sealed class DesktopServices : IAsyncDisposable
     public WorkspaceOutputDirectoryFactory WorkspaceOutputDirectories { get; }
 
     public IAudioPreviewPlayer AudioPreview { get; }
+
+    public ManagedStoragePathRegistry StoragePathRegistry { get; }
 
     public async ValueTask DisposeAsync()
     {

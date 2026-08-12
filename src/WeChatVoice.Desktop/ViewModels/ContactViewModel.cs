@@ -90,6 +90,10 @@ public sealed partial class ContactViewModel : PageViewModelBase
     partial void OnSelectedContactChanged(ContactRecord? value)
     {
         Services.Project.SelectedContact = value;
+        if (value is not null && !string.IsNullOrWhiteSpace(Services.Project.WorkspacePath))
+        {
+            Services.RecentWorkspaces.SetLastContact(Services.Project.WorkspacePath, value);
+        }
         Services.Project.ClearVoiceSelection(clearContact: false);
         OnPropertyChanged(nameof(HasSelectedContact));
         OnPropertyChanged(nameof(SelectedContactSummary));

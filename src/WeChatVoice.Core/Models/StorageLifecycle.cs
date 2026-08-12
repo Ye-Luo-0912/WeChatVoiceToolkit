@@ -40,7 +40,18 @@ public sealed record StorageAssetRecord(
     string? SnapshotId,
     DateTimeOffset LastModifiedUtc,
     bool HasActiveLock,
-    string? Note);
+    string? Note)
+{
+    public string KindLabel => Kind switch
+    {
+        StorageAssetKind.Transient => "临时",
+        StorageAssetKind.RecoverableIntermediate => "可恢复",
+        StorageAssetKind.ReusableIntermediate => "可复用",
+        StorageAssetKind.UserAsset => "导出（用户资产）",
+        StorageAssetKind.DerivedUserAsset => "数据集（派生资产）",
+        _ => "未知",
+    };
+}
 
 /// <summary>
 /// Non-sensitive, per-category size summary produced by the storage inventory.

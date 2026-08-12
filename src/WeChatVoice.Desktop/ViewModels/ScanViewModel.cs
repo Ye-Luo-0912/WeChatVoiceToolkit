@@ -278,6 +278,23 @@ public sealed partial class ScanViewModel : PageViewModelBase
             OnPropertyChanged(nameof(HasDurationErrors));
             OnPropertyChanged(nameof(DurationErrorSummary));
             AccountSummary = $"账号：{result.Workspace.DataSet.AccountId ?? "（未绑定）"}";
+            if (!string.IsNullOrWhiteSpace(Services.Project.WorkspacePath) && contact is not null)
+            {
+                Services.RecentWorkspaces.SetLastScan(
+                    Services.Project.WorkspacePath,
+                    contact,
+                    new RecentScanQuery(
+                        Direction: directionText,
+                        FromUtc: parameters.From?.ToString("O"),
+                        ToUtc: parameters.To?.ToString("O"),
+                        MaximumResults: parameters.MaximumResults,
+                        DeepScan: deepScan,
+                        ResolveDurations: resolveDurations,
+                        MinimumDurationMs: parameters.MinimumDurationMs,
+                        MaximumDurationMs: parameters.MaximumDurationMs,
+                        MinimumPayloadBytes: parameters.MinimumPayloadBytes,
+                        MaximumPayloadBytes: parameters.MaximumPayloadBytes));
+            }
             ScanSummary = $"扫描完成：可导出 {report.ExportableVoiceCount} 条 / 匹配 {report.MatchedVoiceCount} 条；总时长 {report.TotalDurationMs} ms（已解析 {report.DurationKnownCount}，未知 {report.DurationUnknownCount}）；Missing {MissingCount} / Empty {EmptyCount} / InvalidHeader {InvalidHeaderCount} / Ambiguous {AmbiguousCount}；重复统计：{(deepScan ? DuplicateCount.ToString() : "未执行")}";
         });
     }

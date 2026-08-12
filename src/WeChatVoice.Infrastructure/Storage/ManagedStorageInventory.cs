@@ -1,3 +1,4 @@
+using System.Text.Json;
 using WeChatVoice.Core.Models;
 using WeChatVoice.Infrastructure.Materialization;
 using WeChatVoice.Infrastructure.Serialization;
@@ -31,11 +32,15 @@ public sealed record StorageRoots(
 public sealed class ManagedStorageInventory
 {
     private readonly StorageRoots _roots;
+    private readonly ManagedStoragePathRegistry _registry;
 
-    public ManagedStorageInventory(StorageRoots roots)
+    public ManagedStorageInventory(StorageRoots roots, ManagedStoragePathRegistry? registry = null)
     {
         _roots = roots;
+        _registry = registry ?? new ManagedStoragePathRegistry(roots.AppDataRoot);
     }
+
+    public string SnapshotRoot => Path.GetFullPath(_roots.SnapshotsRoot);
 
     /// <summary>
     /// Scans the app-owned roots and returns a per-category summary plus the
@@ -49,9 +54,10 @@ public sealed class ManagedStorageInventory
 
         await ScanSnapshotsAsync(assets, cancellationToken).ConfigureAwait(false);
         await ScanWorkspacesAsync(assets, cancellationToken).ConfigureAwait(false);
+        ScanRegisteredUserRoots(assets, cancellationToken);
         ScanTransientRoots(assets);
 
-        long snapshot = 0, workspace = 0, temp = 0, recoverable = 0, reclaimable = 0;
+        long snapshot = 0, workspace = 0, exports = 0, datasets = 0, temp = 0, recoverable = 0, reclaimable = 0;
         foreach (var asset in assets)
         {
             switch (asset.Kind)
@@ -69,6 +75,12 @@ public sealed class ManagedStorageInventory
                 case StorageAssetKind.Transient:
                     temp += asset.TotalBytes;
                     break;
+                case StorageAssetKind.UserAsset:
+                    exports += asset.TotalBytes;
+                    break;
+                case StorageAssetKind.DerivedUserAsset:
+                    datasets += asset.TotalBytes;
+                    break;
             }
 
             if (asset.Kind is StorageAssetKind.Transient or StorageAssetKind.RecoverableIntermediate)
@@ -80,8 +92,8 @@ public sealed class ManagedStorageInventory
         return new StorageInventorySummary(
             snapshot,
             workspace,
-            ExportBytes: 0,
-            DatasetBytes: 0,
+            ExportBytes: exports,
+            DatasetBytes: datasets,
             temp,
             recoverable,
             reclaimable,
@@ -140,7 +152,7 @@ public sealed class ManagedStorageInventory
                         InfrastructureJson.Compact,
                         cancellationToken).ConfigureAwait(false) ?? throw new InvalidDataException("Snapshot manifest is empty.");
                 }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException or System.Text.Json.JsonException)
                 {
                     continue;
                 }
@@ -197,14 +209,32 @@ public sealed class ManagedStorageInventory
                     continue;
                 }
 
-                var hasManifest = File.Exists(Path.Combine(operation, ".wechatvoice", "snapshot-manifest.json"));
+                var manifestPath = Path.Combine(operation, ".wechatvoice", "snapshot-manifest.json");
+                var hasManifest = File.Exists(manifestPath);
                 var kind = hasManifest ? StorageAssetKind.ReusableIntermediate : StorageAssetKind.Transient;
+                string? snapshotId = null;
+                if (hasManifest)
+                {
+                    try
+                    {
+                        using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+                        if (document.RootElement.TryGetProperty("snapshotId", out var id)
+                            && id.ValueKind == JsonValueKind.String)
+                        {
+                            snapshotId = id.GetString();
+                        }
+                    }
+                    catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException)
+                    {
+                        snapshotId = null;
+                    }
+                }
                 assets.Add(new StorageAssetRecord(
                     kind,
                     operation,
                     GetDirectorySize(operation),
                     WorkspaceId: null,
-                    SnapshotId: null,
+                    SnapshotId: snapshotId,
                     LastModifiedUtc: GetLastModifiedUtc(operation),
                     HasActiveLock: false,
                     Note: "snapshot"));
@@ -273,6 +303,35 @@ public sealed class ManagedStorageInventory
         AddTransientRoot(assets, _roots.ScanCacheRoot);
         AddTransientRoot(assets, Path.Combine(_roots.TempRoot, "Snapshots"));
         AddTransientRoot(assets, Path.Combine(_roots.TempRoot, "SnapshotsStaging"));
+    }
+
+    private void ScanRegisteredUserRoots(List<StorageAssetRecord> assets, CancellationToken cancellationToken)
+    {
+        foreach (var registered in _registry.Load())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = Path.GetFullPath(registered.Path);
+            if (!Directory.Exists(path) || IsReparsePoint(path)) continue;
+            // A registered path must not be counted again if a user selected an
+            // app-owned root as an output directory.
+            if (IsUnder(path, _roots.SnapshotsRoot) || IsUnder(path, _roots.WorkspacesRoot)) continue;
+            assets.Add(new StorageAssetRecord(
+                registered.Kind,
+                path,
+                GetDirectorySize(path),
+                WorkspaceId: null,
+                SnapshotId: null,
+                LastModifiedUtc: GetLastModifiedUtc(path),
+                HasActiveLock: false,
+                Note: registered.Kind == StorageAssetKind.UserAsset ? "export" : "dataset"));
+        }
+    }
+
+    private static bool IsUnder(string path, string root)
+    {
+        var fullPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        return fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AddTransientRoot(List<StorageAssetRecord> assets, string? path)

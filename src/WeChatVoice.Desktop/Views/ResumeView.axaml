@@ -18,7 +18,7 @@
         <TextBlock Text="{Binding ResumeSummary}" Foreground="#94A3B8" TextWrapping="Wrap" />
         <StackPanel Orientation="Horizontal" Spacing="8">
           <Button Content="刷新项目状态" Command="{Binding RefreshCommand}" IsEnabled="{Binding CanStartOperation}" />
-          <Button Content="继续所选项目" Command="{Binding ContinueCommand}"
+          <Button Content="继续最近项目" Command="{Binding ContinueCommand}"
                   IsEnabled="{Binding CanStartOperation}"
                   IsVisible="{Binding HasProjects}" />
           <Button Content="从微信数据源刷新" Command="{Binding RefreshFromSourceCommand}" />

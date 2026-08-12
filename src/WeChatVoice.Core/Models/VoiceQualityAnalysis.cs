@@ -324,7 +324,8 @@ public static class VoiceQualityAnalyzer
             {
                 var value = buffer[offset] | (buffer[offset + 1] << 8) | ((sbyte)buffer[offset + 2] << 16);
                 return value / 8388608.0;
-            },
+            }
+            ,
             32 => (buffer, offset) =>
                 System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(buffer.AsSpan(offset, 4)) / 2147483648.0,
             _ => throw new InvalidDataException("Unsupported PCM bit depth."),

@@ -80,8 +80,13 @@ internal static partial class CliApplication
         {
             Description = "Reclaim recoverable workspaces even before their retention window expires.",
         };
+        var pruneSnapshotsOption = new Option<bool>("--prune-old-snapshots")
+        {
+            Description = "Explicitly remove older verified snapshots, retaining the newest snapshot per account.",
+        };
         cleanupCommand.Options.Add(appDataOption);
         cleanupCommand.Options.Add(forceOption);
+        cleanupCommand.Options.Add(pruneSnapshotsOption);
         cleanupCommand.SetAction(async (parseResult, cancellationToken) =>
         {
             try
@@ -89,7 +94,10 @@ internal static partial class CliApplication
                 await using var composition = CreateRoot();
                 var context = new WorkflowContext(composition.AccountConfirmation, new Progress<OperationProgress>(ReportProgress));
                 var result = await composition.StorageLifecycle.CleanupAsync(
-                    new StorageCleanupRequest(ForceRecoverable: parseResult.GetValue(forceOption)),
+                    new StorageCleanupRequest(
+                        ForceRecoverable: parseResult.GetValue(forceOption),
+                        PruneOldSnapshots: parseResult.GetValue(pruneSnapshotsOption),
+                        AppDataRoot: parseResult.GetValue(appDataOption)),
                     context,
                     cancellationToken).ConfigureAwait(false);
                 WriteJson(new StorageCleanupReport(result.DeletedCount, result.DeletedBytes, result.SkippedReasons.ToArray()));

@@ -1,7 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Models;
-using WeChatVoice.Desktop.Infrastructure;
 using WeChatVoice.Workflows.Workflows;
 
 namespace WeChatVoice.Desktop.ViewModels;
@@ -35,6 +34,10 @@ public sealed partial class StorageViewModel : PageViewModelBase
 
     private StorageCleanupPreview? _cleanupPreview;
     private bool _cleanupArmed;
+    private StorageCleanupPreview? _duplicateCleanupPreview;
+    private bool _duplicateCleanupArmed;
+    private StorageCleanupPreview? _snapshotCleanupPreview;
+    private bool _snapshotCleanupArmed;
 
     public override async Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
     {
@@ -50,6 +53,10 @@ public sealed partial class StorageViewModel : PageViewModelBase
     {
         _cleanupArmed = false;
         _cleanupPreview = null;
+        _duplicateCleanupArmed = false;
+        _duplicateCleanupPreview = null;
+        _snapshotCleanupArmed = false;
+        _snapshotCleanupPreview = null;
         return RunHost.RunAsync(
             async (context, cancellationToken) => await Workflows.StorageLifecycle.InventoryAsync(
                 new StorageInventoryRequest(),
@@ -103,6 +110,88 @@ public sealed partial class StorageViewModel : PageViewModelBase
                 Inventory = null;
                 Assets = [];
                 SummaryText = "清理完成，已重新扫描可用的占用数据。";
+                _ = RefreshInventoryAsync();
+            });
+    }
+
+    [RelayCommand]
+    private Task PreviewDuplicateCleanupAsync()
+    {
+        _duplicateCleanupArmed = false;
+        _duplicateCleanupPreview = null;
+        return RunHost.RunAsync(
+            async (context, cancellationToken) => await Workflows.StorageLifecycle.PreviewDuplicateSnapshotCleanupAsync(
+                new StorageInventoryRequest(), context, cancellationToken).ConfigureAwait(false),
+            preview =>
+            {
+                _duplicateCleanupPreview = preview;
+                _duplicateCleanupArmed = true;
+                CleanupSummary = preview.ItemCount == 0
+                    ? "没有发现内容指纹重复的快照。"
+                    : $"发现 {preview.ItemCount} 个重复快照副本，共 {FormatBytes(preview.TotalBytes)}。再次点击“清理重复快照”将保留每组最新副本。";
+            });
+    }
+
+    [RelayCommand]
+    private Task CleanupDuplicateAsync()
+    {
+        if (!_duplicateCleanupArmed || _duplicateCleanupPreview is null)
+        {
+            CleanupSummary = "请先执行重复快照预检。";
+            return Task.CompletedTask;
+        }
+
+        _duplicateCleanupArmed = false;
+        return RunHost.RunAsync(
+            async (context, cancellationToken) => await Workflows.StorageLifecycle.CleanupDuplicateSnapshotsAsync(
+                new StorageInventoryRequest(), context, cancellationToken).ConfigureAwait(false),
+            result =>
+            {
+                CleanupSummary = $"已清理重复快照 {result.DeletedCount} 个，释放 {FormatBytes(result.DeletedBytes)}；跳过 {result.SkippedReasons.Count} 项。";
+                _duplicateCleanupPreview = null;
+                Inventory = null;
+                Assets = [];
+                _ = RefreshInventoryAsync();
+            });
+    }
+
+    [RelayCommand]
+    private Task PreviewOldSnapshotCleanupAsync()
+    {
+        _snapshotCleanupArmed = false;
+        _snapshotCleanupPreview = null;
+        return RunHost.RunAsync(
+            async (context, cancellationToken) => await Workflows.StorageLifecycle.PreviewCleanupAsync(
+                new StorageCleanupRequest(PruneOldSnapshots: true), context, cancellationToken).ConfigureAwait(false),
+            preview =>
+            {
+                _snapshotCleanupPreview = preview;
+                _snapshotCleanupArmed = true;
+                CleanupSummary = preview.ItemCount == 0
+                    ? "每个账号都只保留了最新快照，没有可清理的旧快照。"
+                    : $"发现 {preview.ItemCount} 个旧快照，共 {FormatBytes(preview.TotalBytes)}。再次点击“清理旧快照”将每个账号只保留最新副本。";
+            });
+    }
+
+    [RelayCommand]
+    private Task CleanupOldSnapshotsAsync()
+    {
+        if (!_snapshotCleanupArmed || _snapshotCleanupPreview is null)
+        {
+            CleanupSummary = "请先执行旧快照预检。";
+            return Task.CompletedTask;
+        }
+
+        _snapshotCleanupArmed = false;
+        return RunHost.RunAsync(
+            async (context, cancellationToken) => await Workflows.StorageLifecycle.CleanupAsync(
+                new StorageCleanupRequest(PruneOldSnapshots: true), context, cancellationToken).ConfigureAwait(false),
+            result =>
+            {
+                CleanupSummary = $"已清理旧快照 {result.DeletedCount} 个，释放 {FormatBytes(result.DeletedBytes)}；每个账号保留最新快照。";
+                _snapshotCleanupPreview = null;
+                Inventory = null;
+                Assets = [];
                 _ = RefreshInventoryAsync();
             });
     }

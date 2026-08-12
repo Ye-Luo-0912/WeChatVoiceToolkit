@@ -167,6 +167,7 @@ public sealed partial class ExportViewModel : PageViewModelBase
                 && !string.IsNullOrWhiteSpace(Services.Project.WorkspacePath))
             {
                 Services.RecentWorkspaces.SetLastExportDirectory(Services.Project.WorkspacePath, outputDirectory);
+                Services.StoragePathRegistry.Register(outputDirectory, StorageAssetKind.UserAsset);
             }
         });
     }

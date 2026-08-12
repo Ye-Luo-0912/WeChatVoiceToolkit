@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WeChatVoice.Core.Errors;
@@ -291,7 +292,17 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
 
     [RelayCommand]
     private Task DiscoverSourcesAsync()
-        => DiscoverSourcesCoreAsync(force: true, CancellationToken.None);
+    {
+        // This command is the explicit refresh boundary. Clear only the
+        // snapshot and downstream state; a normal page revisit keeps the
+        // verified local snapshot and avoids another multi-gigabyte copy.
+        Services.Project.Snapshot = null;
+        Services.Project.SnapshotDirectory = null;
+        OutputDirectory = null;
+        SelectedSourceCandidate = null;
+        _hasCompletedDiscovery = false;
+        return DiscoverSourcesCoreAsync(force: true, CancellationToken.None);
+    }
 
     [RelayCommand]
     private void CancelDiscovery()
@@ -417,6 +428,7 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
 
     private void ApplySelectedCandidate(WeixinDataSourceCandidate candidate)
     {
+        var reusedSnapshot = false;
         var sourceChanged = !PathsEqual(SourceDirectory, candidate.DbStoragePath)
             || !string.Equals(AccountCandidate, candidate.AccountCandidate, StringComparison.Ordinal);
         if (sourceChanged)
@@ -447,6 +459,20 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
                     candidate.AccountCandidate,
                     candidate.AccountDirectory);
                 IsCustomOutputDirectory = false;
+
+                // A verified local snapshot is the default continuation point.
+                // Creating a new snapshot is an explicit refresh action; merely
+                // revisiting this page must not copy gigabytes again.
+                if (TryLoadReusableSnapshot(candidate.DbStoragePath, out var reusable))
+                {
+                    reusedSnapshot = true;
+                    OutputDirectory = reusable.Manifest.SnapshotDirectory;
+                    Services.Project.Snapshot = reusable;
+                    Services.Project.SnapshotDirectory = reusable.Manifest.SnapshotDirectory;
+                    IsPotentiallyInconsistent = reusable.Manifest.PotentiallyInconsistent;
+                    SnapshotSummary = "已复用本地快照；如需重新复制，请点击“自动查找”后重新创建。";
+                    State = SourceSnapshotPageState.SnapshotCompleted;
+                }
             }
             catch
             {
@@ -468,8 +494,11 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
             }
         }
 
-        State = SourceSnapshotPageState.SingleSourceSelected;
-        SnapshotSummary = "已自动找到一个微信账号。";
+        if (!reusedSnapshot)
+        {
+            State = SourceSnapshotPageState.SingleSourceSelected;
+            SnapshotSummary = "已自动找到一个微信账号。";
+        }
         RefreshWeixinStatus();
         RefreshPathValidation();
         NotifyDerivedProperties();
@@ -495,6 +524,43 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
 
         RefreshPathValidation();
         NotifyDerivedProperties();
+    }
+
+    private bool TryLoadReusableSnapshot(string sourceDirectory, out SnapshotWorkflowResult result)
+    {
+        result = null!;
+        var recent = Services.RecentWorkspaces.FindSnapshotForSource(sourceDirectory);
+        if (recent is null)
+        {
+            return false;
+        }
+
+        var manifestPath = Path.Combine(recent.SnapshotDirectory, ".wechatvoice", "snapshot-manifest.json");
+        try
+        {
+            if (!File.Exists(manifestPath))
+            {
+                return false;
+            }
+
+            var manifest = JsonSerializer.Deserialize<SnapshotManifest>(File.ReadAllText(manifestPath));
+            if (manifest is null
+                || !string.Equals(Path.GetFullPath(manifest.SnapshotDirectory), Path.GetFullPath(recent.SnapshotDirectory), StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(manifest.SnapshotId, recent.SnapshotId, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            result = new SnapshotWorkflowResult(
+                manifest,
+                SnapshotSourceIdentity.TryDerive(manifest.SourceDirectory, manifest.Files),
+                manifestPath);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            return false;
+        }
     }
 
     [RelayCommand]

@@ -25,6 +25,8 @@ public sealed partial class ExportProjectSession : ObservableObject
     [ObservableProperty] private PreparedVoiceSelection? _selectionPlan;
     [ObservableProperty] private VoiceExportWorkflowResult? _lastExportRun;
     [ObservableProperty] private string? _exportDirectory;
+    [ObservableProperty] private string? _datasetOutputDirectory;
+    [ObservableProperty] private RecentScanQuery? _lastScanQuery;
 
     public void ResetFromSource(string sourceDirectory)
     {
@@ -42,6 +44,7 @@ public sealed partial class ExportProjectSession : ObservableObject
         WorkspacePath = null;
         ClearVoiceSelection(clearContact: true);
         ExportDirectory = null;
+        DatasetOutputDirectory = null;
     }
 
     /// <summary>
@@ -75,6 +78,7 @@ public sealed partial class ExportProjectSession : ObservableObject
         WorkspacePath = null;
         ClearVoiceSelection(clearContact: true);
         ExportDirectory = null;
+        DatasetOutputDirectory = null;
     }
 
     /// <summary>

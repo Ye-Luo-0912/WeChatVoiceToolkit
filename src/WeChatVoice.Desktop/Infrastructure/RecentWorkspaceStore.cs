@@ -17,7 +17,24 @@ public sealed record RecentWorkspaceEntry(
     string? AccountId,
     DateTimeOffset LastUsedUtc,
     string? LastExportDirectory = null,
-    string? MaterializedRootPath = null);
+    string? MaterializedRootPath = null,
+    string? LastContactUsername = null,
+    string? LastContactId = null,
+    RecentScanQuery? LastScanQuery = null,
+    string? LastDatasetDirectory = null,
+    string? LastPage = null);
+
+public sealed record RecentScanQuery(
+    string? Direction = null,
+    string? FromUtc = null,
+    string? ToUtc = null,
+    int? MaximumResults = null,
+    bool DeepScan = false,
+    bool ResolveDurations = false,
+    long? MinimumDurationMs = null,
+    long? MaximumDurationMs = null,
+    long? MinimumPayloadBytes = null,
+    long? MaximumPayloadBytes = null);
 
 public sealed record RecentSnapshotEntry(
     string SourceDirectory,
@@ -80,14 +97,25 @@ public sealed class RecentWorkspaceStore
         ArgumentNullException.ThrowIfNull(workspace);
         lock (_gate)
         {
-            var entries = Load().Where(entry => !string.Equals(entry.WorkspacePath, Path.GetFullPath(workspacePath), StringComparison.OrdinalIgnoreCase)).ToList();
-            entries.Insert(0, new RecentWorkspaceEntry(
-                Path.GetFullPath(workspacePath),
-                workspace.Workspace.WorkspaceId,
-                workspace.DataSet.DataSetId,
-                workspace.DataSet.AccountId,
-                DateTimeOffset.UtcNow,
-                MaterializedRootPath: workspace.Workspace.SourceRoot));
+            var fullPath = Path.GetFullPath(workspacePath);
+            var existing = Load().FirstOrDefault(entry => string.Equals(entry.WorkspacePath, fullPath, StringComparison.OrdinalIgnoreCase));
+            var entries = Load().Where(entry => !string.Equals(entry.WorkspacePath, fullPath, StringComparison.OrdinalIgnoreCase)).ToList();
+            entries.Insert(0, existing is null
+                ? new RecentWorkspaceEntry(
+                    fullPath,
+                    workspace.Workspace.WorkspaceId,
+                    workspace.DataSet.DataSetId,
+                    workspace.DataSet.AccountId,
+                    DateTimeOffset.UtcNow,
+                    MaterializedRootPath: workspace.Workspace.SourceRoot)
+                : existing with
+                {
+                    WorkspaceId = workspace.Workspace.WorkspaceId,
+                    DataSetId = workspace.DataSet.DataSetId,
+                    AccountId = workspace.DataSet.AccountId,
+                    LastUsedUtc = DateTimeOffset.UtcNow,
+                    MaterializedRootPath = workspace.Workspace.SourceRoot,
+                });
             while (entries.Count > 10)
             {
                 entries.RemoveAt(entries.Count - 1);
@@ -118,6 +146,66 @@ public sealed class RecentWorkspaceStore
                     ? entry with { LastExportDirectory = fullExportDirectory, LastUsedUtc = DateTimeOffset.UtcNow }
                     : entry).ToList();
             Save(entries);
+        }
+    }
+
+    public void SetLastContact(string workspacePath, ContactRecord contact)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
+        ArgumentNullException.ThrowIfNull(contact);
+        var full = Path.GetFullPath(workspacePath);
+        lock (_gate)
+        {
+            Save(Load().Select(entry => string.Equals(entry.WorkspacePath, full, StringComparison.OrdinalIgnoreCase)
+                ? entry with { LastContactUsername = contact.Username, LastContactId = contact.ContactId, LastUsedUtc = DateTimeOffset.UtcNow }
+                : entry).ToList());
+        }
+    }
+
+    public void SetLastScan(string workspacePath, ContactRecord contact, RecentScanQuery query)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
+        ArgumentNullException.ThrowIfNull(contact);
+        ArgumentNullException.ThrowIfNull(query);
+        var full = Path.GetFullPath(workspacePath);
+        lock (_gate)
+        {
+            Save(Load().Select(entry => string.Equals(entry.WorkspacePath, full, StringComparison.OrdinalIgnoreCase)
+                ? entry with
+                {
+                    LastContactUsername = contact.Username,
+                    LastContactId = contact.ContactId,
+                    LastScanQuery = query,
+                    LastUsedUtc = DateTimeOffset.UtcNow,
+                }
+                : entry).ToList());
+        }
+    }
+
+    public void SetLastDatasetDirectory(string workspacePath, string datasetDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(datasetDirectory);
+        var full = Path.GetFullPath(workspacePath);
+        var dataset = Path.GetFullPath(datasetDirectory);
+        lock (_gate)
+        {
+            Save(Load().Select(entry => string.Equals(entry.WorkspacePath, full, StringComparison.OrdinalIgnoreCase)
+                ? entry with { LastDatasetDirectory = dataset, LastUsedUtc = DateTimeOffset.UtcNow }
+                : entry).ToList());
+        }
+    }
+
+    public void SetLastPage(string workspacePath, string pageId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pageId);
+        var full = Path.GetFullPath(workspacePath);
+        lock (_gate)
+        {
+            Save(Load().Select(entry => string.Equals(entry.WorkspacePath, full, StringComparison.OrdinalIgnoreCase)
+                ? entry with { LastPage = pageId, LastUsedUtc = DateTimeOffset.UtcNow }
+                : entry).ToList());
         }
     }
 
@@ -227,6 +315,15 @@ public sealed class RecentWorkspaceStore
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
         var fullSource = Path.GetFullPath(sourceDirectory);
         return LoadSnapshots().Any(entry =>
+            string.Equals(entry.SourceDirectory, fullSource, StringComparison.OrdinalIgnoreCase)
+            && Directory.Exists(entry.SnapshotDirectory));
+    }
+
+    public RecentSnapshotEntry? FindSnapshotForSource(string sourceDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
+        var fullSource = Path.GetFullPath(sourceDirectory);
+        return LoadSnapshots().FirstOrDefault(entry =>
             string.Equals(entry.SourceDirectory, fullSource, StringComparison.OrdinalIgnoreCase)
             && Directory.Exists(entry.SnapshotDirectory));
     }

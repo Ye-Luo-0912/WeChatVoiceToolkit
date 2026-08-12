@@ -18,6 +18,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         : base(services)
     {
         ExportDirectory = services.Project.ExportDirectory;
+        DatasetOutputDirectory = services.Project.DatasetOutputDirectory;
     }
 
     public override string Title => "数据集整理";
@@ -165,6 +166,12 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             result =>
             {
                 DatasetOutputDirectory = result.OutputDirectory;
+                Services.Project.DatasetOutputDirectory = result.OutputDirectory;
+                Services.StoragePathRegistry.Register(result.OutputDirectory, StorageAssetKind.DerivedUserAsset);
+                if (!string.IsNullOrWhiteSpace(Services.Project.WorkspacePath))
+                {
+                    Services.RecentWorkspaces.SetLastDatasetDirectory(Services.Project.WorkspacePath, result.OutputDirectory);
+                }
                 SelectionDirty = false;
                 BuildSummary = result.LinkMode == DatasetLinkMode.LinkedView
                     ? $"训练数据集已构建：{result.ItemCount} 条，{result.TotalDurationMs} ms，{result.TotalByteLength} bytes。警告：这是非独立硬链接视图，不是便携副本。"
@@ -202,6 +209,7 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             deleted =>
             {
                 DatasetOutputDirectory = null;
+                Services.Project.DatasetOutputDirectory = null;
                 DeleteConfirmationText = null;
                 BuildSummary = $"已删除派生训练数据集：{deleted.ItemCount} 条，{deleted.TotalByteLength} bytes；原始 Export 未修改。";
             });
@@ -314,6 +322,11 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
             or nameof(ExportProjectSession.LastExportRun))
         {
             ExportDirectory = Services.Project.ExportDirectory;
+        }
+
+        if (propertyName == nameof(ExportProjectSession.DatasetOutputDirectory))
+        {
+            DatasetOutputDirectory = Services.Project.DatasetOutputDirectory;
         }
     }
 

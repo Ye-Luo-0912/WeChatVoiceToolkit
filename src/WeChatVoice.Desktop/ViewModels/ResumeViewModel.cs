@@ -42,6 +42,7 @@ public sealed partial class ResumeViewModel : PageViewModelBase
 
     [ObservableProperty]
     private string? _continueSummary;
+    private bool _autoResumeAttempted;
 
     public bool HasContinueSummary => ContinueSummary is not null;
 
@@ -52,6 +53,11 @@ public sealed partial class ResumeViewModel : PageViewModelBase
     {
         await RefreshAsync().ConfigureAwait(false);
         await base.OnNavigatedToAsync(cancellationToken).ConfigureAwait(false);
+        if (!_autoResumeAttempted && Projects.FirstOrDefault(static item => item.CanContinue) is not null)
+        {
+            _autoResumeAttempted = true;
+            await ContinueAsync().ConfigureAwait(false);
+        }
     }
 
     [RelayCommand]
@@ -95,7 +101,7 @@ public sealed partial class ResumeViewModel : PageViewModelBase
 
             HasProjects = Projects.Count > 0;
             ResumeSummary = HasProjects
-                ? $"发现 {Projects.Count} 个最近项目，可选择继续或从源刷新。"
+                ? $"发现 {Projects.Count} 个最近项目；应用会自动继续最近的可验证项目。"
                 : "尚未发现可继续的本地项目。请从底部导航选择「微信数据」创建新项目。";
             SelectedProject = Projects.FirstOrDefault(p => p.CanContinue) ?? Projects.FirstOrDefault();
         }).ConfigureAwait(false);
@@ -104,7 +110,7 @@ public sealed partial class ResumeViewModel : PageViewModelBase
     [RelayCommand]
     private async Task ContinueAsync()
     {
-        var selected = SelectedProject;
+        var selected = SelectedProject ?? Projects.FirstOrDefault(static item => item.CanContinue);
         if (selected is null)
         {
             return;
@@ -121,13 +127,83 @@ public sealed partial class ResumeViewModel : PageViewModelBase
 
                 Services.Project.Workspace = result.Workspace;
                 Services.Project.WorkspacePath = result.WorkspacePath;
+                Services.Project.ExportDirectory = selected.LastExportDirectory;
+                Services.Project.DatasetOutputDirectory = selected.LastDatasetDirectory;
                 Services.Project.ClearVoiceSelection(clearContact: true);
                 Services.RecentWorkspaces.Add(result.Workspace, result.WorkspacePath);
+
+                // Rehydrate the last stable contact and scan query. The
+                // workflow verifies the workspace first; contact/scan then
+                // reuse their persistent cache when the local data is
+                // unchanged. No user selection or key acquisition is needed.
+                if (!string.IsNullOrWhiteSpace(selected.LastContactUsername))
+                {
+                    var contactResult = await Workflows.ContactDiscovery.RunAsync(
+                        new ContactDiscoveryRequest(result.WorkspacePath, Username: selected.LastContactUsername),
+                        new WorkflowContext(Services.Workflows.AccountConfirmation),
+                        cancellationToken).ConfigureAwait(false);
+                    var contact = contactResult.Contacts.SingleOrDefault(item =>
+                        string.Equals(item.Username, selected.LastContactUsername, StringComparison.Ordinal)
+                        && (string.IsNullOrWhiteSpace(selected.LastContactId)
+                            || string.Equals(item.ContactId, selected.LastContactId, StringComparison.Ordinal)));
+                    if (contact is not null)
+                    {
+                        Services.Project.SelectedContact = contact;
+                        var scanQuery = selected.LastScanQuery;
+                        if (scanQuery is not null)
+                        {
+                            var scanResult = await Workflows.VoiceScan.RunAsync(
+                                new VoiceScanWorkflowRequest(
+                                    result.WorkspacePath,
+                                    contact.Username,
+                                    Direction: ParseDirection(scanQuery.Direction),
+                                    From: ParseUtc(scanQuery.FromUtc),
+                                    To: ParseUtc(scanQuery.ToUtc),
+                                    MaximumResults: scanQuery.MaximumResults,
+                                    DeepScan: scanQuery.DeepScan,
+                                    ResolveDurations: scanQuery.ResolveDurations,
+                                    ExpectedContactId: contact.ContactId,
+                                    MinimumDurationMs: scanQuery.MinimumDurationMs,
+                                    MaximumDurationMs: scanQuery.MaximumDurationMs,
+                                    MinimumPayloadBytes: scanQuery.MinimumPayloadBytes,
+                                    MaximumPayloadBytes: scanQuery.MaximumPayloadBytes),
+                                new WorkflowContext(Services.Workflows.AccountConfirmation),
+                                cancellationToken).ConfigureAwait(false);
+                            Services.Project.Scan = scanResult;
+                            Services.Project.SelectionPlan = scanResult.Selection;
+                        }
+                    }
+                }
             }).ConfigureAwait(false);
 
         if (RunHost.LastErrorCode is null)
         {
-            ContinueSummary = $"已继续项目：{selected.WorkspacePath}\n现在可以从左侧导航进入「联系人 / 扫描 / 导出」继续整理。";
+            ContinueSummary = $"已自动继续最近项目：已复用 Workspace、联系人、扫描结果和输出目录。";
+            NavigateToLastPage(selected.LastPage);
+        }
+    }
+
+    private static VoiceDirection? ParseDirection(string? value)
+        => Enum.TryParse<VoiceDirection>(value, true, out var direction) ? direction : VoiceDirection.Incoming;
+
+    private static DateTimeOffset? ParseUtc(string? value)
+        => DateTimeOffset.TryParse(value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed)
+            ? parsed.ToUniversalTime()
+            : null;
+
+    private void NavigateToLastPage(string? pageId)
+    {
+        var target = pageId switch
+        {
+            nameof(ContactViewModel) => typeof(ContactViewModel),
+            nameof(ScanViewModel) => typeof(ScanViewModel),
+            nameof(ExportViewModel) => typeof(ExportViewModel),
+            nameof(DatasetCurationViewModel) => typeof(DatasetCurationViewModel),
+            _ => null,
+        };
+        if (target is not null)
+        {
+            Services.Navigation.NavigateTo(target);
         }
     }
 
@@ -162,8 +238,9 @@ public sealed partial class ResumeViewModel : PageViewModelBase
 }
 
 /// <summary>
-/// A single inspect result for the resume list. The row is immutable after
-/// inspection; the user picks one to continue.
+/// A single inspect result for the resume list. The newest valid entry is
+/// resumed automatically; the list is informational and never a required
+/// selection step.
 /// </summary>
 public sealed partial class ProjectResumeEntryViewModel : ObservableObject
 {
@@ -175,6 +252,11 @@ public sealed partial class ProjectResumeEntryViewModel : ObservableObject
         AccountId = status.AccountId ?? entry.AccountId;
         LastUsedUtc = entry.LastUsedUtc;
         LastExportDirectory = entry.LastExportDirectory;
+        LastContactUsername = entry.LastContactUsername;
+        LastContactId = entry.LastContactId;
+        LastScanQuery = entry.LastScanQuery;
+        LastDatasetDirectory = entry.LastDatasetDirectory;
+        LastPage = entry.LastPage;
         State = status.State;
         Reason = status.Reason;
         CanContinue = State is ProjectStageState.ValidReusable or ProjectStageState.Recoverable;
@@ -191,6 +273,11 @@ public sealed partial class ProjectResumeEntryViewModel : ObservableObject
     public DateTimeOffset LastUsedUtc { get; }
 
     public string? LastExportDirectory { get; }
+    public string? LastContactUsername { get; }
+    public string? LastContactId { get; }
+    public RecentScanQuery? LastScanQuery { get; }
+    public string? LastDatasetDirectory { get; }
+    public string? LastPage { get; }
 
     public ProjectStageState State { get; }
 

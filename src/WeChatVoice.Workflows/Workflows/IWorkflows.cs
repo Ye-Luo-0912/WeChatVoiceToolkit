@@ -79,13 +79,25 @@ public interface IStorageLifecycleWorkflow
         StorageInventoryRequest request,
         WorkflowContext context,
         CancellationToken cancellationToken);
+
+    Task<StorageCleanupPreview> PreviewDuplicateSnapshotCleanupAsync(
+        StorageInventoryRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
+
+    Task<StorageCleanupResult> CleanupDuplicateSnapshotsAsync(
+        StorageInventoryRequest request,
+        WorkflowContext context,
+        CancellationToken cancellationToken);
 }
 
 public sealed record StorageInventoryRequest(string? AppDataRoot = null);
 
 public sealed record StorageCleanupRequest(
     bool ForceRecoverable = false,
-    TimeSpan? RecoverableOlderThan = null);
+    TimeSpan? RecoverableOlderThan = null,
+    bool PruneOldSnapshots = false,
+    string? AppDataRoot = null);
 
 /// <summary>
 /// Run / metadata retention for an export root's <c>runs/</c> directory.

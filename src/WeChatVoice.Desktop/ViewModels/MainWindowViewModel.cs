@@ -83,6 +83,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
             if (SetProperty(ref _selectedPage, value))
             {
                 NavigationHint = null;
+                if (!string.IsNullOrWhiteSpace(_services.Project.WorkspacePath))
+                {
+                    _services.RecentWorkspaces.SetLastPage(_services.Project.WorkspacePath, value.GetType().Name);
+                }
                 NavigationTask = StartNavigation(value);
             }
         }
