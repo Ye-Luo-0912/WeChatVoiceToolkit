@@ -319,7 +319,9 @@ public sealed class DatasetBuildService
         }
 
         var decoder = _decoderFactory?.Create(sampleRate)
-            ?? throw new AppFailureException(ErrorCode.InvalidRequest, "No SILK decoder is configured; cannot preview audio.");
+            ?? throw new AppFailureException(
+                ErrorCode.DurationResolverUnavailable,
+                "No usable SILK decoder is configured; configure a reviewed decoder before previewing audio.");
         string? decoderIdentity = decoder is IVoiceDecoderIdentity identity ? identity.DecoderIdentity : null;
         var directory = Path.Combine(Path.GetTempPath(), "wechatvoice-preview");
         Directory.CreateDirectory(directory);

@@ -394,6 +394,7 @@ public sealed partial class WorkflowRunHost : ObservableObject
             ErrorCode.WorkspaceInvalid => "工作区校验失败，请重新物料化数据后再扫描。",
             ErrorCode.UnsupportedSchema => "数据库结构不受当前版本支持，请重新物料化或检查微信版本。",
             ErrorCode.UnsupportedWeixinVersion => "当前运行的 Weixin 版本不受支持。请在环境检测页查看实际版本；当前 Profile 仅支持 4.1.11.55。若已有 Workspace，请从“继续上次工作”直接复用。",
+            ErrorCode.DurationResolverUnavailable => "试听需要 SILK 解码器。请先进入“语音扫描”，在解码器设置中选择可用的解码器，然后重新扫描或返回本页重试。",
             ErrorCode.InvalidRequest => "当前操作参数不完整，请先确认联系人、扫描结果和导出目录都已准备好。",
             _ => fallbackAction,
         };

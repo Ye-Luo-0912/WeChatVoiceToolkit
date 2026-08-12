@@ -50,6 +50,15 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
                 ? "可以直接点击“全选可训练”，也可以逐条试听后勾选。"
                 : "当前没有可直接训练的样本。未知时长需要先在“语音扫描”启用时长分析并重新扫描；原始 SILK 不会被修改。";
 
+    public string DecoderHint
+        => Services.Workflows.DecoderStatusReport.Status switch
+        {
+            DecoderStatus.Available => "解码器已就绪，可试听并分析时长。",
+            DecoderStatus.Missing => "尚未配置 SILK 解码器；试听和时长分析暂不可用。",
+            DecoderStatus.FailedSelfTest => "已配置的 SILK 解码器不可用，请在语音扫描页重新选择。",
+            _ => "当前 SILK 解码器不可用，请在语音扫描页检查设置。",
+        };
+
     private bool HasReusableExport
     {
         get
@@ -121,6 +130,8 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         await base.OnNavigatedToAsync(cancellationToken).ConfigureAwait(false);
         ExportDirectory = Services.Project.ExportDirectory;
         DatasetOutputDirectory = Services.Project.DatasetOutputDirectory;
+        OnPropertyChanged(nameof(DecoderHint));
+        UpdatePreviewAvailability();
         if (CanNavigate && _result is null && !RunHost.IsRunning)
         {
             await LoadAsync().ConfigureAwait(false);
@@ -356,6 +367,10 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         ProfileSummary = "已停止试听。";
     }
 
+    [RelayCommand]
+    private void ConfigureDecoder()
+        => Services.Navigation.NavigateTo(typeof(ScanViewModel));
+
     partial void OnExportDirectoryChanged(string? value)
     {
         if (!string.Equals(value, Services.Project.ExportDirectory, StringComparison.OrdinalIgnoreCase))
@@ -420,7 +435,8 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
                 item,
                 OnItemChanged,
                 preview: PreviewItemAsync,
-                stopPreview: StopPreviewAsync));
+                stopPreview: StopPreviewAsync,
+                previewAvailable: Services.Workflows.DecoderStatusReport.Status == DecoderStatus.Available));
         }
 
         SelectedDurationMs = result.SelectedDurationMs;
@@ -435,6 +451,15 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         OnPropertyChanged(nameof(HasCandidates));
         OnPropertyChanged(nameof(HasEligibleCandidates));
         OnPropertyChanged(nameof(CandidateReadinessHint));
+    }
+
+    private void UpdatePreviewAvailability()
+    {
+        var available = Services.Workflows.DecoderStatusReport.Status == DecoderStatus.Available;
+        foreach (var item in Items)
+        {
+            item.SetPreviewAvailability(available);
+        }
     }
 
     private void OnItemChanged(DatasetCurationItemViewModel changed)
@@ -479,6 +504,12 @@ public sealed partial class DatasetCurationViewModel : PageViewModelBase
         if (string.IsNullOrWhiteSpace(exportDirectory))
         {
             ProfileSummary = "导出目录不能为空，无法试听。";
+            return;
+        }
+
+        if (Services.Workflows.DecoderStatusReport.Status != DecoderStatus.Available)
+        {
+            ProfileSummary = "试听需要可用的 SILK 解码器，请先点击“配置解码器”。";
             return;
         }
 
@@ -578,11 +609,13 @@ public sealed partial class DatasetCurationItemViewModel : ObservableObject
         DatasetCurationItem item,
         Action<DatasetCurationItemViewModel> changed,
         Func<DatasetCurationItemViewModel, CancellationToken, Task>? preview = null,
-        Func<DatasetCurationItemViewModel, Task>? stopPreview = null)
+        Func<DatasetCurationItemViewModel, Task>? stopPreview = null,
+        bool previewAvailable = true)
     {
         _changed = changed;
         _preview = preview ?? (static (_, _) => Task.CompletedTask);
         _stopPreview = stopPreview ?? (static _ => Task.CompletedTask);
+        _previewAvailable = previewAvailable;
         ItemId = item.ItemId;
         RelativeAudioPath = item.RelativeAudioPath;
         Sha256 = item.Sha256;
@@ -619,9 +652,11 @@ public sealed partial class DatasetCurationItemViewModel : ObservableObject
     public string? PreviewWavPath { get; private set; }
 
     public string PreviewButtonText => IsPreviewing ? "停止" : "试听";
+    public bool CanPreview => IsPreviewing || _previewAvailable;
 
     [ObservableProperty] private bool _isSelected;
     [ObservableProperty] private bool _isDuplicateRepresentative;
+    private bool _previewAvailable;
 
     partial void OnIsSelectedChanged(bool value) => _changed(this);
 
@@ -644,5 +679,17 @@ public sealed partial class DatasetCurationItemViewModel : ObservableObject
         OnPropertyChanged(nameof(IsPreviewing));
         OnPropertyChanged(nameof(PreviewWavPath));
         OnPropertyChanged(nameof(PreviewButtonText));
+        OnPropertyChanged(nameof(CanPreview));
+    }
+
+    internal void SetPreviewAvailability(bool value)
+    {
+        if (_previewAvailable == value)
+        {
+            return;
+        }
+
+        _previewAvailable = value;
+        OnPropertyChanged(nameof(CanPreview));
     }
 }

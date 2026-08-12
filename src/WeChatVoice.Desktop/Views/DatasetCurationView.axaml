@@ -40,6 +40,10 @@
           <TextBlock FontSize="16" FontWeight="SemiBold" Text="2 · 选择训练样本" />
           <TextBlock Text="{Binding CurationSummary}" TextWrapping="Wrap" />
           <TextBlock Text="{Binding CandidateReadinessHint}" TextWrapping="Wrap" Foreground="#93C5FD" />
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <TextBlock Text="{Binding DecoderHint}" Foreground="#FBBF24" VerticalAlignment="Center" />
+            <Button Content="配置解码器" Command="{Binding ConfigureDecoderCommand}" />
+          </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <Button Content="全选可训练" Command="{Binding SelectAllEligibleCommand}" IsEnabled="{Binding HasEligibleCandidates}" />
             <Button Content="清除选择" Command="{Binding ClearSelectionsCommand}" IsEnabled="{Binding HasCandidates}" />
@@ -85,7 +89,7 @@
                   <TextBlock Text="{Binding RelativeAudioPath}" TextTrimming="CharacterEllipsis" />
                   <TextBlock Text="{Binding ItemId}" Foreground="#94A3B8" FontSize="12" />
                 </StackPanel>
-                <Button Grid.RowSpan="2" Grid.Column="2" Content="{Binding PreviewButtonText}" Command="{Binding PreviewCommand}" VerticalAlignment="Center" />
+                <Button Grid.RowSpan="2" Grid.Column="2" Content="{Binding PreviewButtonText}" Command="{Binding PreviewCommand}" IsEnabled="{Binding CanPreview}" VerticalAlignment="Center" />
                 <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="16">
                   <TextBlock Text="{Binding DurationText, StringFormat='时长：{0} ms'}" Foreground="#93C5FD" />
                   <TextBlock Text="{Binding ByteLength, StringFormat='大小：{0} bytes'}" Foreground="#CBD5E1" />
