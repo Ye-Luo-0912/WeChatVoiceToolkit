@@ -19,6 +19,7 @@ internal static partial class CliApplication
         rootCommand.Subcommands.Add(CreateMaterializationCommand());
         rootCommand.Subcommands.Add(CreateContactCommand());
         rootCommand.Subcommands.Add(CreateStorageCommand());
+        rootCommand.Subcommands.Add(CreateSeedVcCommand());
 
         return rootCommand.Parse(args).Invoke();
     }

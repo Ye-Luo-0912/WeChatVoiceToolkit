@@ -114,8 +114,23 @@ dotnet run --project src/WeChatVoice.Cli -- workspace verify --workspace .\.wech
 dotnet run --project src/WeChatVoice.Cli -- workspace materialize --snapshot-directory .\raw-snapshot --backend weixin-windows-4 --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- workspace adopt --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
 dotnet run --project src/WeChatVoice.Cli -- materialization recover --output .\decrypted-db --workspace-output .\.wechatvoice\local-workspace.json
+dotnet run --project src/WeChatVoice.Cli -- seedvc doctor --seedvc-root D:\tools\seed-vc
+dotnet run --project src/WeChatVoice.Cli -- seedvc prepare --dataset .\exports\peer\datasets\<build-fingerprint> --anchor D:\recordings\phone --out .\seedvc-prep\<fingerprint>
+dotnet run --project src/WeChatVoice.Cli -- seedvc train --prep .\seedvc-prep\<fingerprint> --seedvc-root D:\tools\seed-vc --batch-size 1 --max-steps 1000
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
 ```
+
+Seed-VC integration is deliberately an external-tool boundary. `seedvc
+doctor` is read-only. `seedvc prepare` verifies the existing Dataset Build,
+creates a deterministic `audio/` directory of mono PCM WAV clips between one
+and thirty seconds, writes `manifests/prep-manifest.json` plus an auditable
+`sources.jsonl`, and reuses an intact preparation with the same fingerprint.
+Optional phone recordings are treated as anchors and are copied according to
+`--anchor-weight` (default 2). `seedvc train` starts the upstream `train.py`
+with an explicit argument list, Windows `--num-workers 0`, a default
+3060-Ti-friendly batch size of 1, and a local `run-manifest.json`/`train.log`.
+No Python environment is modified and no audio or checkpoint is committed to
+the repository.
 
 The CLI owns the one-shot UAC Broker exchange; `WeChatVoice.KeyBroker` is not a
 stdin tool and never exposes key material.

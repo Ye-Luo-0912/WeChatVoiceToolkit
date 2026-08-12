@@ -39,6 +39,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         IVoiceDurationResolver? voiceDurationResolver = null,
         IStorageLifecycleWorkflow? storageLifecycle = null,
         IRunRetentionWorkflow? runRetention = null,
+        ISeedVcWorkflow? seedVc = null,
         string? appDataDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(accountConfirmation);
@@ -92,6 +93,7 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
             ?? new StorageLifecycleWorkflow(
                 inventory: new ManagedStorageInventory(storageRoots));
         RunRetention = runRetention ?? new RunRetentionWorkflow();
+        SeedVc = seedVc ?? new SeedVcWorkflow();
         AccountConfirmation = accountConfirmation;
         AllowDevelopmentBroker = allowDevelopmentBroker;
     }
@@ -117,6 +119,8 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
     public IStorageLifecycleWorkflow StorageLifecycle { get; }
 
     public IRunRetentionWorkflow RunRetention { get; }
+
+    public ISeedVcWorkflow SeedVc { get; }
 
     public IAccountConfirmation AccountConfirmation { get; }
 

@@ -120,6 +120,13 @@ public interface IRunRetentionWorkflow
         CancellationToken cancellationToken);
 }
 
+public interface ISeedVcWorkflow
+{
+    Task<SeedVcDoctorReport> DoctorAsync(SeedVcDoctorRequest request, WorkflowContext context, CancellationToken cancellationToken);
+    Task<SeedVcPrepareResult> PrepareAsync(SeedVcPrepareRequest request, WorkflowContext context, CancellationToken cancellationToken);
+    Task<SeedVcTrainResult> TrainAsync(SeedVcTrainRequest request, WorkflowContext context, CancellationToken cancellationToken);
+}
+
 public interface ISnapshotWorkflow
 {
     Task<SnapshotWorkflowResult> RunAsync(

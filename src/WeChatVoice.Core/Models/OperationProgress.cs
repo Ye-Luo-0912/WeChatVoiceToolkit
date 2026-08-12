@@ -15,6 +15,7 @@ public enum OperationPhase
     ContactDiscovery,
     VoiceScan,
     VoiceExport,
+    SeedVc,
     ProjectState,
     StorageLifecycle,
     RunRetention,
@@ -66,6 +67,9 @@ public static class OperationStageIds
     public const string CompactingRuns = "compacting-runs";
 
     public const string Completing = "completing";
+    public const string PreparingSeedVc = "preparing-seedvc";
+    public const string CheckingSeedVc = "checking-seedvc";
+    public const string TrainingSeedVc = "training-seedvc";
 }
 
 /// <summary>

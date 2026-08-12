@@ -30,3 +30,8 @@ artifacts/
 .env
 .env.*
 tools/
+
+# Seed-VC local preparation, runs, logs, and checkpoints
+/seedvc-prep/
+/seedvc-runs/
+/SeedVcRuns/
