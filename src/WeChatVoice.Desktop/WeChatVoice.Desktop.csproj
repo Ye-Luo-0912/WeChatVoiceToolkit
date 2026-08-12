@@ -24,5 +24,6 @@
   </ItemGroup>
 
   <Import Project="..\..\build\WeChatVoice.BrokerDeployment.targets" />
+  <Import Project="..\..\build\WeChatVoice.BundledDecoder.targets" />
 
 </Project>

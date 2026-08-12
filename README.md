@@ -178,7 +178,13 @@ hash-matching artifact.
 See [architecture.md](docs/architecture.md), [adr-0001-sqlite-runtime.md](docs/adr-0001-sqlite-runtime.md), [security.md](docs/security.md),
 and [agent-handoff.md](docs/agent-handoff.md) before extending the project.
 
-Optional duration analysis reuses the existing SILK decoder boundary. Set
+Duration analysis and audio preview use the bundled WeChat SILK v3 decoder automatically
+when the packaged `WeChatVoice.SilkDecoder.exe` is present. The decoder is a
+fixed, local process and does not require FFmpeg or a separate installation.
+Its upstream MIT license and pinned SHA-256 are recorded beside the bundled
+asset in `src/WeChatVoice.Workflows/Resources/THIRD_PARTY_LICENSES.md`.
+
+An optional reviewed decoder can still override the bundled decoder. Set
 `WECHATVOICE_SILK_DECODER_PATH` to the reviewed decoder executable, then enable
 the Desktop scan option “解码计算时长”. The scanner stages WAV output only in
 the OS temporary directory, validates RIFF/PCM structure, computes duration

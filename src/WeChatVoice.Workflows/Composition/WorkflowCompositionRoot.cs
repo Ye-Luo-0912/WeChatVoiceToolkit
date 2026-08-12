@@ -179,7 +179,16 @@ public sealed class WorkflowCompositionRoot : IAsyncDisposable
         var workerPath = inspector.DiscoverWorkerPath();
         if (!string.IsNullOrWhiteSpace(workerPath) && File.Exists(workerPath))
         {
-            return new DecoderVoiceDurationResolver(new ExternalSilkDecoderWorker(workerPath, cleanupQueue: cleanupQueue), cleanupQueue);
+            IVoiceDecoder decoder = DecoderStatusInspector.IsBundledDecoderPath(workerPath)
+                ? new BundledSilkDecoder(workerPath, cleanupQueue: cleanupQueue)
+                : new ExternalSilkDecoderWorker(workerPath, cleanupQueue: cleanupQueue);
+            return new DecoderVoiceDurationResolver(decoder, cleanupQueue);
+        }
+
+        var bundledPath = DecoderStatusInspector.DiscoverBundledDecoderPath();
+        if (bundledPath is not null)
+        {
+            return new DecoderVoiceDurationResolver(new BundledSilkDecoder(bundledPath, cleanupQueue: cleanupQueue), cleanupQueue);
         }
 
         var path = Environment.GetEnvironmentVariable("WECHATVOICE_SILK_DECODER_PATH");

@@ -1,0 +1,22 @@
+<Project>
+  <!-- The bundled decoder is a fixed, reviewed asset. Copy it into every
+       executable host output so the composition root can discover it without
+       a user-provided path or PATH lookup. -->
+  <Target Name="CopyBundledSilkDecoder" AfterTargets="Build">
+    <ItemGroup>
+      <BundledSilkDecoder Include="$(MSBuildThisFileDirectory)..\src\WeChatVoice.Workflows\Resources\WeChatVoice.SilkDecoder.exe" />
+      <BundledSilkDecoderLicense Include="$(MSBuildThisFileDirectory)..\src\WeChatVoice.Workflows\Resources\THIRD_PARTY_LICENSES.md" />
+    </ItemGroup>
+    <Copy SourceFiles="@(BundledSilkDecoder)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(BundledSilkDecoderLicense)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyBundledSilkDecoderToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <BundledSilkDecoder Include="$(MSBuildThisFileDirectory)..\src\WeChatVoice.Workflows\Resources\WeChatVoice.SilkDecoder.exe" />
+      <BundledSilkDecoderLicense Include="$(MSBuildThisFileDirectory)..\src\WeChatVoice.Workflows\Resources\THIRD_PARTY_LICENSES.md" />
+    </ItemGroup>
+    <Copy SourceFiles="@(BundledSilkDecoder)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(BundledSilkDecoderLicense)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

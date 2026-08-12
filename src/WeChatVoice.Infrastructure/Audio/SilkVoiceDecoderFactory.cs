@@ -26,7 +26,15 @@ public sealed class SilkVoiceDecoderFactory : IVoiceDecoderFactory
         var workerPath = inspector.DiscoverWorkerPath();
         if (!string.IsNullOrWhiteSpace(workerPath) && File.Exists(workerPath))
         {
-            return new ExternalSilkDecoderWorker(workerPath, sampleRate);
+            return DecoderStatusInspector.IsBundledDecoderPath(workerPath)
+                ? new BundledSilkDecoder(workerPath, sampleRate)
+                : new ExternalSilkDecoderWorker(workerPath, sampleRate);
+        }
+
+        var bundledPath = DecoderStatusInspector.DiscoverBundledDecoderPath();
+        if (bundledPath is not null)
+        {
+            return new BundledSilkDecoder(bundledPath, sampleRate);
         }
 
         var path = _environment?.Invoke() ?? Environment.GetEnvironmentVariable(DecoderStatusInspector.LegacyEnvironmentVariable);
