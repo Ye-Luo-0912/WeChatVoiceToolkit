@@ -125,6 +125,25 @@ public sealed class MaterializationViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Unsupported_live_weixin_version_is_rejected_before_broker_work()
+    {
+        ((FakeWeixinProcessProbe)Services.WeixinProcessProbe).Running =
+        [
+            new WeChatVoice.Windows.WeChatProcessInfo(1234, "Weixin", "4.1.12.55"),
+        ];
+        var viewModel = CreateViewModel();
+        viewModel.SnapshotDirectory = "C:\\snapshots\\s";
+        viewModel.OutputDirectory = "C:\\output";
+
+        await viewModel.MaterializeCommand.ExecuteAsync(null);
+
+        Assert.Equal(ErrorCode.UnsupportedWeixinVersion, viewModel.RunHost.LastErrorCode);
+        Assert.Contains("4.1.12.55", viewModel.WeixinProcessSummary, StringComparison.Ordinal);
+        Assert.False(viewModel.CanStartMaterialization);
+        Assert.Null(_workflow.LastRequest);
+    }
+
+    [Fact]
     public async Task Cancel_stops_a_running_materialization()
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
