@@ -72,6 +72,14 @@ public sealed class SeedVcTrainService
                 throw new AppFailureException(ErrorCode.InvalidRequest, "The existing Seed-VC run uses a different preparation dataset or config. Choose a new run name.");
             }
         }
+        if (previous is not null && previous.Status == SeedVcTrainStatus.Completed && request.Resume)
+        {
+            var existing = await FindCheckpointsAsync(outputRoot, cancellationToken).ConfigureAwait(false);
+            if (existing.Count > 0)
+            {
+                return new SeedVcTrainResult(outputRoot, manifestPath, logPath, previous.RunId, previous.Status, previous.ExitCode, existing);
+            }
+        }
         var runId = previous?.RunId ?? Guid.NewGuid().ToString("N");
         var started = previous?.StartedAtUtc ?? DateTimeOffset.UtcNow;
         var initial = new SeedVcTrainManifest(
@@ -114,7 +122,7 @@ public sealed class SeedVcTrainService
         int? exitCode = null;
         try
         {
-            progress?.Report(new OperationProgress(OperationPhase.VoiceExport, OperationStatus.Running, new OperationStage(OperationStageIds.Exporting, "启动 Seed-VC 微调")));
+            progress?.Report(new OperationProgress(OperationPhase.SeedVc, OperationStatus.Running, new OperationStage(OperationStageIds.TrainingSeedVc, "启动 Seed-VC 微调")));
             using var process = Process.Start(startInfo) ?? throw new AppFailureException(ErrorCode.WorkflowFailed, "Python could not be started.");
             await using var log = new FileStream(logPath, request.Resume && previous is not null ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             await using var writer = new StreamWriter(log, new UTF8Encoding(false));

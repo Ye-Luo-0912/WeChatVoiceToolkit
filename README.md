@@ -117,6 +117,7 @@ dotnet run --project src/WeChatVoice.Cli -- materialization recover --output .\d
 dotnet run --project src/WeChatVoice.Cli -- seedvc doctor --seedvc-root D:\tools\seed-vc
 dotnet run --project src/WeChatVoice.Cli -- seedvc prepare --dataset .\exports\peer\datasets\<build-fingerprint> --anchor D:\recordings\phone --out .\seedvc-prep\<fingerprint>
 dotnet run --project src/WeChatVoice.Cli -- seedvc train --prep .\seedvc-prep\<fingerprint> --seedvc-root D:\tools\seed-vc --batch-size 1 --max-steps 1000
+dotnet run --project src/WeChatVoice.Cli -- seedvc train --prep .\seedvc-prep\<fingerprint> --seedvc-root D:\tools\seed-vc --run-name voice-3060ti --no-resume
 dotnet run --project src/WeChatVoice.Cli -- seedvc infer --seedvc-root D:\tools\seed-vc --source .\source.wav --reference .\reference.wav --checkpoint D:\runs\latest.pth
 echo '{"requestId":"1","operation":"ping"}' | dotnet run --project src/WeChatVoice.ElevatedHelper
 ```
@@ -136,13 +137,20 @@ reusable panel: check environment → prepare (reuse when fingerprints match) �
 train/resume → checkpoint → optional inference preview. `seedvc infer` uses the
 bundled `tools/seedvc/seedvc_infer.py` bridge and writes `infer-manifest.json`,
 `infer.log`, and a RIFF/WAV-validated `converted.wav` under the application-local
-`SeedVcRuns` directory.
+`SeedVcRuns` directory. Training rewrites the selected config's `log_dir` into
+the app-owned run directory, so `train.log`, `run-manifest.json`, and the
+upstream `runs/<run-name>/` checkpoints stay together. Re-running the same
+run name verifies the preparation and config hashes first; a completed run
+with a valid checkpoint is returned without starting Python. Use
+`--no-resume` to fail instead of reusing an existing run.
 
 The Desktop page stores Seed-VC tool paths and verified derived paths in the
 application-local `seedvc-settings.json`, keyed by Dataset Build fingerprint.
 After restarting the app, an unchanged dataset can resume from the previous
-preparation/checkpoint without repeating the earlier workflow. Changed source
-data or changed anchor input invalidates that reuse automatically.
+preparation/checkpoint and the last inference result without repeating the
+earlier workflow. Changed source data or changed anchor input invalidates that
+reuse automatically. The Desktop exposes `播放结果` and `停止` for a valid
+completed conversion.
 
 The CLI owns the one-shot UAC Broker exchange; `WeChatVoice.KeyBroker` is not a
 stdin tool and never exposes key material.

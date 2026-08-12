@@ -164,19 +164,34 @@
 
 ## Next product work
 
-### Seed-VC fine-tuning (P0 complete)
+### Seed-VC fine-tuning (P0/P1 complete)
 
 The Dataset Build is now the input boundary for Seed-VC. The shared workflow
-and CLI expose `seedvc doctor`, `seedvc prepare`, and `seedvc train`.
+and CLI expose `seedvc doctor`, `seedvc prepare`, `seedvc train`, and
+`seedvc infer`.
 Preparation verifies the build manifest, filters invalid/short WAV files,
 normalizes to mono PCM, splits long recordings into 1–30 second clips, keeps
 phone anchors with an explicit weight, and persists a content/profile
 fingerprint so a verified result is reused. Training remains an external
 Seed-VC checkout: the host passes a fixed argv list to `train.py`, captures a
-bounded local log, and records run provenance/checkpoint hashes. The Desktop
-panel, explicit-argv inference bridge, folder pickers, and fingerprint-keyed
-local settings reuse are implemented. Checkpoint preview remains an optional
-polish item; Python/CUDA remains an external dependency.
+bounded local log, rewrites `log_dir` into the app-owned run directory, and
+records run provenance/checkpoint hashes. Existing runs are resumed only when
+the preparation and config hashes match; completed runs with valid checkpoints
+are reused without starting Python. The Desktop panel, explicit-argv
+inference bridge, folder pickers, fingerprint-keyed local settings, restored
+run/checkpoint state, and conversion playback controls are implemented.
+Python/CUDA remains an external dependency; no model weights or user audio are
+stored in the repository.
+
+### Remaining Seed-VC work
+
+1. Run the documented manual RTX 3060 Ti acceptance path with the user's
+   installed Seed-VC checkout and confirm one checkpoint plus one conversion.
+2. Keep upstream Seed-VC version/config hashes in each run manifest when the
+   host environment is available; this is release-audit metadata, not a new
+   training backend.
+3. Do not add RVC/GPT-SoVITS, automatic cloud downloads, or a second audio
+   preparation pipeline to this integration.
 
 1. Recover voice duration from a verified message metadata field only if the
    user supplies schema evidence and test data for that field. Until then,

@@ -63,18 +63,19 @@ internal static partial class CliApplication
         var trainConfig = new Option<string?>("--config");
         var trainOut = new Option<string?>("--out");
         var runName = new Option<string?>("--run-name");
+        var noResume = new Option<bool>("--no-resume") { Description = "Fail if the run already exists instead of reusing it." };
         var batch = new Option<int>("--batch-size") { DefaultValueFactory = _ => 1 };
         var steps = new Option<int>("--max-steps") { DefaultValueFactory = _ => 1000 };
         var epochs = new Option<int>("--max-epochs") { DefaultValueFactory = _ => 1000 };
         var saveEvery = new Option<int>("--save-every") { DefaultValueFactory = _ => 500 };
-        train.Options.Add(prep); train.Options.Add(trainRoot); train.Options.Add(trainPython); train.Options.Add(trainConfig); train.Options.Add(trainOut); train.Options.Add(runName); train.Options.Add(batch); train.Options.Add(steps); train.Options.Add(epochs); train.Options.Add(saveEvery);
+        train.Options.Add(prep); train.Options.Add(trainRoot); train.Options.Add(trainPython); train.Options.Add(trainConfig); train.Options.Add(trainOut); train.Options.Add(runName); train.Options.Add(noResume); train.Options.Add(batch); train.Options.Add(steps); train.Options.Add(epochs); train.Options.Add(saveEvery);
         train.SetAction(async (parseResult, cancellationToken) =>
         {
             try
             {
                 await using var workflowRoot = CreateRoot();
                 var result = await workflowRoot.SeedVc.TrainAsync(
-                    new SeedVcTrainRequest(parseResult.GetValue(prep)!, parseResult.GetValue(trainRoot)!, parseResult.GetValue(trainPython), parseResult.GetValue(trainConfig), parseResult.GetValue(trainOut), parseResult.GetValue(runName), parseResult.GetValue(batch), parseResult.GetValue(steps), parseResult.GetValue(epochs), parseResult.GetValue(saveEvery)),
+                    new SeedVcTrainRequest(parseResult.GetValue(prep)!, parseResult.GetValue(trainRoot)!, parseResult.GetValue(trainPython), parseResult.GetValue(trainConfig), parseResult.GetValue(trainOut), parseResult.GetValue(runName), parseResult.GetValue(batch), parseResult.GetValue(steps), parseResult.GetValue(epochs), parseResult.GetValue(saveEvery), !parseResult.GetValue(noResume)),
                     new WorkflowContext(workflowRoot.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)), cancellationToken).ConfigureAwait(false);
                 WriteJson(result);
                 return result.Status == SeedVcTrainStatus.Completed ? 0 : 1;

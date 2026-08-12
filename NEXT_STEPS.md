@@ -4,6 +4,14 @@
 >
 > 本文面向后续 Agent / Codex 开发。实现时必须继续遵守根目录 `AGENTS.md`、`docs/architecture.md`、`docs/security.md` 和现有 Verified/Workflow 边界。
 
+> Seed-VC integration status (2026-08-13): P0/P1 code paths are complete.
+> `seedvc doctor`, `prepare`, `train`, and `infer` are available from the
+> shared workflow and CLI; Desktop state is fingerprint-keyed and resumes
+> verified preparation, runs, checkpoints, and the last inference result.
+> Remaining validation is a manual RTX 3060 Ti run against the user's own
+> Seed-VC checkout. Do not interpret this as permission to add model weights
+> or real audio to the repository.
+
 ## 0. 当前阶段判断
 
 当前底层主链已经具备较强的正确性、安全性和恢复能力：
@@ -22,7 +30,7 @@
 2. **Snapshot / Workspace / temp / failed state 缺少统一生命周期管理，容易形成孤儿数据；**
 3. **Duration/decoder/quality 仍偏开发能力，没有形成默认可用的产品体验；**
 4. **Dataset 虽能构建，但距离真正训练可直接消费的数据集仍有最后一段；**
-5. **Desktop 仍偏“按步骤跑流程”，缺少“继续上次工作 / 使用已有数据 / 明确刷新”的产品模型。**
+5. **Seed-VC 剩余工作主要是用户机器上的 GPU 验收，不再是代码链路缺口。**
 
 后续优先级：**先完成现有功能闭环，不先扩展新的复杂模型能力。**
 

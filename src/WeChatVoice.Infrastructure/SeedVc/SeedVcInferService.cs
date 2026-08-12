@@ -60,18 +60,42 @@ public sealed class SeedVcInferService
         var output = Path.Combine(runRoot, "converted.wav");
         var manifestPath = Path.Combine(runRoot, "infer-manifest.json");
         var logPath = Path.Combine(runRoot, "infer.log");
-        var runId = Guid.NewGuid().ToString("N");
+        var previous = await ReadExistingManifestAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        var runId = previous?.RunId ?? Guid.NewGuid().ToString("N");
         var args = BuildArguments(script, checkpoint, config, source, reference, output, request);
+        var sourceHash = await FileHashing.ComputeSha256Async(source, cancellationToken).ConfigureAwait(false);
+        var referenceHash = await FileHashing.ComputeSha256Async(reference, cancellationToken).ConfigureAwait(false);
+        var checkpointHash = await FileHashing.ComputeSha256Async(checkpoint, cancellationToken).ConfigureAwait(false);
+        var configHash = await FileHashing.ComputeSha256Async(config, cancellationToken).ConfigureAwait(false);
+        if (previous is not null)
+        {
+            if (!string.Equals(previous.SourceSha256, sourceHash, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(previous.ReferenceSha256, referenceHash, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(previous.CheckpointSha256, checkpointHash, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(previous.ConfigSha256, configHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new AppFailureException(ErrorCode.InvalidRequest, "The existing inference run uses different input audio, checkpoint, or config. Choose a new run name.");
+            }
+
+            if (previous.Status == SeedVcInferStatus.Completed
+                && previous.OutputSha256 is not null
+                && File.Exists(output)
+                && await FileHashing.ComputeSha256Async(output, cancellationToken).ConfigureAwait(false) == previous.OutputSha256
+                && await WavFileValidator.IsValidAsync(output, cancellationToken).ConfigureAwait(false))
+            {
+                return new SeedVcInferResult(runRoot, manifestPath, logPath, output, previous.RunId, previous.Status, previous.ExitCode, previous.OutputByteLength, previous.OutputSha256);
+            }
+        }
         var initial = new SeedVcInferManifest(runId, runName,
-            await FileHashing.ComputeSha256Async(source, cancellationToken).ConfigureAwait(false),
-            await FileHashing.ComputeSha256Async(reference, cancellationToken).ConfigureAwait(false),
-            await FileHashing.ComputeSha256Async(checkpoint, cancellationToken).ConfigureAwait(false),
-            await FileHashing.ComputeSha256Async(config, cancellationToken).ConfigureAwait(false),
+            sourceHash,
+            referenceHash,
+            checkpointHash,
+            configHash,
             request.PythonPath ?? "python", Path.GetFileName(script), args,
-            DateTimeOffset.UtcNow, null, SeedVcInferStatus.Failed, null, "converted.wav", null, null, "infer.log");
+            previous?.StartedAtUtc ?? DateTimeOffset.UtcNow, null, SeedVcInferStatus.Failed, null, "converted.wav", null, null, "infer.log");
         await WriteJsonAsync(manifestPath, initial, cancellationToken).ConfigureAwait(false);
 
-        var python = string.IsNullOrWhiteSpace(request.PythonPath) ? "python" : request.PythonPath!;
+        var python = ResolvePython(request.PythonPath);
         var startInfo = new ProcessStartInfo { FileName = python, WorkingDirectory = root, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         foreach (var arg in args) startInfo.ArgumentList.Add(arg);
         var status = SeedVcInferStatus.Failed;
@@ -128,6 +152,27 @@ public sealed class SeedVcInferService
         var a = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var b = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return a.StartsWith(b, StringComparison.OrdinalIgnoreCase) || b.StartsWith(a, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolvePython(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return "python";
+        return Path.IsPathRooted(requested) || requested.Contains(Path.DirectorySeparatorChar) || requested.Contains(Path.AltDirectorySeparatorChar)
+            ? Path.GetFullPath(requested)
+            : requested;
+    }
+
+    private static async Task<SeedVcInferManifest?> ReadExistingManifestAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            return await ReadAsync<SeedVcInferManifest>(path, cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException ex)
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The existing Seed-VC inference manifest is invalid; choose a new run name.", ex);
+        }
     }
 
     private static string Sanitize(string value)

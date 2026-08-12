@@ -129,6 +129,20 @@ page that owns that workflow while the `IProjectStateWorkflow` verify/reuse
 decision stays authoritative. The catalog, routing, and navigation bridge are
 covered by Core and Desktop tests.
 
+Seed-VC integration is now complete through the documented P1 boundary. The
+Dataset Build feeds a reusable, fingerprinted preparation directory; the
+shared workflow exposes `doctor`, `prepare`, `train`, and `infer`; and the
+Desktop dataset page provides environment check, preparation, train/resume,
+checkpoint selection, conversion, open-run, and playback actions. Training
+rewrites the upstream config `log_dir` into the application-local run root so
+checkpoints are discoverable beside `train.log` and `run-manifest.json`.
+Existing runs are accepted only when preparation/config hashes match, and a
+completed run with a verified checkpoint is reused without launching Python.
+Desktop settings persist tool paths, preparation, run name, checkpoint, audio
+inputs, and the last conversion keyed by Dataset Build fingerprint. The
+remaining acceptance is manual GPU validation with the user's Seed-VC
+checkout; no model weights or real audio belong in Git.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
 work: decoder productization (Phase 3: optional packaged reviewed decoder).

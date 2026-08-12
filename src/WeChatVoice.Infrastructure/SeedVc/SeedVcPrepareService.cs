@@ -36,6 +36,10 @@ public sealed class SeedVcPrepareService
 
         var profile = request.Profile ?? new SeedVcPrepareProfile();
         var buildManifestPath = Path.Combine(datasetRoot, "build-manifest.json");
+        if (!File.Exists(buildManifestPath))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The selected directory is not a verified Dataset Build (build-manifest.json is missing).");
+        }
         var build = await ReadAsync<DatasetBuildManifest>(buildManifestPath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(build.LinkMode.ToString(), nameof(DatasetLinkMode.VerifiedCopy), StringComparison.Ordinal)
             && build.LinkMode != DatasetLinkMode.LinkedView)
@@ -62,6 +66,7 @@ public sealed class SeedVcPrepareService
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "WeChatVoiceToolkit", "SeedVcPrep", prepFingerprint));
         EnsureNotInsideDataset(datasetRoot, outputRoot);
+        EnsureNotInsideAnchorDirectory(request.AnchorDirectory, outputRoot);
         var manifestPath = Path.Combine(outputRoot, "manifests", "prep-manifest.json");
         var journalPath = Path.Combine(outputRoot, "manifests", "sources.jsonl");
         if (Directory.Exists(outputRoot))
@@ -297,6 +302,17 @@ public sealed class SeedVcPrepareService
         var dataset = Path.GetFullPath(datasetRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var output = Path.GetFullPath(outputRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (output.StartsWith(dataset, StringComparison.OrdinalIgnoreCase)) throw new AppFailureException(ErrorCode.InvalidRequest, "The Seed-VC preparation output must not be inside the source dataset.");
+    }
+
+    private static void EnsureNotInsideAnchorDirectory(string? anchorDirectory, string outputRoot)
+    {
+        if (string.IsNullOrWhiteSpace(anchorDirectory)) return;
+        var anchor = Path.GetFullPath(anchorDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var output = Path.GetFullPath(outputRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (output.StartsWith(anchor, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AppFailureException(ErrorCode.InvalidRequest, "The Seed-VC preparation output must not be inside the anchor directory.");
+        }
     }
 
     private static void TryDelete(string path)

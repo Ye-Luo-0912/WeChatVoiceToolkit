@@ -64,6 +64,13 @@ public sealed class SeedVcDoctorService
     {
         if (!string.IsNullOrWhiteSpace(requested))
         {
+            // Accept both an explicit executable path and a command resolved
+            // through PATH (for example `python`, `python3`, or `py`).
+            if (!requested.Contains(Path.DirectorySeparatorChar) && !requested.Contains(Path.AltDirectorySeparatorChar) && !Path.IsPathRooted(requested))
+            {
+                return CanStart(requested) ? requested : null;
+            }
+
             var full = Path.GetFullPath(requested);
             return File.Exists(full) ? full : null;
         }
@@ -80,6 +87,22 @@ public sealed class SeedVcDoctorService
         }
 
         return null;
+    }
+
+    private static bool CanStart(string command)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo(command, "--version")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            });
+            return process is not null && process.WaitForExit(1500) && process.ExitCode == 0;
+        }
+        catch (Exception) { return false; }
     }
 
     private static async Task<(bool Success, string? PythonVersion, string? TorchVersion, bool? CudaAvailable, string? GpuName)> RunPythonProbeAsync(string python, CancellationToken cancellationToken)
