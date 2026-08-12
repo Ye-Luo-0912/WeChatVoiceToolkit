@@ -16,6 +16,7 @@ namespace WeChatVoice.Desktop.ViewModels;
 /// </summary>
 public sealed partial class ResumeViewModel : PageViewModelBase
 {
+    private static readonly System.Text.Json.JsonSerializerOptions ManifestJson = new(System.Text.Json.JsonSerializerDefaults.Web);
     public ResumeViewModel(DesktopServices services)
         : base(services)
     {
@@ -216,7 +217,7 @@ public sealed partial class ResumeViewModel : PageViewModelBase
                 return;
             }
 
-            var manifest = System.Text.Json.JsonSerializer.Deserialize<SnapshotManifest>(File.ReadAllText(manifestPath));
+            var manifest = System.Text.Json.JsonSerializer.Deserialize<SnapshotManifest>(File.ReadAllText(manifestPath), ManifestJson);
             if (manifest is null
                 || !string.Equals(manifest.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(Path.GetFullPath(manifest.SnapshotDirectory), Path.GetFullPath(recent.SnapshotDirectory), StringComparison.OrdinalIgnoreCase))

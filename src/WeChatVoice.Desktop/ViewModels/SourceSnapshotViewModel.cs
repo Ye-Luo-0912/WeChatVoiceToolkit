@@ -30,6 +30,7 @@ public enum SourceSnapshotPageState
 /// </summary>
 public sealed partial class SourceSnapshotViewModel : PageViewModelBase
 {
+    private static readonly JsonSerializerOptions ManifestJson = new(JsonSerializerDefaults.Web);
     private bool _applyingDiscovery;
     private bool _applyingSourceSelection;
     private bool _applyingOutputSelection;
@@ -543,7 +544,7 @@ public sealed partial class SourceSnapshotViewModel : PageViewModelBase
                 return false;
             }
 
-            var manifest = JsonSerializer.Deserialize<SnapshotManifest>(File.ReadAllText(manifestPath));
+            var manifest = JsonSerializer.Deserialize<SnapshotManifest>(File.ReadAllText(manifestPath), ManifestJson);
             if (manifest is null
                 || !string.Equals(Path.GetFullPath(manifest.SnapshotDirectory), Path.GetFullPath(recent.SnapshotDirectory), StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(manifest.SnapshotId, recent.SnapshotId, StringComparison.OrdinalIgnoreCase))
