@@ -15,6 +15,7 @@ namespace WeChatVoice.Desktop.ViewModels;
 /// </summary>
 public sealed partial class MaterializationViewModel : PageViewModelBase
 {
+    private const string SupportedWeixinVersion = "4.1.11.55";
     private DialogAccountConfirmation? _activeConfirmation;
     private readonly WorkflowRunHost _recoveryAssessmentHost;
     private bool _applyingDefaults;
@@ -66,16 +67,39 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
 
     public bool CanStartMaterialization
         => CanStartOperation
+            && !HasReusableWorkspace
             && Services.Project.EnvironmentAssessment?.BrokerAcquireAndMaterializeAvailable == true
             && !string.IsNullOrWhiteSpace(SnapshotDirectory)
             && !string.IsNullOrWhiteSpace(OutputDirectory)
-            && IsWeixinProcessReady;
+            && IsWeixinProcessReady
+            && IsLiveVersionCompatible;
+
+    /// <summary>
+    /// A verified Workspace is the durable hand-off point of the workflow.
+    /// Once it exists, materialization is complete and the user must not be
+    /// sent through snapshot selection, account confirmation, UAC, or key
+    /// extraction again.
+    /// </summary>
+    public bool HasReusableWorkspace => Services.Project.Workspace is not null;
+
+    public bool CanContinueToContacts => HasReusableWorkspace;
+
+    public bool ShowMaterializationForm => !HasReusableWorkspace;
+
+    public bool IsLiveVersionCompatible
+        => !IsWeixinProcessReady
+            || string.IsNullOrWhiteSpace(DetectedWeixinVersion)
+            || string.Equals(DetectedWeixinVersion, SupportedWeixinVersion, StringComparison.Ordinal);
 
     public string MaterializationReadinessSummary
-        => IsConfirmDialogOpen || RunHost.IsAwaitingUser
+        => HasReusableWorkspace
+            ? "已检测到已验证 Workspace，物料化已完成。可直接进入联系人，无需重新选择快照或提取密钥。"
+            : IsConfirmDialogOpen || RunHost.IsAwaitingUser
             ? "已暂停等待账号确认：请在上方确认账号，确认后才会弹出 UAC 并继续。"
             : !IsWeixinProcessReady
             ? "请先启动 Weixin，再点击“刷新 Weixin 状态”。创建快照时需要退出 Weixin，但提取密钥和物料化时必须让 Weixin 保持运行。"
+            : !IsLiveVersionCompatible
+            ? $"当前 Weixin 版本为 {DetectedWeixinVersion}，暂不支持物料化（当前 Profile 仅支持 {SupportedWeixinVersion}）。请安装受支持版本，或直接从“继续上次工作”复用已有 Workspace。"
             : !CanStartMaterialization
             ? Services.Project.Snapshot is null
                 ? "请先创建源快照。"
@@ -87,11 +111,14 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     public override string Title => "物料化";
 
     public override bool CanNavigate
-        => Services.Project.Snapshot is not null
-            && Services.Project.EnvironmentAssessment?.BrokerAcquireAndMaterializeAvailable == true;
+        => HasReusableWorkspace
+            || (Services.Project.Snapshot is not null
+                && Services.Project.EnvironmentAssessment?.BrokerAcquireAndMaterializeAvailable == true);
 
     public override string? NavigationHint => CanNavigate ? null
-        : Services.Project.Snapshot is null
+        : HasReusableWorkspace
+            ? null
+            : Services.Project.Snapshot is null
             ? "请先创建源快照"
             : Services.Project.EnvironmentAssessment is null
                 ? "请先完成环境检测"
@@ -136,6 +163,9 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     [ObservableProperty]
     private string _weixinProcessSummary = "尚未检查 Weixin 运行状态";
 
+    [ObservableProperty]
+    private string? _detectedWeixinVersion;
+
     partial void OnIsConfirmDialogOpenChanged(bool value)
     {
         OnPropertyChanged(nameof(MaterializationReadinessSummary));
@@ -144,6 +174,14 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     partial void OnIsWeixinProcessReadyChanged(bool value)
     {
         OnPropertyChanged(nameof(CanStartMaterialization));
+        OnPropertyChanged(nameof(IsLiveVersionCompatible));
+        OnPropertyChanged(nameof(MaterializationReadinessSummary));
+    }
+
+    partial void OnDetectedWeixinVersionChanged(string? value)
+    {
+        OnPropertyChanged(nameof(IsLiveVersionCompatible));
+        OnPropertyChanged(nameof(CanStartMaterialization));
         OnPropertyChanged(nameof(MaterializationReadinessSummary));
     }
 
@@ -151,6 +189,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     {
         switch (propertyName)
         {
+            case nameof(ExportProjectSession.Workspace):
             case nameof(ExportProjectSession.SnapshotDirectory):
             case nameof(ExportProjectSession.Snapshot):
             case nameof(ExportProjectSession.EnvironmentAssessment):
@@ -159,6 +198,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
                 OnPropertyChanged(nameof(NavigationHint));
                 OnPropertyChanged(nameof(CanStartMaterialization));
                 OnPropertyChanged(nameof(MaterializationReadinessSummary));
+                OnPropertyChanged(nameof(ShowMaterializationForm));
                 break;
         }
     }
@@ -197,6 +237,12 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     public override Task OnNavigatedToAsync(CancellationToken cancellationToken = default)
     {
         ApplyProjectDefaults();
+        if (HasReusableWorkspace)
+        {
+            ResultSummary ??= $"已复用现有 Workspace：{Services.Project.Workspace!.Workspace.WorkspaceId}";
+            RunHost.LastError = null;
+            RunHost.LastErrorCode = null;
+        }
         RefreshWeixinState();
         return Task.CompletedTask;
     }
@@ -206,10 +252,22 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     {
         var processes = Services.WeixinProcessProbe.ListRunning();
         IsWeixinProcessReady = processes.Count > 0;
+        DetectedWeixinVersion = processes
+            .Where(static process => string.Equals(process.ProcessName, "Weixin", StringComparison.OrdinalIgnoreCase))
+            .Select(static process => process.ProductVersion)
+            .FirstOrDefault(static version => !string.IsNullOrWhiteSpace(version));
         WeixinProcessSummary = IsWeixinProcessReady
-            ? $"已检测到 Weixin（{processes.Count} 个进程），可以提取密钥。"
+            ? $"已检测到 Weixin（{processes.Count} 个进程，版本 {DetectedWeixinVersion ?? "未知"}），可以提取密钥。"
             : "未检测到运行中的 Weixin。请启动 Weixin 后刷新状态。";
+        if (IsWeixinProcessReady && !IsLiveVersionCompatible)
+        {
+            WeixinProcessSummary += $" 当前版本不在支持范围内（仅支持 {SupportedWeixinVersion}）。";
+        }
     }
+
+    [RelayCommand]
+    private void ContinueToContacts()
+        => Services.Navigation.NavigateTo(typeof(ContactViewModel));
 
     private void ApplyProjectDefaults()
     {
@@ -282,6 +340,13 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
     [RelayCommand]
     private async Task MaterializeAsync()
     {
+        if (HasReusableWorkspace)
+        {
+            ResultSummary ??= $"已复用现有 Workspace：{Services.Project.Workspace!.Workspace.WorkspaceId}";
+            Services.Navigation.NavigateTo(typeof(ContactViewModel));
+            return;
+        }
+
         UacRejected = false;
         CanRecoverMaterialization = false;
         RecoverySummary = null;
@@ -315,6 +380,13 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
                 throw new AppFailureException(
                     ErrorCode.WeixinNotRunning,
                     "请启动 Weixin 后再执行物料化；密钥提取需要读取受控的 Weixin 进程内存。 ");
+            }
+
+            if (!IsLiveVersionCompatible)
+            {
+                throw new AppFailureException(
+                    ErrorCode.UnsupportedWeixinVersion,
+                    $"当前 Weixin 版本 {DetectedWeixinVersion} 不受支持；当前 Profile 仅支持 {SupportedWeixinVersion}。 ");
             }
 
             if (snapshot?.Manifest.PotentiallyInconsistent == true)
@@ -414,6 +486,7 @@ public sealed partial class MaterializationViewModel : PageViewModelBase
                 : $"账号身份为候选状态（证据等级：{result.AccountIdentity.State}）";
         ResultSummary = $"物料化完成：Workspace {result.Workspace.Workspace.WorkspaceId}；数据库 {result.Workspace.DataSet.Databases.Count} 个；"
             + (result.ProfileId is null ? "外部后端" : $"Profile {result.ProfileId} / MaterializationId {result.MaterializationId}");
+        Services.Navigation.NavigateTo(typeof(ContactViewModel));
     }
 
     private void ApplyRecoveredWorkspace(

@@ -254,6 +254,11 @@ public sealed partial class ResumeViewModel : PageViewModelBase
             nameof(ScanViewModel) => typeof(ScanViewModel),
             nameof(ExportViewModel) => typeof(ExportViewModel),
             nameof(DatasetCurationViewModel) => typeof(DatasetCurationViewModel),
+            nameof(SourceSnapshotViewModel) or nameof(MaterializationViewModel) or nameof(EnvironmentViewModel)
+                when Services.Project.Workspace is not null => typeof(ContactViewModel),
+            nameof(SourceSnapshotViewModel) => typeof(SourceSnapshotViewModel),
+            nameof(MaterializationViewModel) => typeof(MaterializationViewModel),
+            nameof(EnvironmentViewModel) => typeof(EnvironmentViewModel),
             _ => null,
         };
         if (target is not null)

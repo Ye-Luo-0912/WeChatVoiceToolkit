@@ -57,7 +57,18 @@ public static class WeChatProcessDiscovery
 
                         if (processId > 0 && IsKnownProcessName(actualName) && seenProcessIds.Add(processId))
                         {
-                            results.Add(new WeChatProcessInfo(processId, actualName));
+                            string? productVersion = null;
+                            try
+                            {
+                                productVersion = process.MainModule?.FileVersionInfo.ProductVersion;
+                            }
+                            catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+                            {
+                                // Version is diagnostic metadata only. The
+                                // identity verifier remains authoritative.
+                            }
+
+                            results.Add(new WeChatProcessInfo(processId, actualName, productVersion));
                         }
                     }
                     // A process can exit, or access can be denied, between enumeration and inspection.

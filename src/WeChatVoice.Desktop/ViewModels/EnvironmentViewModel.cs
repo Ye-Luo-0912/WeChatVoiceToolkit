@@ -86,13 +86,13 @@ public sealed partial class EnvironmentViewModel : PageViewModelBase
             IsWindows = result.IsWindows;
             IsWeixinRunning = result.RunningWeChatProcesses.Count > 0;
             IsSupportedVersion = result.MatchingKeyAcquisitionProfiles.Count > 0;
-            DetectedVersion = IsSupportedVersion
-                ? "4.1.11.55"
-                : result.RunningWeChatProcesses.FirstOrDefault()?.ProcessName;
+            var detectedProcess = result.RunningWeChatProcesses.FirstOrDefault();
+            DetectedVersion = detectedProcess?.ProductVersion
+                ?? (IsSupportedVersion ? "4.1.11.55" : null);
             DetectionSummary = IsSupportedVersion
                 ? $"已检测到受支持的 Weixin {DetectedVersion}（身份证据匹配）"
                 : IsWeixinRunning
-                    ? $"检测到 Weixin {DetectedVersion}，但该版本不受支持"
+                    ? $"检测到 Weixin {DetectedVersion ?? "未知版本"}，但该版本不受支持（当前仅支持 4.1.11.55）"
                     : "未检测到运行中的 Weixin 进程";
             WorkerInstalled = result.WorkerInstalled;
             BrokerInstalled = result.BrokerInstalled;

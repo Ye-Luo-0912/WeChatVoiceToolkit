@@ -393,6 +393,7 @@ public sealed partial class WorkflowRunHost : ObservableObject
             ErrorCode.ContactNotFound => "未找到所选联系人，请重新加载联系人列表并选择联系人。",
             ErrorCode.WorkspaceInvalid => "工作区校验失败，请重新物料化数据后再扫描。",
             ErrorCode.UnsupportedSchema => "数据库结构不受当前版本支持，请重新物料化或检查微信版本。",
+            ErrorCode.UnsupportedWeixinVersion => "当前运行的 Weixin 版本不受支持。请在环境检测页查看实际版本；当前 Profile 仅支持 4.1.11.55。若已有 Workspace，请从“继续上次工作”直接复用。",
             _ => fallbackAction,
         };
 

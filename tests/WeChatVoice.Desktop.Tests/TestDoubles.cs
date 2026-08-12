@@ -38,6 +38,8 @@ public sealed class FakeMaterializationWorkflow : IMaterializationWorkflow
 {
     public Exception? Throw { get; set; }
 
+    public MaterializationWorkflowRequest? LastRequest { get; private set; }
+
     public Action<WorkflowContext>? OnRun { get; set; }
 
     public MaterializationWorkflowResult Result { get; set; } = new(
@@ -49,6 +51,7 @@ public sealed class FakeMaterializationWorkflow : IMaterializationWorkflow
 
     public async Task<MaterializationWorkflowResult> RunAsync(MaterializationWorkflowRequest request, WorkflowContext context, CancellationToken cancellationToken)
     {
+        LastRequest = request;
         OnRun?.Invoke(context);
         if (Throw is not null)
         {
