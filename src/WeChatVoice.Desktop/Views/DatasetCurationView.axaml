@@ -107,7 +107,10 @@
               <TextBlock Text="Seed‑VC 音色训练" FontSize="18" FontWeight="SemiBold" />
               <TextBlock Text="复用当前训练集；可选加入手机朗读锚点" Foreground="#94A3B8" />
             </StackPanel>
-            <Button Grid.Column="1" Content="检查环境" Command="{Binding SeedVc.DoctorCommand}" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+              <Button Content="检查环境" Command="{Binding SeedVc.DoctorCommand}" />
+              <Button Content="检查 Linux" Command="{Binding SeedVc.RemoteDoctorCommand}" />
+            </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
               <Button Content="打开目录" Command="{Binding SeedVc.OpenRunDirectoryCommand}" />
               <Button Content="播放结果" Command="{Binding SeedVc.PlayInferenceResultCommand}" />
@@ -135,6 +138,7 @@
           <StackPanel Grid.Row="3" Spacing="3">
             <TextBlock Text="{Binding SeedVc.PreparedSummary}" Foreground="#93C5FD" />
             <TextBlock Text="{Binding SeedVc.TrainSummary}" Foreground="#93C5FD" />
+            <TextBlock Text="{Binding SeedVc.RemoteSummary}" Foreground="#A7F3D0" TextWrapping="Wrap" />
             <TextBlock Text="{Binding SeedVc.StatusMessage}" Foreground="#FBBF24" TextWrapping="Wrap" />
             <TextBlock Text="{Binding SeedVc.RunHost.StageMessage}" Foreground="#94A3B8" />
             <TextBlock Text="{Binding SeedVc.RunHost.LastError}" Foreground="#FCA5A5" TextWrapping="Wrap" />

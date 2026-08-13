@@ -74,8 +74,15 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
     public SeedVcTrainResult? LastTrain { get; private set; }
     public SeedVcInferResult? LastInfer { get; private set; }
     public SeedVcDoctorReport? LastDoctor { get; private set; }
+    public SeedVcRemoteProbeReport? LastRemoteProbe { get; private set; }
     public string? LastRunDirectory => _lastRunDirectory;
     public string? LastInferDirectory => _lastInferDirectory;
+
+    public string RemoteSummary => LastRemoteProbe is null
+        ? "Linux 训练机：尚未检查"
+        : LastRemoteProbe.IsReady
+            ? $"Linux 训练机已连接 · {LastRemoteProbe.PythonVersion ?? "Python 未知"} · {LastRemoteProbe.FfmpegVersion ?? "FFmpeg 未知"}"
+            : $"Linux 训练机未就绪：{string.Join(", ", LastRemoteProbe.Issues)}";
 
     public bool CanPrepare => !string.IsNullOrWhiteSpace(DatasetDirectory) && !RunHost.IsRunning && !_services.OperationCoordinator.IsBusy;
     public bool CanTrain => !string.IsNullOrWhiteSpace(PrepDirectory) && !string.IsNullOrWhiteSpace(SeedVcRoot) && !RunHost.IsRunning && !_services.OperationCoordinator.IsBusy;
@@ -188,6 +195,17 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
                 IsReady = report.IsReady;
                 StatusMessage = report.IsReady ? $"环境就绪：Python {report.PythonVersion ?? "未知"} · Torch {report.TorchVersion ?? "未知"}" : $"环境未就绪：{string.Join(", ", report.Issues)}";
                 OnPropertyChanged(nameof(IsReady));
+            });
+
+    [RelayCommand]
+    private Task RemoteDoctorAsync()
+        => RunHost.RunAsync<SeedVcRemoteProbeReport>(
+            async (context, token) => await _services.Workflows.SeedVc.RemoteDoctorAsync(context, token).ConfigureAwait(false),
+            report =>
+            {
+                LastRemoteProbe = report;
+                StatusMessage = RemoteSummary;
+                OnPropertyChanged(nameof(RemoteSummary));
             });
 
     [RelayCommand]
