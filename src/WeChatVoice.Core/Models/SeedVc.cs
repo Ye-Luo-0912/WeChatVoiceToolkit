@@ -237,6 +237,30 @@ public sealed record SeedVcTrainResult(
     int? ExitCode,
     IReadOnlyList<SeedVcCheckpoint> Checkpoints);
 
+/// <summary>One explicit Linux Seed-VC training invocation using the global SSH target.</summary>
+public sealed record SeedVcRemoteTrainRequest(
+    string PrepDirectory,
+    string? RunName = null,
+    int BatchSize = 1,
+    int MaxSteps = 1000,
+    int MaxEpochs = 1000,
+    int SaveEvery = 500,
+    bool Resume = true);
+
+public sealed record SeedVcRemoteTrainResult(
+    string LocalRunDirectory,
+    string LocalManifestPath,
+    string LocalLogPath,
+    string? RemotePrepDirectory,
+    string? RemoteRunDirectory,
+    string RunId,
+    SeedVcTrainStatus Status,
+    int? ExitCode,
+    string? CheckpointPath,
+    IReadOnlyList<SeedVcCheckpoint> Checkpoints,
+    bool DataReused,
+    IReadOnlyList<string> Issues);
+
 /// <summary>One explicit Seed-VC voice-conversion invocation.</summary>
 public sealed record SeedVcInferRequest(
     string? SeedVcRoot,

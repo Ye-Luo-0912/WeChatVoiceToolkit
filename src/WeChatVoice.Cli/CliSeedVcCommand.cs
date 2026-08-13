@@ -49,6 +49,29 @@ internal static partial class CliApplication
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 130; }
             catch (Exception exception) { WriteError(exception); return 1; }
         });
+        var remoteTrain = new Command("train", "Synchronize a verified preparation and train on the configured Linux host.");
+        var remotePrep = new Option<string>("--prep") { Required = true, Description = "Verified Seed-VC preparation directory." };
+        var remoteRunName = new Option<string?>("--run-name");
+        var remoteBatch = new Option<int>("--batch-size") { DefaultValueFactory = _ => 1 };
+        var remoteSteps = new Option<int>("--max-steps") { DefaultValueFactory = _ => 1000 };
+        var remoteEpochs = new Option<int>("--max-epochs") { DefaultValueFactory = _ => 1000 };
+        var remoteSaveEvery = new Option<int>("--save-every") { DefaultValueFactory = _ => 500 };
+        remoteTrain.Options.Add(remotePrep); remoteTrain.Options.Add(remoteRunName); remoteTrain.Options.Add(remoteBatch); remoteTrain.Options.Add(remoteSteps); remoteTrain.Options.Add(remoteEpochs); remoteTrain.Options.Add(remoteSaveEvery);
+        remoteTrain.SetAction(async (parseResult, cancellationToken) =>
+        {
+            try
+            {
+                await using var workflowRoot = CreateRoot();
+                var result = await workflowRoot.SeedVc.RemoteTrainAsync(
+                    new SeedVcRemoteTrainRequest(parseResult.GetValue(remotePrep)!, parseResult.GetValue(remoteRunName), parseResult.GetValue(remoteBatch), parseResult.GetValue(remoteSteps), parseResult.GetValue(remoteEpochs), parseResult.GetValue(remoteSaveEvery)),
+                    new WorkflowContext(workflowRoot.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)), cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return result.Status == SeedVcTrainStatus.Completed ? 0 : 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 130; }
+            catch (Exception exception) { WriteError(exception); return 1; }
+        });
+        remote.Subcommands.Add(remoteTrain);
         remote.Subcommands.Add(remoteDoctor);
 
         var prepare = new Command("prepare", "Create a reproducible 1-30 second Seed-VC audio set.");

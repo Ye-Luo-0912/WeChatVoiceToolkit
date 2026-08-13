@@ -81,7 +81,7 @@ public sealed partial class SeedVcWorkbenchViewModel : ObservableObject
     public string RemoteSummary => LastRemoteProbe is null
         ? "Linux 训练机：尚未检查"
         : LastRemoteProbe.IsReady
-            ? $"Linux 训练机已连接 · {LastRemoteProbe.PythonVersion ?? "Python 未知"} · {LastRemoteProbe.FfmpegVersion ?? "FFmpeg 未知"}"
+            ? $"Linux 训练机已连接 · {LastRemoteProbe.PythonVersion ?? "Python 未知"} · {LastRemoteProbe.TorchVersion ?? "Torch 未知"} · {LastRemoteProbe.GpuName ?? "GPU 未知"}"
             : $"Linux 训练机未就绪：{string.Join(", ", LastRemoteProbe.Issues)}";
 
     public bool CanPrepare => !string.IsNullOrWhiteSpace(DatasetDirectory) && !RunHost.IsRunning && !_services.OperationCoordinator.IsBusy;

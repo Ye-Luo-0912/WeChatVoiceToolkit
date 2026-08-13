@@ -194,6 +194,13 @@ SSH check of the configured Linux host and Seed-VC toolchain. It does not
 upload data or start training; any future remote execution needs its own
 reviewed boundary.
 
+The shared workflow now also exposes `seedvc remote train --prep <dir>`.
+It synchronizes only a verified, content-addressed preparation, validates
+remote SHA-256 files before reuse, invokes the fixed upstream `train.py`, and
+retrieves the latest checkpoint. Reuse the same run name to resume. Training
+is refused until the doctor reports the Whisper-small cache and pretrained
+checkpoint as present; model downloads remain an explicit host setup step.
+
 ### Remaining Seed-VC work
 
 1. Run the documented manual RTX 3060 Ti acceptance path with the user's

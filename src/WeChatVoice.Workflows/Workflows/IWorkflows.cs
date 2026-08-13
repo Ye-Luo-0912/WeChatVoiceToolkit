@@ -124,6 +124,7 @@ public interface ISeedVcWorkflow
 {
     Task<SeedVcDoctorReport> DoctorAsync(SeedVcDoctorRequest request, WorkflowContext context, CancellationToken cancellationToken);
     Task<SeedVcRemoteProbeReport> RemoteDoctorAsync(WorkflowContext context, CancellationToken cancellationToken);
+    Task<SeedVcRemoteTrainResult> RemoteTrainAsync(SeedVcRemoteTrainRequest request, WorkflowContext context, CancellationToken cancellationToken);
     Task<SeedVcPrepareResult> PrepareAsync(SeedVcPrepareRequest request, WorkflowContext context, CancellationToken cancellationToken);
     Task<SeedVcTrainResult> TrainAsync(SeedVcTrainRequest request, WorkflowContext context, CancellationToken cancellationToken);
     Task<SeedVcInferResult> InferAsync(SeedVcInferRequest request, WorkflowContext context, CancellationToken cancellationToken);

@@ -157,6 +157,12 @@ To verify a configured Linux host without transferring data, run
 bounded output and timeout, checking Python, FFmpeg, and `train.py`/`app_vc.py`.
 It must not be changed into an arbitrary remote shell or training launcher.
 
+The reviewed training path is `seedvc remote train --prep <dir>`. It reuses a
+preparation directory only after remote SHA-256 verification, invokes the
+fixed Seed-VC entrypoint, and retrieves the latest checkpoint. The same
+`--run-name` resumes a run. Model weights are never downloaded by the toolkit;
+`remote doctor` must report `modelAssetsReady: true` first.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
 work: decoder productization (Phase 3: optional packaged reviewed decoder).

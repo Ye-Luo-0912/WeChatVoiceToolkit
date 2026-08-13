@@ -38,6 +38,25 @@ public sealed class SeedVcToolchainResolverTests
     }
 
     [Fact]
+    public void Remote_train_command_uses_fixed_entrypoint_and_no_caller_command()
+    {
+        var command = SeedVcRemoteTrainService.BuildRemoteTrainCommand(
+            "/home/yeluo/seed-vc",
+            "/home/yeluo/miniconda3/envs/seedvc/bin/python3.10",
+            "/usr/bin/ffmpeg",
+            "/tmp/prep",
+            "/home/yeluo/seed-vc/runs/example",
+            new SeedVcRemoteTrainRequest("/tmp/prep", "example", MaxSteps: 3));
+
+        Assert.Contains("sh -c", command, StringComparison.Ordinal);
+        Assert.Contains("train.py", command, StringComparison.Ordinal);
+        Assert.Contains("--max-steps 3", command, StringComparison.Ordinal);
+        Assert.Contains("--pretrained-ckpt", command, StringComparison.Ordinal);
+        Assert.Contains("checkpoints/models--Plachta--Seed-VC", command, StringComparison.Ordinal);
+        Assert.DoesNotContain("powershell", command, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Resolve_prefers_explicit_then_environment_then_global_file()
     {
         using var temp = new TestTemporaryDirectory();

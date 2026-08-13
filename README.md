@@ -363,3 +363,16 @@ copying audio. Configure an OpenSSH alias and remote paths once, then run
 `wechatvoice seedvc remote doctor`. This performs a bounded read-only probe for
 the platform, Python, FFmpeg, `train.py`, and `app_vc.py`; it never reads or
 stores private keys, uploads data, or launches training.
+When the probe reports `modelAssetsReady: true`, a verified preparation can be
+synced and trained on the Linux GPU with:
+
+```text
+wechatvoice seedvc remote train --prep <verified-preparation-directory> \
+  --run-name my-speaker --batch-size 1 --max-steps 1000 --save-every 500
+```
+
+The preparation directory is content-addressed. Re-running the same run name
+reuses it only after every remote file passes SHA-256 verification, and the
+latest checkpoint is copied to the local `SeedVcRemoteRuns` directory. The
+toolkit does not silently download model weights; install the exact
+Whisper-small cache and Seed-VC pretrained checkpoint on Linux first.

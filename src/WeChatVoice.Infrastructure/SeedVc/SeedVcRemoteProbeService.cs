@@ -25,7 +25,7 @@ public sealed class SeedVcRemoteProbeService
         var issues = new List<string>();
         if (string.IsNullOrWhiteSpace(host))
         {
-            return new SeedVcRemoteProbeReport(false, false, null, null, null, null, false,
+            return new SeedVcRemoteProbeReport(false, false, null, null, null, null, null, null, false, null, false,
                 resolution.LinuxSeedVcRoot, ["linux-host-missing"], checkedAt);
         }
 
@@ -93,6 +93,17 @@ public sealed class SeedVcRemoteProbeService
             }
 
             var seedVcFound = string.Equals(values.GetValueOrDefault("seedvc"), "ready", StringComparison.OrdinalIgnoreCase);
+            if (values.GetValueOrDefault("torch")?.Contains("ModuleNotFoundError", StringComparison.Ordinal) == true
+                || values.GetValueOrDefault("torch")?.Contains("Traceback", StringComparison.Ordinal) == true)
+            {
+                issues.Add("torch-missing");
+            }
+            if (!bool.TryParse(values.GetValueOrDefault("cuda"), out var cudaAvailable) || !cudaAvailable)
+            {
+                issues.Add("cuda-unavailable");
+            }
+            var assetsReady = string.Equals(values.GetValueOrDefault("assets"), "ready", StringComparison.OrdinalIgnoreCase);
+            if (!assetsReady) issues.Add("model-assets-missing");
             if (reachable && !seedVcFound && !issues.Contains("linux-seedvc-root-missing", StringComparer.Ordinal))
             {
                 issues.Add("seedvc-files-missing");
@@ -104,6 +115,10 @@ public sealed class SeedVcRemoteProbeService
                 Host: host,
                 Platform: values.GetValueOrDefault("platform"),
                 PythonVersion: values.GetValueOrDefault("python"),
+                TorchVersion: values.GetValueOrDefault("torch"),
+                CudaAvailable: bool.TryParse(values.GetValueOrDefault("cuda"), out var cuda) ? cuda : null,
+                GpuName: values.GetValueOrDefault("gpu"),
+                ModelAssetsReady: assetsReady,
                 FfmpegVersion: values.GetValueOrDefault("ffmpeg"),
                 SeedVcFound: seedVcFound,
                 SeedVcRoot: root,
@@ -138,7 +153,7 @@ public sealed class SeedVcRemoteProbeService
         var quotedPython = QuoteForPosixShell(python);
         var quotedFfmpeg = QuoteForPosixShell(ffmpeg);
         var quotedRoot = QuoteForPosixShell(root ?? string.Empty);
-        var script = $"printf 'platform='; uname -srm; printf 'python='; {quotedPython} --version 2>&1; printf 'ffmpeg='; {quotedFfmpeg} -version 2>&1 | head -n 1; if [ -n {quotedRoot} ] && [ -f {quotedRoot}/train.py ] && [ -f {quotedRoot}/app_vc.py ]; then printf 'seedvc=ready\\n'; else printf 'seedvc=missing\\n'; fi";
+        var script = $"printf 'platform='; uname -srm; printf 'python='; {quotedPython} --version 2>&1; printf 'torch='; {quotedPython} -c 'import torch; print(torch.__version__)' 2>&1; printf 'cuda='; {quotedPython} -c 'import torch; print(torch.cuda.is_available())' 2>&1; printf 'gpu='; {quotedPython} -c 'import torch; print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"none\")' 2>&1; printf 'ffmpeg='; {quotedFfmpeg} -version 2>&1 | head -n 1; if [ -n {quotedRoot} ] && [ -f {quotedRoot}/train.py ] && [ -f {quotedRoot}/app_vc.py ]; then printf 'seedvc=ready\\n'; else printf 'seedvc=missing\\n'; fi; if find -L ~/.cache/huggingface/hub/models--openai--whisper-small/snapshots -type f -name config.json -size +1c -print -quit 2>/dev/null | grep -q . && (find -L ~/.cache/huggingface/hub/models--openai--whisper-small/snapshots -type f -name pytorch_model.bin -size +1c -print -quit 2>/dev/null | grep -q . || find -L ~/.cache/huggingface/hub/models--openai--whisper-small/snapshots -type f -name model.safetensors -size +1c -print -quit 2>/dev/null | grep -q .) && find -L {quotedRoot}/checkpoints -type f -name DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth -size +1c -print -quit 2>/dev/null | grep -q .; then printf 'assets=ready\\n'; else printf 'assets=missing\\n'; fi";
         // Weixin hosts may use fish (or another non-POSIX login shell). Force
         // the fixed probe through /bin/sh so the condition syntax is stable.
         return $"sh -c {QuoteForPosixShell(script)}";
@@ -179,7 +194,7 @@ public sealed class SeedVcRemoteProbeService
     private static string Limit(string value) => value.Length <= 160 ? value : value[..160];
 
     private static SeedVcRemoteProbeReport EmptyReport(SeedVcToolchainResolution resolution, DateTimeOffset checkedAt, string host, List<string> issues)
-        => new(false, false, host, null, null, null, false, resolution.LinuxSeedVcRoot, issues, checkedAt);
+        => new(false, false, host, null, null, null, null, null, false, null, false, resolution.LinuxSeedVcRoot, issues, checkedAt);
 
     private static void TryKill(Process process)
     {
