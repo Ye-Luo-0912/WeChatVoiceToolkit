@@ -6,6 +6,38 @@ namespace WeChatVoice.Tests;
 public sealed class SeedVcToolchainResolverTests
 {
     [Fact]
+    public async Task Remote_probe_without_host_fails_without_starting_ssh()
+    {
+        var resolution = new SeedVcToolchainResolution(
+            SeedVcRoot: null,
+            PythonPath: "python3",
+            FfmpegPath: null,
+            ConfigPath: null,
+            LinuxHost: null,
+            LinuxUser: null,
+            LinuxPort: null,
+            LinuxSeedVcRoot: null,
+            LinuxPythonPath: null,
+            LinuxFfmpegPath: null,
+            GlobalConfigPath: "test");
+
+        var report = await new SeedVcRemoteProbeService().ProbeAsync(resolution);
+
+        Assert.False(report.IsReady);
+        Assert.Contains("linux-host-missing", report.Issues);
+    }
+
+    [Fact]
+    public void Remote_probe_command_shell_quotes_configured_paths()
+    {
+        var command = SeedVcRemoteProbeService.BuildProbeCommand("/home/user/seed-vc/it's", "/home/user/bin/python", "/usr/bin/ffmpeg");
+
+        Assert.Contains("'\"'\"'", command, StringComparison.Ordinal);
+        Assert.Contains("train.py", command, StringComparison.Ordinal);
+        Assert.Contains("app_vc.py", command, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Resolve_prefers_explicit_then_environment_then_global_file()
     {
         using var temp = new TestTemporaryDirectory();

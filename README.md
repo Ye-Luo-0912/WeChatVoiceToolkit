@@ -357,3 +357,9 @@ path is preview, select, and “一键生成训练集”. The default output is 
 PATH or the user's WinGet FFmpeg package, it is used after decoding with fixed
 arguments to normalize the WAV; the source SILK is never modified. Verify and
 repair remain available for the derived training set.
+
+The shared Linux configuration can be verified without starting a remote job or
+copying audio. Configure an OpenSSH alias and remote paths once, then run
+`wechatvoice seedvc remote doctor`. This performs a bounded read-only probe for
+the platform, Python, FFmpeg, `train.py`, and `app_vc.py`; it never reads or
+stores private keys, uploads data, or launches training.

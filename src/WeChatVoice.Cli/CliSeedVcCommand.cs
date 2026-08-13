@@ -33,6 +33,24 @@ internal static partial class CliApplication
             catch (Exception exception) { WriteError(exception); return 1; }
         });
 
+        var remote = new Command("remote", "Read-only checks for the global Linux Seed-VC host.");
+        var remoteDoctor = new Command("doctor", "Verify SSH connectivity, Python, FFmpeg, and Seed-VC files without uploading data.");
+        remoteDoctor.SetAction(async (_, cancellationToken) =>
+        {
+            try
+            {
+                await using var workflowRoot = CreateRoot();
+                var result = await workflowRoot.SeedVc.RemoteDoctorAsync(
+                    new WorkflowContext(workflowRoot.AccountConfirmation, new Progress<OperationProgress>(ReportProgress)),
+                    cancellationToken).ConfigureAwait(false);
+                WriteJson(result);
+                return result.IsReady ? 0 : 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 130; }
+            catch (Exception exception) { WriteError(exception); return 1; }
+        });
+        remote.Subcommands.Add(remoteDoctor);
+
         var prepare = new Command("prepare", "Create a reproducible 1-30 second Seed-VC audio set.");
         var dataset = new Option<string>("--dataset") { Required = true, Description = "Verified Dataset build directory." };
         var anchor = new Option<string?>("--anchor") { Description = "Optional phone recording directory." };
@@ -154,7 +172,7 @@ internal static partial class CliApplication
             return 0;
         });
         globalConfig.Subcommands.Add(showConfig); globalConfig.Subcommands.Add(setConfig);
-        command.Subcommands.Add(doctor); command.Subcommands.Add(prepare); command.Subcommands.Add(train); command.Subcommands.Add(infer); command.Subcommands.Add(globalConfig);
+        command.Subcommands.Add(doctor); command.Subcommands.Add(remote); command.Subcommands.Add(prepare); command.Subcommands.Add(train); command.Subcommands.Add(infer); command.Subcommands.Add(globalConfig);
         return command;
     }
 }

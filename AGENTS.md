@@ -76,6 +76,10 @@ user-supplied, lawfully accessible WeChat data source.
   variable, per-user global `toolchain.json`, then PATH/defaults. Linux SSH
   configuration stores only an OpenSSH host alias and remote paths; never copy
   private keys, passwords, or key material into application settings.
+- `seedvc remote doctor` is a deliberately narrow, read-only SSH probe. Keep
+  its command fixed and shell-quoted, bound stdout/stderr and timeouts, and
+  never accept arbitrary remote commands, transfer user data, start training,
+  or inspect private-key contents. Reuse the global OpenSSH alias and paths.
 - WeChatVoice.Workflows is the composition boundary shared by the CLI and the
   Desktop host. Product flows live there as workflows (EnvironmentAssessment,
   Snapshot, Materialization, Workspace, ContactDiscovery, VoiceScan,

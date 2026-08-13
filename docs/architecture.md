@@ -114,3 +114,10 @@ same document may contain an OpenSSH host alias plus remote Linux paths; it
 never contains passwords, private keys, or raw key material. CLI and Desktop
 therefore present one reusable configuration surface while keeping the
 current training process local until a reviewed remote workflow is enabled.
+
+The explicit `seedvc remote doctor` command is the first remote capability. It
+executes one fixed, bounded SSH probe only: platform, Python version, FFmpeg
+version, and the presence of the configured Seed-VC entry scripts. It does not
+upload audio, read key files, or launch training. A future remote training
+workflow must be added as a separate reviewed boundary rather than broadening
+this probe into an arbitrary command runner.

@@ -189,6 +189,10 @@ and may store an OpenSSH alias plus remote paths without copying credentials.
 CLI arguments and `WECHATVOICE_*` variables override that file. Remote
 execution is intentionally a separate follow-up workflow; the current local
 training path already consumes the same resolved configuration.
+The explicit `seedvc remote doctor` command now provides a bounded, read-only
+SSH check of the configured Linux host and Seed-VC toolchain. It does not
+upload data or start training; any future remote execution needs its own
+reviewed boundary.
 
 ### Remaining Seed-VC work
 

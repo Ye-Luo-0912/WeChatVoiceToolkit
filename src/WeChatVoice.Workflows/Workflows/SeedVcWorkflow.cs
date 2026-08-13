@@ -6,6 +6,7 @@ namespace WeChatVoice.Workflows.Workflows;
 public sealed class SeedVcWorkflow : ISeedVcWorkflow
 {
     private readonly SeedVcDoctorService _doctor = new();
+    private readonly SeedVcRemoteProbeService _remoteProbe = new();
     private readonly SeedVcPrepareService _prepare = new();
     private readonly SeedVcTrainService _train = new();
     private readonly SeedVcInferService _infer = new();
@@ -14,6 +15,21 @@ public sealed class SeedVcWorkflow : ISeedVcWorkflow
     {
         EnsureStart(context);
         try { context.Report(OperationPhase.SeedVc, OperationStageIds.CheckingSeedVc, "检查 Seed-VC 环境"); var result = await _doctor.CheckAsync(request, cancellationToken).ConfigureAwait(false); context.StateMachine.TryComplete(); return result; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { context.StateMachine.TryCancel(); throw; }
+        catch { context.StateMachine.TryFail(); throw; }
+    }
+
+    public async Task<SeedVcRemoteProbeReport> RemoteDoctorAsync(WorkflowContext context, CancellationToken cancellationToken)
+    {
+        EnsureStart(context);
+        try
+        {
+            context.Report(OperationPhase.SeedVc, OperationStageIds.CheckingSeedVc, "检查 Linux Seed-VC 远端工具链");
+            var resolution = new SeedVcToolchainResolver().Resolve();
+            var result = await _remoteProbe.ProbeAsync(resolution, cancellationToken).ConfigureAwait(false);
+            context.StateMachine.TryComplete();
+            return result;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { context.StateMachine.TryCancel(); throw; }
         catch { context.StateMachine.TryFail(); throw; }
     }

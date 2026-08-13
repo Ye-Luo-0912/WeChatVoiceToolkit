@@ -152,6 +152,11 @@ Seed-VC, Python, FFmpeg and an optional OpenSSH host alias. SSH credentials
 stay in the user's `~/.ssh/config` and agent; do not persist private keys or
 passwords in toolkit configuration.
 
+To verify a configured Linux host without transferring data, run
+`seedvc remote doctor`. The command uses a fixed read-only SSH probe with
+bounded output and timeout, checking Python, FFmpeg, and `train.py`/`app_vc.py`.
+It must not be changed into an arbitrary remote shell or training launcher.
+
 Before release work, run the RID-locked restore, CI Release build, format
 check, complete tests, and `scripts/package-release.ps1`. The remaining product
 work: decoder productization (Phase 3: optional packaged reviewed decoder).

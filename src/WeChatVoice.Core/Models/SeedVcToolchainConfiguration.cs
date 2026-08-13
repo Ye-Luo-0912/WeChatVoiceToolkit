@@ -37,3 +37,16 @@ public sealed record SeedVcToolchainResolution(
 {
     public bool HasLinuxTarget => !string.IsNullOrWhiteSpace(LinuxHost);
 }
+
+/// <summary>Read-only connectivity check for the configured Linux Seed-VC host.</summary>
+public sealed record SeedVcRemoteProbeReport(
+    bool IsReady,
+    bool IsReachable,
+    string? Host,
+    string? Platform,
+    string? PythonVersion,
+    string? FfmpegVersion,
+    bool SeedVcFound,
+    string? SeedVcRoot,
+    IReadOnlyList<string> Issues,
+    DateTimeOffset CheckedAtUtc);
